@@ -61,7 +61,8 @@ Sources/SecondBrainMCP/
 │   ├── PDFTextExtractor.swift  # struct/static — PDFKit text extraction + in-doc search
 │   ├── PathValidator.swift     # struct/static — path-traversal prevention (CRITICAL)
 │   ├── MarkdownParser.swift    # struct/static — YAML frontmatter + link extraction
-│   ├── CanvasManager.swift     # actor — sandboxed .canvas CRUD (notes/, soft-delete, git)
+│   ├── VaultEnumerator.swift   # struct/static — shared list_* file walk (clean paths, skips dotfiles/.gitkeep)
+│   ├── CanvasManager.swift     # actor — sandboxed .canvas CRUD + list (notes/, soft-delete, git)
 │   ├── CanvasModel.swift       # enum/static — JSON Canvas 1.0 validation (validate, never re-serialize)
 │   ├── ImageManager.swift       # Sendable struct — PNG read policy (caps, pass-through vs downscale, bomb guard)
 │   ├── ImageEncoding.swift     # protocol — platform seam for image inspect/encode
@@ -231,5 +232,7 @@ Server logs (stderr) are captured by Claude Desktop at
   `Date` precision; compare via `Int(timeIntervalSinceReferenceDate)`.
 - **`references/` is hardcoded to `.pdf`**; `notes/` extensions are `--extensions`-configurable.
 - **Canvas writes are lossless on purpose.** `CanvasModel.validate` only *decodes to prove* the JSON is well-formed JSON Canvas (unique node ids, edges reference existing nodes, valid enum/color values) — it is **never re-serialized**. `create`/`update_canvas` write the caller's **original bytes**, so plugin-added keys outside the 1.0 spec survive. Don't "round-trip through the model" — that would drop those keys.
+- **All `list_*` enumeration goes through `VaultEnumerator`.** It builds clean vault-relative paths (a trailing-slash `directory` used to yield `notes//foo`) and skips dotfiles / `.gitkeep.md` placeholders / hidden dirs (any path component starting with `.`). `list_notes` and `list_canvas` both ride on it — add new listers there, not with a fresh `FileManager` walk. It does *not* hide `_`-prefixed dirs (that's user content, e.g. `_attachments`).
+- **Canvas validates structure, not external links.** `CanvasModel.validate` rejects dangling **edge→node** references (intra-document structural integrity) but a **file-node→file** reference is an extra-document soft link the spec and Obsidian tolerate — so it's *not* existence-checked on write. `read_canvas` surfaces a broken one as a non-blocking `⚠ file not found` instead (see `CanvasManager.fileNodeWarning`). Don't "fix" this asymmetry by rejecting file-nodes on write — it would reject canvases Obsidian accepts.
 - **`read_image` re-encodes only when it must.** A PNG within the model's native resolution (long edge ≤ 2576px) is passed through **byte-for-byte** — re-encoding does nothing for readability (the model reads PNG natively), so the only reason to transform is size. The **decode-bomb guard is `ImageEncoding.inspect`**: it reads pixel dimensions *without* decoding, and `ImageManager` rejects >50 MP before any decode. Keep that order — inspect, reject, only then decode.
 - **Image platform code sits behind `ImageEncoding`.** `ImageManager` is pure policy (caps, pass-through decision) and is unit-tested with a fake encoder; the macOS ImageIO work is `CoreGraphicsImageEncoder` (`#if canImport(ImageIO)`). A non-macOS port adds another conformer — don't put `ImageIO`/`AppKit` calls in `ImageManager`.

@@ -114,57 +114,28 @@ actor VaultManager {
         recursive: Bool = true,
         tag: String? = nil
     ) throws -> [NoteInfo] {
-        let baseDir: String
-        if let directory {
-            guard directory.hasPrefix("notes/") || directory == "notes" else {
-                throw VaultError.invalidPath("Directory must be within notes/: \(directory)")
-            }
-            baseDir = try PathValidator.resolve(relativePath: directory, root: config.vaultPath)
-        } else {
-            baseDir = config.vaultPath + "/notes"
-        }
-
-        guard FileManager.default.fileExists(atPath: baseDir) else {
-            // If notes/ doesn't exist yet, return empty
-            return []
+        let allowedExts = config.allowedExtensions
+        let entries: [VaultEnumerator.Entry]
+        do {
+            entries = try VaultEnumerator.files(
+                vaultPath: config.vaultPath,
+                directory: directory,
+                defaultDir: "notes",
+                recursive: recursive,
+                include: { allowedExts.contains($0) }
+            )
+        } catch {
+            throw VaultError.invalidPath("\(error)")
         }
 
         let fm = FileManager.default
-        let allFiles: [String]
-
-        if recursive {
-            guard let enumerator = fm.enumerator(atPath: baseDir) else { return [] }
-            allFiles = enumerator.compactMap { $0 as? String }
-        } else {
-            allFiles = (try? fm.contentsOfDirectory(atPath: baseDir)) ?? []
-        }
-
-        let allowedExts = config.allowedExtensions
         var results: [NoteInfo] = []
 
-        for relativePart in allFiles {
-            let ext = (relativePart as NSString).pathExtension.lowercased()
-            guard allowedExts.contains(ext) else { continue }
+        for entry in entries {
+            let createDate = (try? fm.attributesOfItem(atPath: entry.fullPath))?[.creationDate] as? Date
 
-            let fullPath = baseDir + "/" + relativePart
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: fullPath, isDirectory: &isDir), !isDir.boolValue else { continue }
-
-            // Build the vault-relative path
-            let vaultRelative: String
-            if let directory {
-                vaultRelative = directory + "/" + relativePart
-            } else {
-                vaultRelative = "notes/" + relativePart
-            }
-
-            // Read minimal metadata without loading full content into NoteInfo
-            let attributes = try? fm.attributesOfItem(atPath: fullPath)
-            let modDate = attributes?[.modificationDate] as? Date ?? Date()
-            let createDate = attributes?[.creationDate] as? Date
-
-            let content = (try? String(contentsOfFile: fullPath, encoding: .utf8)) ?? ""
-            let filename = (fullPath as NSString).lastPathComponent
+            let content = (try? String(contentsOfFile: entry.fullPath, encoding: .utf8)) ?? ""
+            let filename = (entry.fullPath as NSString).lastPathComponent
             let parsed = MarkdownParser.parse(content: content, filename: filename)
 
             // Filter by tag if specified
@@ -173,10 +144,10 @@ actor VaultManager {
             }
 
             results.append(NoteInfo(
-                relativePath: vaultRelative,
+                relativePath: entry.relativePath,
                 title: parsed.title,
                 tags: parsed.tags,
-                modifiedDate: modDate,
+                modifiedDate: entry.modifiedDate,
                 createdDate: createDate
             ))
         }

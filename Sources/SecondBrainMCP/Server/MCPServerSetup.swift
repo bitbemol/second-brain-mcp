@@ -275,6 +275,25 @@ struct MCPServerSetup {
             annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         ))
 
+        tools.append(Tool(
+            name: "list_canvas",
+            description: "List Obsidian canvas (.canvas) files with metadata only — node count, edge count, and a per-type node breakdown — not the raw JSON. Use this to discover canvases before read_canvas. Filter by directory to scope to a folder. Results sorted newest first.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "directory": .object([
+                        "type": .string("string"),
+                        "description": .string("Subdirectory within notes/ to list (default: notes/)")
+                    ]),
+                    "recursive": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Include subdirectories (default: true)")
+                    ])
+                ])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
         // -- Write tools (only if not read-only) -- Phase 3
         if !config.readOnly {
             tools.append(Tool(
@@ -722,6 +741,7 @@ struct MCPServerSetup {
         case "get_reference_metadata": .metadataRef
         case "read_image": .read
         case "read_canvas": .read
+        case "list_canvas": .read
         case "create_canvas": .create
         case "update_canvas": .update
         case "delete_canvas": .delete
@@ -776,6 +796,8 @@ struct MCPServerSetup {
         // Canvas tools
         case "read_canvas":
             return await handleReadCanvas(params: params, canvasManager: canvasManager)
+        case "list_canvas":
+            return await handleListCanvas(params: params, canvasManager: canvasManager)
         case "create_canvas":
             return await handleCreateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
         case "update_canvas":
@@ -1604,10 +1626,38 @@ struct MCPServerSetup {
             var lines = ["\(summary.relativePath): \(summary.nodeCount) node(s), \(summary.edgeCount) edge(s)"]
             for node in summary.nodes {
                 let label = node.label.isEmpty ? "" : " — \(node.label)"
-                lines.append("  - [\(node.type)] \(node.id)\(label)")
+                let warn = node.warning.map { " ⚠ \($0)" } ?? ""
+                lines.append("  - [\(node.type)] \(node.id)\(label)\(warn)")
             }
             let header = lines.joined(separator: "\n")
             return CallTool.Result(content: [.text(text: "\(header)\n\n\(summary.rawJSON)", annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func handleListCanvas(
+        params: CallTool.Parameters,
+        canvasManager: CanvasManager
+    ) async -> CallTool.Result {
+        let directory = params.arguments?["directory"]?.stringValue
+        let recursive = params.arguments?["recursive"]?.boolValue ?? true
+
+        do {
+            let canvases = try await canvasManager.listCanvases(directory: directory, recursive: recursive)
+            if canvases.isEmpty {
+                return CallTool.Result(content: [.text(text: "No canvases found.", annotations: nil, _meta: nil)])
+            }
+
+            let formatter = ISO8601DateFormatter()
+            var lines: [String] = ["Found \(canvases.count) canvas(es):", ""]
+            for canvas in canvases {
+                let breakdown = canvas.typeBreakdown.map { "\($0.count) \($0.type)" }.joined(separator: ", ")
+                let breakdownStr = breakdown.isEmpty ? "" : " [\(breakdown)]"
+                lines.append("- `\(canvas.relativePath)` — \(canvas.nodeCount) node(s), \(canvas.edgeCount) edge(s)\(breakdownStr)")
+                lines.append("  Modified: \(formatter.string(from: canvas.modifiedDate))")
+            }
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }

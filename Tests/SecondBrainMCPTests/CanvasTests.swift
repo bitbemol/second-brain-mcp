@@ -201,3 +201,68 @@ struct CanvasManagerTests {
         #expect(onDisk == withExtra)
     }
 }
+
+// MARK: - CanvasManager listing & flags
+
+@Suite("CanvasManager — listing & flags")
+struct CanvasListingTests {
+
+    private func makeVault() throws -> String {
+        let root = NSTemporaryDirectory() + "CanvasListing-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/notes/boards", withIntermediateDirectories: true)
+        return root
+    }
+
+    @Test("listCanvases returns counts and a per-type breakdown")
+    func list() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        let c1 = """
+        {"nodes":[
+          {"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"hi"},
+          {"id":"b","type":"text","x":0,"y":0,"width":1,"height":1,"text":"yo"},
+          {"id":"g","type":"group","x":0,"y":0,"width":1,"height":1,"label":"G"}
+        ],"edges":[{"id":"e","fromNode":"a","toNode":"b"}]}
+        """
+        _ = try await mgr.create(relativePath: "notes/boards/one.canvas", json: c1)
+        _ = try await mgr.create(relativePath: "notes/two.canvas", json: #"{"nodes":[],"edges":[]}"#)
+
+        let all = try await mgr.listCanvases()
+        #expect(all.count == 2)
+        let one = try #require(all.first { $0.relativePath == "notes/boards/one.canvas" })
+        #expect(one.nodeCount == 3)
+        #expect(one.edgeCount == 1)
+        // 2 text, 1 group — sorted desc by count
+        #expect(one.typeBreakdown.first?.type == "text")
+        #expect(one.typeBreakdown.first?.count == 2)
+    }
+
+    @Test("listCanvases scopes to a subdirectory")
+    func scoped() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        _ = try await mgr.create(relativePath: "notes/boards/one.canvas", json: #"{"nodes":[],"edges":[]}"#)
+        _ = try await mgr.create(relativePath: "notes/two.canvas", json: #"{"nodes":[],"edges":[]}"#)
+        let scoped = try await mgr.listCanvases(directory: "notes/boards")
+        #expect(scoped.map(\.relativePath) == ["notes/boards/one.canvas"])
+    }
+
+    @Test("read_canvas flags a file-node whose target is missing")
+    func brokenFileNode() async throws {
+        let root = try makeVault()
+        try "x".write(toFile: root + "/notes/real.md", atomically: true, encoding: .utf8)
+        let mgr = CanvasManager(vaultPath: root)
+        let canvas = """
+        {"nodes":[
+          {"id":"ok","type":"file","x":0,"y":0,"width":1,"height":1,"file":"notes/real.md"},
+          {"id":"bad","type":"file","x":0,"y":0,"width":1,"height":1,"file":"notes/ghost.md"}
+        ],"edges":[]}
+        """
+        _ = try await mgr.create(relativePath: "notes/board.canvas", json: canvas)
+        let summary = try await mgr.read(relativePath: "notes/board.canvas")
+        let ok = try #require(summary.nodes.first { $0.id == "ok" })
+        let bad = try #require(summary.nodes.first { $0.id == "bad" })
+        #expect(ok.warning == nil)
+        #expect(bad.warning == "file not found")
+    }
+}

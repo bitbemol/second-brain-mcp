@@ -180,10 +180,13 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 
 | Tool | Description |
 |------|-------------|
+| `list_canvas` | List canvases with node/edge counts and a per-type breakdown (metadata only) |
 | `read_canvas` | Node/edge summary + raw JSON |
 | `create_canvas` | Create a validated `.canvas` file |
 | `update_canvas` | Replace an existing canvas's full contents (validated) |
 | `delete_canvas` | Soft-delete to `.trash/` |
+
+`read_canvas` flags `file`-nodes whose target doesn't exist with `⚠ file not found`. These are **not** rejected on write: unlike edge→node references (validated for structural integrity), a `file`-node→file reference is a soft link the JSON Canvas spec and Obsidian both tolerate (forward references, files added later).
 
 ### Images
 
