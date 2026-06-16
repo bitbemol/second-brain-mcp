@@ -39,6 +39,7 @@ struct MCPServerSetup {
         let auditLogger = AuditLogger(vaultPath: config.vaultPath)
         let imageManager = ImageManager(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
         let canvasManager = CanvasManager(vaultPath: config.vaultPath)
+        let attachmentManager = AttachmentManager(vaultPath: config.vaultPath)
 
         // ── Register handlers FIRST (before index is built) ──
         // This allows the server to accept connections immediately.
@@ -57,7 +58,8 @@ struct MCPServerSetup {
                 config: config,
                 auditLogger: auditLogger,
                 imageManager: imageManager,
-                canvasManager: canvasManager
+                canvasManager: canvasManager,
+                attachmentManager: attachmentManager
             )
         }
 
@@ -278,6 +280,25 @@ struct MCPServerSetup {
         tools.append(Tool(
             name: "list_canvas",
             description: "List Obsidian canvas (.canvas) files with metadata only — node count, edge count, and a per-type node breakdown — not the raw JSON. Use this to discover canvases before read_canvas. Filter by directory to scope to a folder. Results sorted newest first.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "directory": .object([
+                        "type": .string("string"),
+                        "description": .string("Subdirectory within notes/ to list (default: notes/)")
+                    ]),
+                    "recursive": .object([
+                        "type": .string("boolean"),
+                        "description": .string("Include subdirectories (default: true)")
+                    ])
+                ])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
+        tools.append(Tool(
+            name: "list_attachments",
+            description: "List binary attachments — any file under notes/ that isn't a note (.md) or canvas (.canvas), e.g. images. Returns path, extension, size, and whether read_image can open it (PNG today). Use this to discover images and other attachments, which list_notes does not show. Filter by directory to scope to a folder. Results sorted newest first.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -717,7 +738,8 @@ struct MCPServerSetup {
         config: ServerConfig,
         auditLogger: AuditLogger,
         imageManager: ImageManager,
-        canvasManager: CanvasManager
+        canvasManager: CanvasManager,
+        attachmentManager: AttachmentManager
     ) async throws -> CallTool.Result {
         // Note: searchEngine is a value type (struct), passed through for search handlers.
         // Audit log every tool call
@@ -742,6 +764,7 @@ struct MCPServerSetup {
         case "read_image": .read
         case "read_canvas": .read
         case "list_canvas": .read
+        case "list_attachments": .read
         case "create_canvas": .create
         case "update_canvas": .update
         case "delete_canvas": .delete
@@ -798,6 +821,8 @@ struct MCPServerSetup {
             return await handleReadCanvas(params: params, canvasManager: canvasManager)
         case "list_canvas":
             return await handleListCanvas(params: params, canvasManager: canvasManager)
+        case "list_attachments":
+            return await handleListAttachments(params: params, attachmentManager: attachmentManager)
         case "create_canvas":
             return await handleCreateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
         case "update_canvas":
@@ -1634,6 +1659,41 @@ struct MCPServerSetup {
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
+    }
+
+    private static func handleListAttachments(
+        params: CallTool.Parameters,
+        attachmentManager: AttachmentManager
+    ) async -> CallTool.Result {
+        let directory = params.arguments?["directory"]?.stringValue
+        let recursive = params.arguments?["recursive"]?.boolValue ?? true
+
+        do {
+            let items = try attachmentManager.list(directory: directory, recursive: recursive)
+            if items.isEmpty {
+                return CallTool.Result(content: [.text(text: "No attachments found.", annotations: nil, _meta: nil)])
+            }
+
+            var lines: [String] = [
+                "Found \(items.count) attachment(s) — `readable` = openable with read_image (PNG only for now):",
+                ""
+            ]
+            for item in items {
+                let extStr = item.ext.isEmpty ? "(no ext)" : item.ext
+                let readableStr = item.readable ? "readable" : "unreadable"
+                lines.append("- `\(item.relativePath)` — \(extStr) · \(formatBytes(item.sizeBytes)) · \(readableStr)")
+            }
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        let kb = Double(bytes) / 1024
+        if kb < 1024 { return String(format: "%.1f KB", kb) }
+        return String(format: "%.1f MB", kb / 1024)
     }
 
     private static func handleListCanvas(

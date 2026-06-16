@@ -62,6 +62,7 @@ Sources/SecondBrainMCP/
 │   ├── PathValidator.swift     # struct/static — path-traversal prevention (CRITICAL)
 │   ├── MarkdownParser.swift    # struct/static — YAML frontmatter + link extraction
 │   ├── VaultEnumerator.swift   # struct/static — shared list_* file walk (clean paths, skips dotfiles/.gitkeep)
+│   ├── AttachmentManager.swift # Sendable struct — list_attachments (non-note/canvas files under notes/)
 │   ├── CanvasManager.swift     # actor — sandboxed .canvas CRUD + list (notes/, soft-delete, git)
 │   ├── CanvasModel.swift       # enum/static — JSON Canvas 1.0 validation (validate, never re-serialize)
 │   ├── ImageManager.swift       # Sendable struct — PNG read policy (caps, pass-through vs downscale, bomb guard)

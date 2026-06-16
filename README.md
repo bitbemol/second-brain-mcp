@@ -188,10 +188,11 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 
 `read_canvas` flags `file`-nodes whose target doesn't exist with `⚠ file not found`. These are **not** rejected on write: unlike edge→node references (validated for structural integrity), a `file`-node→file reference is a soft link the JSON Canvas spec and Obsidian both tolerate (forward references, files added later).
 
-### Images
+### Images & attachments
 
 | Tool | Description |
 |------|-------------|
+| `list_attachments` | List binary attachments under `notes/` (anything that isn't a `.md` note or `.canvas`) — path, extension, size, and whether `read_image` can open it. Closes the image-discovery gap that `list_notes` leaves. |
 | `read_image` | Read a PNG (e.g. a screenshot) from `notes/` or `references/` for viewing; within-cap images pass through unchanged, oversized ones are downscaled |
 
 ### References (read-only)
