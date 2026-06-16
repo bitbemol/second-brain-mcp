@@ -43,9 +43,9 @@ swift build -c release
 
 ## Requirements
 
-- Swift 6.2
-- macOS 26 (Tahoe)
-- Xcode 26
+- Swift 6.2 or later (builds on 6.4 — note the [build-output path change](#installation) on 6.4+)
+- macOS 26 (Tahoe) or later
+- Xcode 26 or later
 
 ## Installation
 
@@ -60,6 +60,8 @@ The binary is at `.build/release/second-brain-mcp`. You can copy it anywhere:
 ```bash
 cp .build/release/second-brain-mcp /usr/local/bin/
 ```
+
+> **Always use the `.build/release/second-brain-mcp` path — not an architecture-specific one** like `.build/arm64-apple-macosx/release/second-brain-mcp`. Swift 6.4 changed SwiftPM's default build system from `native` (which wrote products to `.build/<triple>/release/`) to `swiftbuild` (which writes to `.build/out/Products/Release/`). SwiftPM keeps `.build/release` and `.build/debug` as symlinks to the current layout under **both** systems, so pinning to the symlink survives toolchain upgrades. Pinning to an arch-specific path will silently keep launching a **stale binary** after you upgrade Swift — the build succeeds, but lands somewhere your config no longer points to.
 
 ## Connecting to Claude
 
@@ -110,6 +112,18 @@ Verify with:
 ```bash
 claude mcp list
 ```
+
+### Updating the server
+
+After pulling changes or editing the code, rebuild and **relaunch the client** so new or changed tools are picked up:
+
+```bash
+swift build -c release
+```
+
+Then fully restart: **Cmd+Q and reopen Claude Desktop**, or start a new `claude` session. A running server keeps serving its old tool list until the process is relaunched — rebuilding alone isn't enough.
+
+If new tools still don't appear, confirm the client's `command` points at `.build/release/second-brain-mcp` (the symlink, see [Installation](#installation)) and not a stale architecture-specific path.
 
 ### What does NOT work
 

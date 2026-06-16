@@ -33,6 +33,13 @@ swift test --filter PathValidatorTests # The security suite — this one must ne
 
 Run by hand: `second-brain-mcp --vault <path> [--read-only] [--extensions md,markdown] [--log-level info]`
 
+**Binary path / Swift 6.4 layout change:** point any MCP client at the `.build/release/second-brain-mcp`
+*symlink*, never the arch-specific `.build/<triple>/release/...` path. Swift 6.4 flipped SwiftPM's default
+build system from `native` (output: `.build/<triple>/release/`) to `swiftbuild` (output:
+`.build/out/Products/Release/`); the `.build/release` symlink tracks the current layout under both, so it
+survives toolchain upgrades. A config pinned to the old arch path silently launches a stale binary after a
+Swift upgrade (the build succeeds elsewhere) — and the client must be fully relaunched to pick up tool changes.
+
 There's no CI, linter, or formatter — **`swift test` is the dev loop**, and you match the
 surrounding style. Running the binary directly only proves startup + git-init; it then blocks
 waiting for a JSON-RPC client on stdin, so real behavior is verified through tests.
