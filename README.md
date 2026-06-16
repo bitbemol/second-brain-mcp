@@ -160,6 +160,23 @@ Only `notes/` and `references/` need to exist. Everything else is auto-created o
 | `move_notes` | Batch move up to 20 notes atomically (all-or-nothing) |
 | `delete_note` | Soft-delete to `.trash/` |
 
+### Canvas
+
+Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `notes/`. Writes validate against the JSON Canvas 1.0 spec, then persist your original bytes (so plugin-added keys survive).
+
+| Tool | Description |
+|------|-------------|
+| `read_canvas` | Node/edge summary + raw JSON |
+| `create_canvas` | Create a validated `.canvas` file |
+| `update_canvas` | Replace an existing canvas's full contents (validated) |
+| `delete_canvas` | Soft-delete to `.trash/` |
+
+### Images
+
+| Tool | Description |
+|------|-------------|
+| `read_image` | Read a PNG (e.g. a screenshot) from `notes/` or `references/` for viewing; within-cap images pass through unchanged, oversized ones are downscaled |
+
 ### References (read-only)
 
 | Tool | Description |

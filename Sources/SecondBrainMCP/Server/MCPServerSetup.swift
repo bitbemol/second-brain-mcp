@@ -37,6 +37,8 @@ struct MCPServerSetup {
         let referenceManager = ReferenceManager(vaultPath: config.vaultPath)
         let searchEngine = SearchEngine(vaultPath: config.vaultPath)
         let auditLogger = AuditLogger(vaultPath: config.vaultPath)
+        let imageManager = ImageManager(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
+        let canvasManager = CanvasManager(vaultPath: config.vaultPath)
 
         // ── Register handlers FIRST (before index is built) ──
         // This allows the server to accept connections immediately.
@@ -53,7 +55,9 @@ struct MCPServerSetup {
                 searchEngine: searchEngine,
                 gitManager: gitManager,
                 config: config,
-                auditLogger: auditLogger
+                auditLogger: auditLogger,
+                imageManager: imageManager,
+                canvasManager: canvasManager
             )
         }
 
@@ -255,6 +259,22 @@ struct MCPServerSetup {
             )
         ))
 
+        tools.append(Tool(
+            name: "read_canvas",
+            description: "Read an Obsidian canvas (.canvas) file. Returns a summary (node and edge counts, and each node's id, type, and label) followed by the raw JSON Canvas content. Use this before update_canvas to see the current structure.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("Relative path to a .canvas file (e.g. notes/boards/roadmap.canvas)")
+                    ])
+                ]),
+                "required": .array([.string("path")])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
         // -- Write tools (only if not read-only) -- Phase 3
         if !config.readOnly {
             tools.append(Tool(
@@ -428,6 +448,62 @@ struct MCPServerSetup {
                     openWorldHint: false
                 )
             ))
+
+            tools.append(Tool(
+                name: "create_canvas",
+                description: "Create a new Obsidian canvas (.canvas) file. Path must start with \"notes/\", end in .canvas, and must not already exist. Content must be valid JSON Canvas 1.0 (an object with \"nodes\" and/or \"edges\" arrays). Creates parent directories automatically. Git auto-commits.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("Relative path for the new file (e.g. notes/boards/roadmap.canvas)")
+                        ]),
+                        "content": .object([
+                            "type": .string("string"),
+                            "description": .string("JSON Canvas 1.0 content. Nodes have id/type/x/y/width/height (type: text|file|link|group); edges have id/fromNode/toNode.")
+                        ])
+                    ]),
+                    "required": .array([.string("path"), .string("content")])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ))
+
+            tools.append(Tool(
+                name: "update_canvas",
+                description: "Replace the ENTIRE contents of an existing canvas (.canvas) file. Content must be valid JSON Canvas 1.0. Read the canvas first with read_canvas, then send the full updated JSON. Git auto-commits.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("Relative path to the .canvas file")
+                        ]),
+                        "content": .object([
+                            "type": .string("string"),
+                            "description": .string("Full replacement JSON Canvas 1.0 content")
+                        ])
+                    ]),
+                    "required": .array([.string("path"), .string("content")])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ))
+
+            tools.append(Tool(
+                name: "delete_canvas",
+                description: "Soft-delete a canvas (.canvas) file by moving it to .trash/ — recoverable, not permanently deleted. Git auto-commits the deletion.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("Relative path to the .canvas file")
+                        ])
+                    ]),
+                    "required": .array([.string("path")])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false)
+            ))
         }
 
         // -- Git history tools (only if not read-only) -- Phase 4
@@ -586,6 +662,28 @@ struct MCPServerSetup {
             annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         ))
 
+        // -- Image tool (always read-only) --
+        tools.append(Tool(
+            name: "read_image",
+            description: """
+                Read a PNG image (e.g. a macOS screenshot) and return it for viewing, \
+                along with its dimensions and format. Images already within the model's \
+                native resolution are returned as-is; oversized images are downscaled. \
+                PNG only. The path must be within notes/ or references/.
+                """,
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("Relative path to a .png file (e.g. notes/attachments/screenshot.png)")
+                    ])
+                ]),
+                "required": .array([.string("path")])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
         return tools
     }
 
@@ -598,7 +696,9 @@ struct MCPServerSetup {
         searchEngine: SearchEngine,
         gitManager: GitManager?,
         config: ServerConfig,
-        auditLogger: AuditLogger
+        auditLogger: AuditLogger,
+        imageManager: ImageManager,
+        canvasManager: CanvasManager
     ) async throws -> CallTool.Result {
         // Note: searchEngine is a value type (struct), passed through for search handlers.
         // Audit log every tool call
@@ -620,6 +720,11 @@ struct MCPServerSetup {
         case "read_reference": .readRef
         case "search_references": .searchRef
         case "get_reference_metadata": .metadataRef
+        case "read_image": .read
+        case "read_canvas": .read
+        case "create_canvas": .create
+        case "update_canvas": .update
+        case "delete_canvas": .delete
         default: nil
         }
         if let op = auditOp {
@@ -665,6 +770,18 @@ struct MCPServerSetup {
             return handleSearchReferences(params: params, searchEngine: searchEngine)
         case "get_reference_metadata":
             return handleGetReferenceMetadata(params: params, referenceManager: referenceManager)
+        // Image tools
+        case "read_image":
+            return await handleReadImage(params: params, imageManager: imageManager)
+        // Canvas tools
+        case "read_canvas":
+            return await handleReadCanvas(params: params, canvasManager: canvasManager)
+        case "create_canvas":
+            return await handleCreateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
+        case "update_canvas":
+            return await handleUpdateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
+        case "delete_canvas":
+            return await handleDeleteCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
         default:
             return CallTool.Result(
                 content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)],
@@ -1428,6 +1545,131 @@ struct MCPServerSetup {
             ]
 
             return CallTool.Result(content: [.text(text: info.joined(separator: "\n"), annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    // MARK: - Image Handler
+
+    private static func handleReadImage(
+        params: CallTool.Parameters,
+        imageManager: ImageManager
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            // Timeout protection: a crafted image could hang the decoder. Race the
+            // work against a deadline, same pattern as handleReadReference.
+            let result = try await withThrowingTaskGroup(of: ImageManager.ImageResult.self) { group in
+                group.addTask { try imageManager.read(relativePath: path) }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(30))
+                    throw MCPError.internalError("Timeout: image took longer than 30 seconds to process. The file may be corrupt.")
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+
+            let sizeKB = String(format: "%.0f KB", Double(result.originalBytes) / 1024)
+            let note = result.wasResized
+                ? "downscaled to fit \(result.originalWidth > result.originalHeight ? "width" : "height") ≤ 2576px"
+                : "passed through unchanged"
+            let summary = "\(result.format.uppercased()) \(result.originalWidth)×\(result.originalHeight), \(sizeKB) — \(note)"
+
+            return CallTool.Result(content: [
+                .text(text: summary, annotations: nil, _meta: nil),
+                .image(data: result.pngData.base64EncodedString(), mimeType: "image/png", annotations: nil, _meta: nil)
+            ])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    // MARK: - Canvas Handlers
+
+    private static func handleReadCanvas(
+        params: CallTool.Parameters,
+        canvasManager: CanvasManager
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            let summary = try await canvasManager.read(relativePath: path)
+            var lines = ["\(summary.relativePath): \(summary.nodeCount) node(s), \(summary.edgeCount) edge(s)"]
+            for node in summary.nodes {
+                let label = node.label.isEmpty ? "" : " — \(node.label)"
+                lines.append("  - [\(node.type)] \(node.id)\(label)")
+            }
+            let header = lines.joined(separator: "\n")
+            return CallTool.Result(content: [.text(text: "\(header)\n\n\(summary.rawJSON)", annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func handleCreateCanvas(
+        params: CallTool.Parameters,
+        canvasManager: CanvasManager,
+        gitManager: GitManager?
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue,
+              let content = params.arguments?["content"]?.stringValue else {
+            return CallTool.Result(content: [.text(text: "Missing required parameters: path, content", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            let result = try await canvasManager.create(relativePath: path, json: content)
+            if let git = gitManager {
+                try? await git.commitChange(files: [path], message: "[SecondBrainMCP] Created: \(path)")
+            }
+            return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func handleUpdateCanvas(
+        params: CallTool.Parameters,
+        canvasManager: CanvasManager,
+        gitManager: GitManager?
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue,
+              let content = params.arguments?["content"]?.stringValue else {
+            return CallTool.Result(content: [.text(text: "Missing required parameters: path, content", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            let result = try await canvasManager.replace(relativePath: path, json: content)
+            if let git = gitManager {
+                try? await git.commitChange(files: [path], message: "[SecondBrainMCP] Updated: \(path)")
+            }
+            return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func handleDeleteCanvas(
+        params: CallTool.Parameters,
+        canvasManager: CanvasManager,
+        gitManager: GitManager?
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            let result = try await canvasManager.delete(relativePath: path)
+            if let git = gitManager {
+                try? await git.commitDeletion(path: path, message: "[SecondBrainMCP] Deleted: \(path)")
+            }
+            return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }

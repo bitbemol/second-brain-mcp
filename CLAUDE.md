@@ -54,11 +54,17 @@ Sources/SecondBrainMCP/
 │   ├── PDFTextExtractor.swift  # struct/static — PDFKit text extraction + in-doc search
 │   ├── PathValidator.swift     # struct/static — path-traversal prevention (CRITICAL)
 │   ├── MarkdownParser.swift    # struct/static — YAML frontmatter + link extraction
+│   ├── CanvasManager.swift     # actor — sandboxed .canvas CRUD (notes/, soft-delete, git)
+│   ├── CanvasModel.swift       # enum/static — JSON Canvas 1.0 validation (validate, never re-serialize)
+│   ├── ImageManager.swift       # Sendable struct — PNG read policy (caps, pass-through vs downscale, bomb guard)
+│   ├── ImageEncoding.swift     # protocol — platform seam for image inspect/encode
+│   ├── CoreGraphicsImageEncoder.swift # macOS ImageIO impl of ImageEncoding (#if canImport(ImageIO))
 │   └── DataPaths.swift         # internal data path resolution (see "Where data lives")
 └── Logging/AuditLogger.swift   # actor — append-only operation log
 
 Tests/SecondBrainMCPTests/      # PathValidator (exhaustive — the security backbone),
-                                # VaultManager, MarkdownParser, SearchEngine, GitManager.
+                                # VaultManager, MarkdownParser, SearchEngine, GitManager,
+                                # Canvas (model + manager), ImageManager (+ encoder).
 ```
 
 **Concurrency:** actors for mutable state + I/O (VaultManager, GitManager, AuditLogger);
@@ -217,3 +223,6 @@ Server logs (stderr) are captured by Claude Desktop at
 - **Cache date comparison uses whole-second granularity** — `JSONEncoder` truncates APFS nanosecond
   `Date` precision; compare via `Int(timeIntervalSinceReferenceDate)`.
 - **`references/` is hardcoded to `.pdf`**; `notes/` extensions are `--extensions`-configurable.
+- **Canvas writes are lossless on purpose.** `CanvasModel.validate` only *decodes to prove* the JSON is well-formed JSON Canvas (unique node ids, edges reference existing nodes, valid enum/color values) — it is **never re-serialized**. `create`/`update_canvas` write the caller's **original bytes**, so plugin-added keys outside the 1.0 spec survive. Don't "round-trip through the model" — that would drop those keys.
+- **`read_image` re-encodes only when it must.** A PNG within the model's native resolution (long edge ≤ 2576px) is passed through **byte-for-byte** — re-encoding does nothing for readability (the model reads PNG natively), so the only reason to transform is size. The **decode-bomb guard is `ImageEncoding.inspect`**: it reads pixel dimensions *without* decoding, and `ImageManager` rejects >50 MP before any decode. Keep that order — inspect, reject, only then decode.
+- **Image platform code sits behind `ImageEncoding`.** `ImageManager` is pure policy (caps, pass-through decision) and is unit-tested with a fake encoder; the macOS ImageIO work is `CoreGraphicsImageEncoder` (`#if canImport(ImageIO)`). A non-macOS port adds another conformer — don't put `ImageIO`/`AppKit` calls in `ImageManager`.
