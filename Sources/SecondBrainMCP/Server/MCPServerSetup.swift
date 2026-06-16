@@ -706,17 +706,20 @@ struct MCPServerSetup {
         tools.append(Tool(
             name: "read_image",
             description: """
-                Read a PNG image (e.g. a macOS screenshot) and return it for viewing, \
-                along with its dimensions and format. Images already within the model's \
-                native resolution are returned as-is; oversized images are downscaled. \
-                PNG only. The path must be within notes/ or references/.
+                Read an image and return it for viewing, with its dimensions and format. \
+                Supports png, jpg/jpeg, gif, webp, heic/heif, tiff, bmp (not SVG). Stills \
+                within the model's native resolution are returned as-is; oversized ones are \
+                downscaled. An ANIMATED GIF is returned as a bundle of sampled PNG frames \
+                (read them in order as a time sequence) since the model can't perceive GIF \
+                motion from a single image. Use list_attachments to find images. The path \
+                must be within notes/ or references/.
                 """,
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "path": .object([
                         "type": .string("string"),
-                        "description": .string("Relative path to a .png file (e.g. notes/attachments/screenshot.png)")
+                        "description": .string("Relative path to an image file (e.g. notes/attachments/screenshot.png)")
                     ])
                 ]),
                 "required": .array([.string("path")])
@@ -1621,16 +1624,30 @@ struct MCPServerSetup {
                 return first
             }
 
-            let sizeKB = String(format: "%.0f KB", Double(result.originalBytes) / 1024)
-            let note = result.wasResized
-                ? "downscaled to fit \(result.originalWidth > result.originalHeight ? "width" : "height") ≤ 2576px"
-                : "passed through unchanged"
-            let summary = "\(result.format.uppercased()) \(result.originalWidth)×\(result.originalHeight), \(sizeKB) — \(note)"
+            let sizeStr = formatBytes(result.originalBytes)
+            var content: [Tool.Content] = []
 
-            return CallTool.Result(content: [
-                .text(text: summary, annotations: nil, _meta: nil),
-                .image(data: result.pngData.base64EncodedString(), mimeType: "image/png", annotations: nil, _meta: nil)
-            ])
+            if result.totalFrames > 1 {
+                // Animated GIF → time-ordered frame bundle.
+                let indices = result.frames.map { String($0.sourceIndex) }.joined(separator: ", ")
+                content.append(.text(text:
+                    "Animated GIF \(result.originalWidth)×\(result.originalHeight), \(sizeStr), \(result.totalFrames) frames total. "
+                    + "Showing \(result.frames.count) frames sampled across the animation (source indices: \(indices)) as PNGs — "
+                    + "read them in order as a time sequence.",
+                    annotations: nil, _meta: nil))
+                for (i, frame) in result.frames.enumerated() {
+                    content.append(.text(text: "Frame \(i + 1) of \(result.frames.count) (source frame \(frame.sourceIndex)):", annotations: nil, _meta: nil))
+                    content.append(.image(data: frame.data.base64EncodedString(), mimeType: frame.mimeType, annotations: nil, _meta: nil))
+                }
+            } else {
+                let note = result.passedThrough ? "passed through unchanged" : "downscaled / re-encoded to PNG"
+                content.append(.text(text: "\(result.format.uppercased()) \(result.originalWidth)×\(result.originalHeight), \(sizeStr) — \(note)", annotations: nil, _meta: nil))
+                if let frame = result.frames.first {
+                    content.append(.image(data: frame.data.base64EncodedString(), mimeType: frame.mimeType, annotations: nil, _meta: nil))
+                }
+            }
+
+            return CallTool.Result(content: content)
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }

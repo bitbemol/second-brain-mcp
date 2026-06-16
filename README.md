@@ -193,7 +193,7 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 | Tool | Description |
 |------|-------------|
 | `list_attachments` | List binary attachments under `notes/` (anything that isn't a `.md` note or `.canvas`) — path, extension, size, and whether `read_image` can open it. Closes the image-discovery gap that `list_notes` leaves. |
-| `read_image` | Read a PNG (e.g. a screenshot) from `notes/` or `references/` for viewing; within-cap images pass through unchanged, oversized ones are downscaled |
+| `read_image` | Read an image (png/jpg/jpeg/gif/webp/heic/heif/tiff/bmp) from `notes/` or `references/` for viewing. Within-cap stills pass through unchanged, oversized ones are downscaled. **Animated GIFs** come back as a bundle of sampled PNG frames so the model can read them as a time sequence. |
 
 ### References (read-only)
 

@@ -43,22 +43,28 @@ struct CoreGraphicsImageEncoder: ImageEncoding {
             format = url.pathExtension.lowercased()
         }
 
-        return ImageInspection(pixelWidth: width, pixelHeight: height, format: format)
+        // Frame count is read from the index count, not by decoding frames.
+        let frameCount = max(CGImageSourceGetCount(source), 1)
+
+        return ImageInspection(pixelWidth: width, pixelHeight: height, format: format, frameCount: frameCount)
     }
 
-    func encodeDownscaledPNG(url: URL, maxLongEdge: Int) throws -> Data {
+    func encodeFramePNG(url: URL, frameIndex: Int, maxLongEdge: Int) throws -> Data {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             throw EncoderError.cannotOpen(url.lastPathComponent)
         }
+        let count = max(CGImageSourceGetCount(source), 1)
+        let index = min(max(frameIndex, 0), count - 1)
 
-        // Decode straight to a bounded size — ImageIO downsamples during decode,
-        // so we never materialize the full-resolution bitmap. First frame only.
+        // Decode the requested frame straight to a bounded size — ImageIO
+        // downsamples during decode, so we never materialize the full-resolution
+        // bitmap.
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: maxLongEdge,
             kCGImageSourceCreateThumbnailWithTransform: true
         ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary) else {
             throw EncoderError.decodeFailed(url.lastPathComponent)
         }
 

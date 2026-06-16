@@ -11,9 +11,9 @@ struct AttachmentManager: Sendable {
     /// Extensions that have their own tools — NOT treated as attachments.
     private static let contentExtensions: Set<String> = ["md", "markdown", "canvas"]
 
-    /// Extensions `read_image` can currently open. Keep in sync with
-    /// `ImageManager`'s allowlist if/when image format support is widened.
-    private static let readableExtensions: Set<String> = ["png"]
+    /// Extensions `read_image` can open — single source of truth lives on
+    /// `ImageManager`, so the `readable` flag never drifts from what's supported.
+    private static let readableExtensions = ImageManager.supportedExtensions
 
     struct AttachmentInfo: Sendable {
         let relativePath: String

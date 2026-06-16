@@ -5,38 +5,72 @@ import Foundation
 /// `ImageEncoding` so this type stays pure policy and unit-testable.
 ///
 /// ## Policy
-/// - Pass an image **through untouched** when it's already within the model's
-///   native limits (the common case for a screenshot). Re-encoding an image
-///   does nothing for readability — the model reads PNG natively — so the only
-///   reason to transform is size.
-/// - Downscale + re-encode only when the source exceeds `maxLongEdge`.
-/// - Reject decode bombs by **inspecting dimensions before decoding pixels**.
+/// - **Still images** within the model's native resolution **pass through
+///   untouched** (the common case for a screenshot) — re-encoding does nothing
+///   for readability, the only reason to transform is size. Formats the API
+///   accepts natively (png/jpeg/gif/webp) pass through with their own mime type;
+///   others (heic/tiff/bmp) are re-encoded to PNG so the API accepts them.
+/// - Oversized stills are downscaled + re-encoded to PNG.
+/// - **Animated GIFs** are decomposed into a bundle of evenly-sampled PNG frames,
+///   so the model can read them as a time sequence (it can't perceive GIF motion
+///   from a single image).
+/// - Decode bombs are rejected by **inspecting dimensions before decoding pixels**.
 struct ImageManager: Sendable {
 
+    /// Extensions `read_image` can open. Single source of truth — `AttachmentManager`
+    /// reads this to set its `readable` flag, so the two never drift. SVG is excluded
+    /// (XML → XXE risk; it's vector text a note can hold instead).
+    static let supportedExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "bmp"
+    ]
+
+    /// Formats the Claude API accepts as-is. Others must be re-encoded to PNG.
+    private static let apiNativeMime: [String: String] = [
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+        "webp": "image/webp"
+    ]
+
     struct Config: Sendable {
-        /// Long-edge cap. Opus 4.8 vision handles ~2576px natively; larger is
-        /// downscaled server-side anyway, so capping here loses nothing.
+        /// Long-edge cap for a still image. Opus 4.8 vision handles ~2576px
+        /// natively; larger is downscaled server-side anyway.
         let maxLongEdge: Int
         /// Hard file-size reject applied before the file is even opened.
         let maxFileBytes: Int
         /// Decode-bomb reject: refuse to decode beyond this many megapixels.
         let maxMegapixels: Double
+        /// Max frames sampled from an animated GIF.
+        let gifMaxFrames: Int
+        /// Long-edge cap per sampled GIF frame (smaller than a single still, since
+        /// there are several in one response).
+        let gifFrameMaxLongEdge: Int
 
         static let `default` = Config(
             maxLongEdge: 2576,
             maxFileBytes: 25 * 1024 * 1024,
-            maxMegapixels: 50
+            maxMegapixels: 50,
+            gifMaxFrames: 8,
+            gifFrameMaxLongEdge: 1280
         )
+    }
+
+    struct Frame: Sendable {
+        let data: Data
+        let mimeType: String
+        let sourceIndex: Int   // frame index in the source (0 for a still image)
     }
 
     struct ImageResult: Sendable {
         let relativePath: String
-        let pngData: Data
+        let format: String
         let originalWidth: Int
         let originalHeight: Int
-        let format: String
         let originalBytes: Int
-        let wasResized: Bool
+        let totalFrames: Int       // source frame count (1 for a still image)
+        let frames: [Frame]        // 1 for a still, the sampled set for an animated GIF
+        let passedThrough: Bool    // still image returned byte-for-byte (no re-encode)
     }
 
     enum ImageError: Error, CustomStringConvertible {
@@ -69,7 +103,7 @@ struct ImageManager: Sendable {
         self.config = config
     }
 
-    /// Read a PNG from `notes/` or `references/`, returning bounded PNG bytes.
+    /// Read an image from `notes/` or `references/`.
     func read(relativePath: String) throws -> ImageResult {
         guard relativePath.hasPrefix("notes/") || relativePath.hasPrefix("references/") else {
             throw ImageError.invalidPath("Path must be within notes/ or references/: \(relativePath)")
@@ -78,7 +112,7 @@ struct ImageManager: Sendable {
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: vaultPath,
-            allowedExtensions: ["png"]
+            allowedExtensions: Self.supportedExtensions
         )
 
         guard FileManager.default.fileExists(atPath: resolved) else {
@@ -93,6 +127,7 @@ struct ImageManager: Sendable {
         }
 
         let url = URL(fileURLWithPath: resolved)
+        let ext = (resolved as NSString).pathExtension.lowercased()
 
         // 2. Inspect dimensions WITHOUT decoding pixels (decode-bomb guard).
         let info = try encoder.inspect(url: url)
@@ -101,27 +136,55 @@ struct ImageManager: Sendable {
             throw ImageError.tooManyPixels(megapixels: megapixels, limit: config.maxMegapixels)
         }
 
-        let longEdge = max(info.pixelWidth, info.pixelHeight)
-
-        // 3. Pass through when within the cap; downscale+re-encode only when oversized.
-        let pngData: Data
-        let wasResized: Bool
-        if longEdge <= config.maxLongEdge {
-            pngData = try Data(contentsOf: url)
-            wasResized = false
-        } else {
-            pngData = try encoder.encodeDownscaledPNG(url: url, maxLongEdge: config.maxLongEdge)
-            wasResized = true
+        // 3a. Animated GIF → sampled PNG frame bundle.
+        if ext == "gif", info.frameCount > 1 {
+            let indices = Self.sampleIndices(total: info.frameCount, max: config.gifMaxFrames)
+            let frames = try indices.map { index in
+                Frame(
+                    data: try encoder.encodeFramePNG(url: url, frameIndex: index, maxLongEdge: config.gifFrameMaxLongEdge),
+                    mimeType: "image/png",
+                    sourceIndex: index
+                )
+            }
+            return result(relativePath, info, bytes, totalFrames: info.frameCount, frames: frames, passedThrough: false)
         }
 
-        return ImageResult(
+        // 3b. Still image: pass through when API-native and within cap; otherwise
+        //     re-encode to PNG (oversized, or a format the API won't accept as-is).
+        let longEdge = max(info.pixelWidth, info.pixelHeight)
+        if let nativeMime = Self.apiNativeMime[ext], longEdge <= config.maxLongEdge {
+            let data = try Data(contentsOf: url)
+            let frame = Frame(data: data, mimeType: nativeMime, sourceIndex: 0)
+            return result(relativePath, info, bytes, totalFrames: 1, frames: [frame], passedThrough: true)
+        } else {
+            let png = try encoder.encodeFramePNG(url: url, frameIndex: 0, maxLongEdge: config.maxLongEdge)
+            let frame = Frame(data: png, mimeType: "image/png", sourceIndex: 0)
+            return result(relativePath, info, bytes, totalFrames: 1, frames: [frame], passedThrough: false)
+        }
+    }
+
+    private func result(
+        _ relativePath: String, _ info: ImageInspection, _ bytes: Int,
+        totalFrames: Int, frames: [Frame], passedThrough: Bool
+    ) -> ImageResult {
+        ImageResult(
             relativePath: relativePath,
-            pngData: pngData,
+            format: info.format,
             originalWidth: info.pixelWidth,
             originalHeight: info.pixelHeight,
-            format: info.format,
             originalBytes: bytes,
-            wasResized: wasResized
+            totalFrames: totalFrames,
+            frames: frames,
+            passedThrough: passedThrough
         )
+    }
+
+    /// Evenly-spaced frame indices (first and last always included).
+    static func sampleIndices(total: Int, max maxCount: Int) -> [Int] {
+        guard total > maxCount else { return Array(0..<Swift.max(total, 0)) }
+        guard maxCount > 1 else { return [0] }
+        return (0..<maxCount).map { i in
+            Int((Double(i) * Double(total - 1) / Double(maxCount - 1)).rounded())
+        }
     }
 }
