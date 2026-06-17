@@ -326,6 +326,20 @@ struct CanvasSearchTests {
         #expect(hit.snippet.lowercased().contains("roadmap for the falcon launch"))
     }
 
+    @Test("Multi-line text node renders line breaks as ' / ' in the snippet")
+    func multilineSnippet() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        // `\n` inside the raw-string JSON is the literal escape, which JSON decodes
+        // to a real newline in the node text.
+        let json = #"{"nodes":[{"id":"n","type":"text","x":0,"y":0,"width":1,"height":1,"text":"Heading line\nbody mentions falcon here"}],"edges":[]}"#
+        _ = try await mgr.create(relativePath: "notes/boards/ml.canvas", json: json)
+
+        let hit = try #require(try await mgr.search(query: "falcon").hits.first)
+        #expect(hit.snippet.contains(" / "))
+        #expect(hit.snippet.contains("Heading line / body mentions"))
+    }
+
     @Test("max_results caps hits but totalMatches reports the true count")
     func capping() async throws {
         let root = try makeVault()

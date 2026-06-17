@@ -308,12 +308,17 @@ actor CanvasManager {
     }
 
     /// A trimmed context window around the first case-insensitive occurrence of
-    /// `needle`, with newlines flattened to spaces and ellipses on truncation.
-    /// Returns nil when `needle` isn't present.
+    /// `needle`. Line breaks within a node are rendered as " / " (so a multi-line
+    /// text node reads as distinct lines, not a run-on sentence), blank lines are
+    /// dropped, and truncation is marked with "…". Returns nil when `needle` is
+    /// absent — note the search runs against this joined form, so a multi-word
+    /// query can span what was a line break.
     private func snippet(_ haystack: String, around needle: String, context: Int = 40) -> String? {
         let flat = haystack
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " / ")
         guard let match = flat.range(of: needle, options: .caseInsensitive) else { return nil }
         let lower = flat.index(match.lowerBound, offsetBy: -context, limitedBy: flat.startIndex) ?? flat.startIndex
         let upper = flat.index(match.upperBound, offsetBy: context, limitedBy: flat.endIndex) ?? flat.endIndex
