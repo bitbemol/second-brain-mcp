@@ -46,7 +46,27 @@ struct CoreGraphicsImageEncoder: ImageEncoding {
         // Frame count is read from the index count, not by decoding frames.
         let frameCount = max(CGImageSourceGetCount(source), 1)
 
-        return ImageInspection(pixelWidth: width, pixelHeight: height, format: format, frameCount: frameCount)
+        // Per-frame delays: metadata only (no pixel decode), GIFs only — a still or
+        // a multi-page non-GIF carries no animation timing we'd surface.
+        let frameDelays: [Double]? = (frameCount > 1 && format == "gif")
+            ? (0..<frameCount).map { Self.gifDelay(source: source, index: $0) }
+            : nil
+
+        return ImageInspection(pixelWidth: width, pixelHeight: height, format: format, frameCount: frameCount, frameDelays: frameDelays)
+    }
+
+    /// One frame's display duration (seconds) from the GIF metadata. Prefers the
+    /// *unclamped* delay (the file's true value); falls back to the clamped delay
+    /// (which browsers floor to ~0.1s), then 0 when neither is present.
+    private static func gifDelay(source: CGImageSource, index: Int) -> Double {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let gif = props[kCGImagePropertyGIFDictionary] as? [CFString: Any] else {
+            return 0
+        }
+        if let unclamped = gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double, unclamped > 0 {
+            return unclamped
+        }
+        return (gif[kCGImagePropertyGIFDelayTime] as? Double) ?? 0
     }
 
     func encodeFramePNG(url: URL, frameIndex: Int, maxLongEdge: Int) throws -> Data {

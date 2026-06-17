@@ -12,8 +12,9 @@ import Foundation
 ///   others (heic/tiff/bmp) are re-encoded to PNG so the API accepts them.
 /// - Oversized stills are downscaled + re-encoded to PNG.
 /// - **Animated GIFs** are decomposed into a bundle of evenly-sampled PNG frames,
-///   so the model can read them as a time sequence (it can't perceive GIF motion
-///   from a single image).
+///   each tagged with its wall-clock offset from the GIF's frame delays, so the
+///   model reads them as a *timed* sequence (it can't perceive GIF motion — or
+///   pacing — from a single image).
 /// - Decode bombs are rejected by **inspecting dimensions before decoding pixels**.
 struct ImageManager: Sendable {
 
@@ -60,6 +61,10 @@ struct ImageManager: Sendable {
         let data: Data
         let mimeType: String
         let sourceIndex: Int   // frame index in the source (0 for a still image)
+        /// Wall-clock offset of this frame from the animation's start, in seconds
+        /// (the sum of all frame delays before it). `nil` for stills or when the
+        /// GIF carries no timing — gives the model pacing, not just frame order.
+        let timeOffsetSeconds: Double?
     }
 
     struct ImageResult: Sendable {
@@ -71,6 +76,9 @@ struct ImageManager: Sendable {
         let totalFrames: Int       // source frame count (1 for a still image)
         let frames: [Frame]        // 1 for a still, the sampled set for an animated GIF
         let passedThrough: Bool    // still image returned byte-for-byte (no re-encode)
+        /// Full animation duration in seconds (sum of all source frame delays).
+        /// `nil` for stills or when the GIF carries no timing.
+        let totalDurationSeconds: Double?
     }
 
     enum ImageError: Error, CustomStringConvertible {
@@ -139,14 +147,18 @@ struct ImageManager: Sendable {
         // 3a. Animated GIF → sampled PNG frame bundle.
         if ext == "gif", info.frameCount > 1 {
             let indices = Self.sampleIndices(total: info.frameCount, max: config.gifMaxFrames)
+            let delays = info.frameDelays
             let frames = try indices.map { index in
                 Frame(
                     data: try encoder.encodeFramePNG(url: url, frameIndex: index, maxLongEdge: config.gifFrameMaxLongEdge),
                     mimeType: "image/png",
-                    sourceIndex: index
+                    sourceIndex: index,
+                    timeOffsetSeconds: delays.map { Self.cumulativeTime(delays: $0, before: index) }
                 )
             }
-            return result(relativePath, info, bytes, totalFrames: info.frameCount, frames: frames, passedThrough: false)
+            let duration = delays.map { $0.reduce(0, +) }
+            return result(relativePath, info, bytes, totalFrames: info.frameCount, frames: frames,
+                          passedThrough: false, totalDuration: duration)
         }
 
         // 3b. Still image: pass through when API-native and within cap; otherwise
@@ -154,18 +166,18 @@ struct ImageManager: Sendable {
         let longEdge = max(info.pixelWidth, info.pixelHeight)
         if let nativeMime = Self.apiNativeMime[ext], longEdge <= config.maxLongEdge {
             let data = try Data(contentsOf: url)
-            let frame = Frame(data: data, mimeType: nativeMime, sourceIndex: 0)
-            return result(relativePath, info, bytes, totalFrames: 1, frames: [frame], passedThrough: true)
+            let frame = Frame(data: data, mimeType: nativeMime, sourceIndex: 0, timeOffsetSeconds: nil)
+            return result(relativePath, info, bytes, totalFrames: 1, frames: [frame], passedThrough: true, totalDuration: nil)
         } else {
             let png = try encoder.encodeFramePNG(url: url, frameIndex: 0, maxLongEdge: config.maxLongEdge)
-            let frame = Frame(data: png, mimeType: "image/png", sourceIndex: 0)
-            return result(relativePath, info, bytes, totalFrames: 1, frames: [frame], passedThrough: false)
+            let frame = Frame(data: png, mimeType: "image/png", sourceIndex: 0, timeOffsetSeconds: nil)
+            return result(relativePath, info, bytes, totalFrames: 1, frames: [frame], passedThrough: false, totalDuration: nil)
         }
     }
 
     private func result(
         _ relativePath: String, _ info: ImageInspection, _ bytes: Int,
-        totalFrames: Int, frames: [Frame], passedThrough: Bool
+        totalFrames: Int, frames: [Frame], passedThrough: Bool, totalDuration: Double?
     ) -> ImageResult {
         ImageResult(
             relativePath: relativePath,
@@ -175,8 +187,17 @@ struct ImageManager: Sendable {
             originalBytes: bytes,
             totalFrames: totalFrames,
             frames: frames,
-            passedThrough: passedThrough
+            passedThrough: passedThrough,
+            totalDurationSeconds: totalDuration
         )
+    }
+
+    /// Wall-clock start time (seconds) of source frame `index`: the sum of every
+    /// frame delay before it. Frame 0 starts at 0. Clamps to the array bounds so a
+    /// sampled index past the delay list (shouldn't happen) degrades gracefully.
+    static func cumulativeTime(delays: [Double], before index: Int) -> Double {
+        guard index > 0 else { return 0 }
+        return delays.prefix(index).reduce(0, +)
     }
 
     /// Evenly-spaced frame indices (first and last always included).

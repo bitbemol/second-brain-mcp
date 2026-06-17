@@ -10,9 +10,10 @@ import Foundation
 /// claim: the rest of the server (PDFKit, AppKit, the mach RSS guard) is still
 /// macOS-bound.
 protocol ImageEncoding: Sendable {
-    /// Read pixel dimensions, format, and frame count **without decoding pixels**.
-    /// This is the decode-bomb guard: `ImageManager` rejects oversized images
-    /// based on these dimensions before any decode happens.
+    /// Read pixel dimensions, format, frame count, and (for animated GIFs)
+    /// per-frame delays **without decoding pixels** — these come from the image's
+    /// metadata, not its bitmaps. This is the decode-bomb guard: `ImageManager`
+    /// rejects oversized images based on these dimensions before any decode happens.
     func inspect(url: URL) throws -> ImageInspection
 
     /// Decode one frame (0-indexed), downscale so its long edge is at most
@@ -27,4 +28,9 @@ struct ImageInspection: Sendable {
     let pixelHeight: Int
     let format: String   // lowercase extension-style tag, e.g. "png", "gif"
     let frameCount: Int  // >1 for an animated GIF; 1 for a still image
+    /// Per-frame display duration in seconds, one entry per source frame, in order.
+    /// Populated only for animated GIFs; `nil` when timing is unavailable or N/A
+    /// (still images, non-GIF formats). Lets `ImageManager` map a sampled frame to
+    /// its wall-clock offset in the animation.
+    let frameDelays: [Double]?
 }

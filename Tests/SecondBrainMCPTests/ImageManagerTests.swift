@@ -13,8 +13,8 @@ private struct FakeImageEncoder: ImageEncoding {
     let inspection: ImageInspection
     let framePNG: Data
 
-    init(width: Int, height: Int, format: String = "png", frameCount: Int = 1, framePNG: Data = Data([9, 9, 9])) {
-        self.inspection = ImageInspection(pixelWidth: width, pixelHeight: height, format: format, frameCount: frameCount)
+    init(width: Int, height: Int, format: String = "png", frameCount: Int = 1, frameDelays: [Double]? = nil, framePNG: Data = Data([9, 9, 9])) {
+        self.inspection = ImageInspection(pixelWidth: width, pixelHeight: height, format: format, frameCount: frameCount, frameDelays: frameDelays)
         self.framePNG = framePNG
     }
 
@@ -97,6 +97,8 @@ struct ImageManagerPolicyTests {
         #expect(r.passedThrough == true)
         #expect(r.frames.first?.data == bytes)
         #expect(r.frames.first?.mimeType == "image/png")
+        #expect(r.totalDurationSeconds == nil)               // stills carry no timing
+        #expect(r.frames.first?.timeOffsetSeconds == nil)
     }
 
     @Test("Within-cap JPEG passes through with image/jpeg mime")
@@ -150,6 +152,35 @@ struct ImageManagerPolicyTests {
         #expect(r.frames.allSatisfy { $0.mimeType == "image/png" })
         #expect(r.frames.first?.sourceIndex == 0)          // first frame
         #expect(r.frames.last?.sourceIndex == 19)          // last frame
+    }
+
+    @Test("Animated GIF surfaces total duration and per-frame time offsets")
+    func gifTiming() throws {
+        let root = try makeVault()
+        try write(Data([0]), to: "notes/attachments/timed.gif", in: root)
+
+        // 10 frames, 0.1s each → 1.0s total; each sampled frame's offset is index × 0.1.
+        let delays = Array(repeating: 0.1, count: 10)
+        let reader = ImageManager(vaultPath: root, encoder: FakeImageEncoder(width: 200, height: 200, format: "gif", frameCount: 10, frameDelays: delays))
+        let r = try reader.read(relativePath: "notes/attachments/timed.gif")
+
+        #expect(abs((r.totalDurationSeconds ?? -1) - 1.0) < 0.0001)
+        #expect(r.frames.first?.timeOffsetSeconds == 0)    // frame 0 starts at t=0
+        for frame in r.frames {
+            let expected = Double(frame.sourceIndex) * 0.1
+            #expect(abs((frame.timeOffsetSeconds ?? -1) - expected) < 0.0001)
+        }
+    }
+
+    @Test("Animated GIF with no delay metadata leaves timing nil")
+    func gifNoTiming() throws {
+        let root = try makeVault()
+        try write(Data([0]), to: "notes/attachments/untimed.gif", in: root)
+
+        let reader = ImageManager(vaultPath: root, encoder: FakeImageEncoder(width: 200, height: 200, format: "gif", frameCount: 12, frameDelays: nil))
+        let r = try reader.read(relativePath: "notes/attachments/untimed.gif")
+        #expect(r.totalDurationSeconds == nil)
+        #expect(r.frames.allSatisfy { $0.timeOffsetSeconds == nil })
     }
 
     @Test("Single-frame GIF is treated as a still and passes through")
@@ -215,6 +246,15 @@ struct ImageManagerPolicyTests {
         #expect(sampled.last == 49)
         #expect(zip(sampled, sampled.dropFirst()).allSatisfy { $0 < $1 })   // strictly increasing
     }
+
+    @Test("cumulativeTime sums the delays before a frame")
+    func cumulativeTime() {
+        let delays = [0.1, 0.2, 0.3, 0.4]
+        #expect(ImageManager.cumulativeTime(delays: delays, before: 0) == 0)            // first frame
+        #expect(abs(ImageManager.cumulativeTime(delays: delays, before: 2) - 0.3) < 1e-9)  // 0.1 + 0.2
+        #expect(abs(ImageManager.cumulativeTime(delays: delays, before: 4) - 1.0) < 1e-9)  // all of them
+        #expect(abs(ImageManager.cumulativeTime(delays: delays, before: 99) - 1.0) < 1e-9) // clamps past the end
+    }
 }
 
 // MARK: - Real encoder + end-to-end
@@ -231,6 +271,18 @@ struct CoreGraphicsImageEncoderTests {
         #expect(info.pixelHeight == 80)
         #expect(info.format == "png")
         #expect(info.frameCount == 1)
+        #expect(info.frameDelays == nil)                   // a still carries no per-frame timing
+    }
+
+    @Test("inspect reads per-frame delays from a real animated GIF")
+    func inspectGIFDelays() throws {
+        let root = try makeVault()
+        try write(makeGIF(frames: 5, width: 40, height: 40), to: "notes/attachments/delays.gif", in: root)
+        let info = try CoreGraphicsImageEncoder().inspect(url: URL(fileURLWithPath: root + "/notes/attachments/delays.gif"))
+        #expect(info.frameCount == 5)
+        let delays = try #require(info.frameDelays)
+        #expect(delays.count == 5)
+        #expect(delays.allSatisfy { abs($0 - 0.1) < 0.02 })   // makeGIF writes 0.1s/frame
     }
 
     @Test("ImageManager passes a small real PNG through unchanged")
@@ -276,5 +328,11 @@ struct CoreGraphicsImageEncoderTests {
             #expect(frame.mimeType == "image/png")
             #expect(Array(frame.data.prefix(4)) == [0x89, 0x50, 0x4E, 0x47])
         }
+        // 12 frames × 0.1s ≈ 1.2s total; first frame at t=0, offsets non-decreasing.
+        #expect(abs((r.totalDurationSeconds ?? 0) - 1.2) < 0.1)
+        #expect(r.frames.first?.timeOffsetSeconds == 0)
+        let offsets = r.frames.compactMap(\.timeOffsetSeconds)
+        #expect(offsets.count == 8)
+        #expect(zip(offsets, offsets.dropFirst()).allSatisfy { $0 < $1 })   // strictly increasing in time
     }
 }

@@ -1630,13 +1630,15 @@ struct MCPServerSetup {
             if result.totalFrames > 1 {
                 // Animated GIF → time-ordered frame bundle.
                 let indices = result.frames.map { String($0.sourceIndex) }.joined(separator: ", ")
+                let durationStr = result.totalDurationSeconds.map { String(format: ", ~%.1fs long", $0) } ?? ""
                 content.append(.text(text:
-                    "Animated GIF \(result.originalWidth)×\(result.originalHeight), \(sizeStr), \(result.totalFrames) frames total. "
+                    "Animated GIF \(result.originalWidth)×\(result.originalHeight), \(sizeStr), \(result.totalFrames) frames total\(durationStr). "
                     + "Showing \(result.frames.count) frames sampled across the animation (source indices: \(indices)) as PNGs — "
-                    + "read them in order as a time sequence.",
+                    + "read them in order as a time sequence; each frame is labeled with its time offset from the start.",
                     annotations: nil, _meta: nil))
                 for (i, frame) in result.frames.enumerated() {
-                    content.append(.text(text: "Frame \(i + 1) of \(result.frames.count) (source frame \(frame.sourceIndex)):", annotations: nil, _meta: nil))
+                    let timeStr = frame.timeOffsetSeconds.map { String(format: " at t≈%.2fs", $0) } ?? ""
+                    content.append(.text(text: "Frame \(i + 1) of \(result.frames.count) (source frame \(frame.sourceIndex)\(timeStr)):", annotations: nil, _meta: nil))
                     content.append(.image(data: frame.data.base64EncodedString(), mimeType: frame.mimeType, annotations: nil, _meta: nil))
                 }
             } else {
