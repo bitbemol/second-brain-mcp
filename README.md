@@ -182,6 +182,7 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 |------|-------------|
 | `list_canvas` | List canvases with node/edge counts and a per-type breakdown (metadata only) |
 | `read_canvas` | Node/edge summary + raw JSON |
+| `search_canvas` | Literal, case-insensitive keyword search over text-node text and node/group labels; returns matching node ids + snippets (file/link refs are out of scope) |
 | `create_canvas` | Create a validated `.canvas` file |
 | `update_canvas` | Replace an existing canvas's full contents (validated) |
 | `delete_canvas` | Soft-delete to `.trash/` |
@@ -193,7 +194,7 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 | Tool | Description |
 |------|-------------|
 | `list_attachments` | List binary attachments under `notes/` (anything that isn't a `.md` note or `.canvas`) — path, extension, size, and whether `read_image` can open it. Closes the image-discovery gap that `list_notes` leaves. |
-| `read_image` | Read an image (png/jpg/jpeg/gif/webp/heic/heif/tiff/bmp) from `notes/` or `references/` for viewing. Within-cap stills pass through unchanged, oversized ones are downscaled. **Animated GIFs** come back as a bundle of sampled PNG frames so the model can read them as a time sequence. |
+| `read_image` | Read an image (png/jpg/jpeg/gif/webp/heic/heif/tiff/bmp) from `notes/` or `references/` for viewing. Within-cap stills pass through unchanged, oversized ones are downscaled. **Animated GIFs** come back as a bundle of sampled PNG frames, each labeled with its wall-clock offset (read from the GIF's frame delays) plus the total duration, so the model reads them as a *timed* sequence. |
 
 ### References (read-only)
 
