@@ -297,8 +297,28 @@ struct MCPServerSetup {
         ))
 
         tools.append(Tool(
+            name: "search_canvas",
+            description: "Search Obsidian canvas (.canvas) files for a literal, case-insensitive keyword in text-node text and node/group labels. Returns matching canvases with the node id(s) and a snippet per match. Does NOT search file/link node references — use search_notes for note content. Use this to find which canvas mentions a term.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Search term (literal keyword match, case-insensitive)")
+                    ]),
+                    "max_results": .object([
+                        "type": .string("integer"),
+                        "description": .string("Limit results (default: 20)")
+                    ])
+                ]),
+                "required": .array([.string("query")])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
+        tools.append(Tool(
             name: "list_attachments",
-            description: "List binary attachments — any file under notes/ that isn't a note (.md) or canvas (.canvas), e.g. images. Returns path, extension, size, and whether read_image can open it (PNG today). Use this to discover images and other attachments, which list_notes does not show. Filter by directory to scope to a folder. Results sorted newest first.",
+            description: "List binary attachments — any file under notes/ that isn't a note (.md) or canvas (.canvas), e.g. images. Returns path, extension, size, and whether read_image can open it. Use this to discover images and other attachments, which list_notes does not show. Filter by directory to scope to a folder. Results sorted newest first.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -767,6 +787,7 @@ struct MCPServerSetup {
         case "read_image": .read
         case "read_canvas": .read
         case "list_canvas": .read
+        case "search_canvas": .search
         case "list_attachments": .read
         case "create_canvas": .create
         case "update_canvas": .update
@@ -824,6 +845,8 @@ struct MCPServerSetup {
             return await handleReadCanvas(params: params, canvasManager: canvasManager)
         case "list_canvas":
             return await handleListCanvas(params: params, canvasManager: canvasManager)
+        case "search_canvas":
+            return await handleSearchCanvas(params: params, canvasManager: canvasManager)
         case "list_attachments":
             return await handleListAttachments(params: params, attachmentManager: attachmentManager)
         case "create_canvas":
@@ -1694,7 +1717,7 @@ struct MCPServerSetup {
             }
 
             var lines: [String] = [
-                "Found \(items.count) attachment(s) — `readable` = openable with read_image (PNG only for now):",
+                "Found \(items.count) attachment(s) — `readable` = openable with read_image:",
                 ""
             ]
             for item in items {
@@ -1735,6 +1758,39 @@ struct MCPServerSetup {
                 let breakdownStr = breakdown.isEmpty ? "" : " [\(breakdown)]"
                 lines.append("- `\(canvas.relativePath)` — \(canvas.nodeCount) node(s), \(canvas.edgeCount) edge(s)\(breakdownStr)")
                 lines.append("  Modified: \(formatter.string(from: canvas.modifiedDate))")
+            }
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func handleSearchCanvas(
+        params: CallTool.Parameters,
+        canvasManager: CanvasManager
+    ) async -> CallTool.Result {
+        guard let query = params.arguments?["query"]?.stringValue, !query.isEmpty else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: query", annotations: nil, _meta: nil)], isError: true)
+        }
+        let maxResults = params.arguments?["max_results"]?.intValue ?? 20
+
+        do {
+            let results = try await canvasManager.search(query: query, maxResults: maxResults)
+            if results.hits.isEmpty {
+                return CallTool.Result(content: [.text(text: "No canvas nodes found matching '\(query)'.", annotations: nil, _meta: nil)])
+            }
+
+            let header = results.totalMatches > results.hits.count
+                ? "Found \(results.totalMatches) match(es) for '\(query)' (showing first \(results.hits.count)):"
+                : "Found \(results.hits.count) match(es) for '\(query)':"
+            var lines: [String] = [header, ""]
+            var currentPath: String? = nil
+            for hit in results.hits {
+                if hit.relativePath != currentPath {
+                    lines.append("`\(hit.relativePath)`")
+                    currentPath = hit.relativePath
+                }
+                lines.append("  - [\(hit.nodeType)] \(hit.nodeID) (\(hit.field)): \(hit.snippet)")
             }
             return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
         } catch {

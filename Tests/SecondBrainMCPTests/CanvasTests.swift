@@ -266,3 +266,101 @@ struct CanvasListingTests {
         #expect(bad.warning == "file not found")
     }
 }
+
+// MARK: - CanvasManager search
+
+@Suite("CanvasManager — search")
+struct CanvasSearchTests {
+
+    private func makeVault() throws -> String {
+        let root = NSTemporaryDirectory() + "CanvasSearch-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/notes/boards", withIntermediateDirectories: true)
+        return root
+    }
+
+    /// A canvas exercising every node kind: text, group (label), file, link. The
+    /// term "falcon" appears in all four — only the text node and group label
+    /// should be considered in-scope.
+    private func seedCanvas() -> String {
+        """
+        {"nodes":[
+          {"id":"t1","type":"text","x":0,"y":0,"width":200,"height":60,"text":"Roadmap for the Falcon launch"},
+          {"id":"t2","type":"text","x":0,"y":80,"width":200,"height":60,"text":"unrelated note"},
+          {"id":"g1","type":"group","x":0,"y":160,"width":400,"height":200,"label":"Falcon milestones"},
+          {"id":"f1","type":"file","x":0,"y":380,"width":200,"height":60,"file":"notes/falcon-spec.md"},
+          {"id":"l1","type":"link","x":0,"y":460,"width":200,"height":60,"url":"https://falcon.example.com"}
+        ],"edges":[]}
+        """
+    }
+
+    @Test("Matches text-node text and group label, case-insensitively")
+    func matchesTextAndLabel() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        _ = try await mgr.create(relativePath: "notes/boards/board.canvas", json: seedCanvas())
+
+        let r = try await mgr.search(query: "FALCON")            // upper-case query, lower-case content
+        #expect(Set(r.hits.map(\.nodeID)) == ["t1", "g1"])       // text node + group label only
+        #expect(r.hits.contains { $0.nodeID == "t1" && $0.field == "text" })
+        #expect(r.hits.contains { $0.nodeID == "g1" && $0.field == "label" })
+    }
+
+    @Test("File and link node references are out of scope (Tier 2)")
+    func ignoresFileAndLink() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        _ = try await mgr.create(relativePath: "notes/boards/board.canvas", json: seedCanvas())
+
+        // "example" lives only in the link URL; "spec" only in the file path.
+        #expect(try await mgr.search(query: "example").hits.isEmpty)
+        #expect(try await mgr.search(query: "spec").hits.isEmpty)
+    }
+
+    @Test("Snippet carries context around the match")
+    func snippetContext() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        _ = try await mgr.create(relativePath: "notes/boards/board.canvas", json: seedCanvas())
+
+        let hit = try #require(try await mgr.search(query: "roadmap").hits.first { $0.nodeID == "t1" })
+        #expect(hit.snippet.lowercased().contains("roadmap for the falcon launch"))
+    }
+
+    @Test("max_results caps hits but totalMatches reports the true count")
+    func capping() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        let json = """
+        {"nodes":[
+          {"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"match one"},
+          {"id":"b","type":"text","x":0,"y":0,"width":1,"height":1,"text":"match two"},
+          {"id":"c","type":"text","x":0,"y":0,"width":1,"height":1,"text":"match three"}
+        ],"edges":[]}
+        """
+        _ = try await mgr.create(relativePath: "notes/boards/many.canvas", json: json)
+        let r = try await mgr.search(query: "match", maxResults: 2)
+        #expect(r.hits.count == 2)
+        #expect(r.totalMatches == 3)
+    }
+
+    @Test("No match and empty query both return no hits")
+    func emptyCases() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        _ = try await mgr.create(relativePath: "notes/boards/board.canvas", json: seedCanvas())
+        #expect(try await mgr.search(query: "zzzznope").hits.isEmpty)
+        #expect(try await mgr.search(query: "").hits.isEmpty)
+    }
+
+    @Test("Results span multiple canvases, ordered by path")
+    func multipleCanvases() async throws {
+        let root = try makeVault()
+        let mgr = CanvasManager(vaultPath: root)
+        _ = try await mgr.create(relativePath: "notes/boards/b.canvas",
+                                 json: #"{"nodes":[{"id":"n","type":"text","x":0,"y":0,"width":1,"height":1,"text":"alpha here"}],"edges":[]}"#)
+        _ = try await mgr.create(relativePath: "notes/a.canvas",
+                                 json: #"{"nodes":[{"id":"m","type":"text","x":0,"y":0,"width":1,"height":1,"text":"alpha too"}],"edges":[]}"#)
+        let r = try await mgr.search(query: "alpha")
+        #expect(r.hits.map(\.relativePath) == ["notes/a.canvas", "notes/boards/b.canvas"])
+    }
+}

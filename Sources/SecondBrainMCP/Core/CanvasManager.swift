@@ -52,6 +52,20 @@ actor CanvasManager {
         let modifiedDate: Date
     }
 
+    /// One node-level match from `search`.
+    struct SearchHit: Sendable {
+        let relativePath: String   // canvas the node lives in
+        let nodeID: String         // matching node's id
+        let nodeType: String       // node type, e.g. "text" or "group"
+        let field: String          // which field matched: "text" or "label"
+        let snippet: String        // context window around the match
+    }
+
+    struct SearchResults: Sendable {
+        let hits: [SearchHit]      // capped to maxResults
+        let totalMatches: Int      // total found before capping (for truncation notices)
+    }
+
     init(vaultPath: String) {
         self.vaultPath = vaultPath
     }
@@ -113,6 +127,38 @@ actor CanvasManager {
             ))
         }
         return results.sorted { $0.modifiedDate > $1.modifiedDate }
+    }
+
+    /// Search canvases for a literal, case-insensitive substring in node `text`
+    /// (text nodes) and `label` (group nodes, and any node carrying a label).
+    /// `file`/`link` node references are deliberately NOT searched — resolving an
+    /// embed or URL to a vault target is Tier 2. Canvases are parsed structurally
+    /// (not raw-JSON grepped) so node ids and snippets are clean, free of brace
+    /// and coordinate noise. Results are ordered by canvas path, then node order.
+    func search(query: String, maxResults: Int = 20, directory: String? = nil) throws -> SearchResults {
+        let needle = query.lowercased()
+        guard !needle.isEmpty else { return SearchResults(hits: [], totalMatches: 0) }
+
+        let entries: [VaultEnumerator.Entry]
+        do {
+            entries = try VaultEnumerator.files(
+                vaultPath: vaultPath,
+                directory: directory,
+                defaultDir: "notes",
+                recursive: true,
+                include: { $0 == "canvas" }
+            )
+        } catch {
+            throw CanvasManagerError.invalidPath("\(error)")
+        }
+
+        var hits: [SearchHit] = []
+        for entry in entries.sorted(by: { $0.relativePath < $1.relativePath }) {
+            guard let content = try? String(contentsOfFile: entry.fullPath, encoding: .utf8) else { continue }
+            hits.append(contentsOf: nodeMatches(in: content, path: entry.relativePath, needle: needle))
+        }
+
+        return SearchResults(hits: Array(hits.prefix(maxResults)), totalMatches: hits.count)
     }
 
     // MARK: - Write
@@ -238,6 +284,43 @@ actor CanvasManager {
             .map { (type: $0.key, count: $0.value) }
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.type < $1.type }
         return (nodes.count, edges.count, breakdown)
+    }
+
+    /// Per-node matches within one canvas (best-effort parse — non-canvas content
+    /// yields nothing). One hit per node: `text` is checked first, then `label`,
+    /// so a node never produces two hits. File/link refs are never inspected.
+    private func nodeMatches(in json: String, path: String, needle: String) -> [SearchHit] {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let nodes = root["nodes"] as? [[String: Any]] else {
+            return []
+        }
+        var hits: [SearchHit] = []
+        for node in nodes {
+            guard let id = node["id"] as? String, let type = node["type"] as? String else { continue }
+            if let text = node["text"] as? String, let snip = snippet(text, around: needle) {
+                hits.append(SearchHit(relativePath: path, nodeID: id, nodeType: type, field: "text", snippet: snip))
+            } else if let label = node["label"] as? String, let snip = snippet(label, around: needle) {
+                hits.append(SearchHit(relativePath: path, nodeID: id, nodeType: type, field: "label", snippet: snip))
+            }
+        }
+        return hits
+    }
+
+    /// A trimmed context window around the first case-insensitive occurrence of
+    /// `needle`, with newlines flattened to spaces and ellipses on truncation.
+    /// Returns nil when `needle` isn't present.
+    private func snippet(_ haystack: String, around needle: String, context: Int = 40) -> String? {
+        let flat = haystack
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        guard let match = flat.range(of: needle, options: .caseInsensitive) else { return nil }
+        let lower = flat.index(match.lowerBound, offsetBy: -context, limitedBy: flat.startIndex) ?? flat.startIndex
+        let upper = flat.index(match.upperBound, offsetBy: context, limitedBy: flat.endIndex) ?? flat.endIndex
+        var snip = String(flat[lower..<upper]).trimmingCharacters(in: .whitespaces)
+        if lower > flat.startIndex { snip = "…" + snip }
+        if upper < flat.endIndex { snip = snip + "…" }
+        return snip
     }
 
     private func label(for node: [String: Any], type: String) -> String {
