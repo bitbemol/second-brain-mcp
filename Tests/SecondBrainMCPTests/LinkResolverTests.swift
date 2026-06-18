@@ -139,6 +139,19 @@ struct LinkResolverTests {
         #expect(try resolver.backlinks(to: "notes/y/_attachments/dup.png").map(\.notePath) == ["notes/y/note.md"])
     }
 
+    @Test("Backlinks detect standard Markdown image embeds, not just wikilinks")
+    func backlinksMarkdownEmbed() throws {
+        let root = try makeVault()
+        try write("bare ![alt](diagram.png) embed", "notes/guide.md", in: root)         // basename form
+        try write("pathy ![d](sub/diagram.png) embed", "notes/deep/other.md", in: root)  // path form
+        try write("img", "notes/sub/diagram.png", in: root)
+
+        let b = try LinkResolver(vaultPath: root).backlinks(to: "notes/sub/diagram.png")
+        #expect(b.map(\.notePath) == ["notes/deep/other.md", "notes/guide.md"])
+        #expect(b.allSatisfy { $0.isEmbed })
+        #expect(b.contains { $0.raw == "![alt](diagram.png)" })
+    }
+
     @Test("Backlinks accept a bare basename target")
     func backlinksByBasename() throws {
         let root = try makeVault()
