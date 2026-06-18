@@ -40,6 +40,7 @@ struct MCPServerSetup {
         let imageManager = ImageManager(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
         let canvasManager = CanvasManager(vaultPath: config.vaultPath)
         let attachmentManager = AttachmentManager(vaultPath: config.vaultPath)
+        let linkResolver = LinkResolver(vaultPath: config.vaultPath)
 
         // ── Register handlers FIRST (before index is built) ──
         // This allows the server to accept connections immediately.
@@ -59,7 +60,8 @@ struct MCPServerSetup {
                 auditLogger: auditLogger,
                 imageManager: imageManager,
                 canvasManager: canvasManager,
-                attachmentManager: attachmentManager
+                attachmentManager: attachmentManager,
+                linkResolver: linkResolver
             )
         }
 
@@ -331,6 +333,42 @@ struct MCPServerSetup {
                         "description": .string("Include subdirectories (default: true)")
                     ])
                 ])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
+        tools.append(Tool(
+            name: "resolve_link",
+            description: "Resolve an Obsidian link or embed target to its actual vault path. Like Obsidian, a bare basename resolves vault-wide (e.g. an embed `![[screenshot.png]]` written in one folder can live in a different folder's _attachments). Accepts the target bare or wrapped (`foo.png`, `[[Some Note]]`, `![[img.png|alt]]`); an extension-less target resolves to a `.md` note. Returns the matching path(s), best match first; multiple means the basename is ambiguous. Use this to turn an embed you saw in a note into a path you can read_image / read_note.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "link": .object([
+                        "type": .string("string"),
+                        "description": .string("The link/embed target, e.g. \"screenshot.png\", \"[[Some Note]]\", or \"![[diagram.png|alt]]\"")
+                    ]),
+                    "from": .object([
+                        "type": .string("string"),
+                        "description": .string("Optional note path the link appears in (e.g. notes/apple/uikit/foo.md); used to break ambiguous basename ties by proximity")
+                    ])
+                ]),
+                "required": .array([.string("link")])
+            ]),
+            annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ))
+
+        tools.append(Tool(
+            name: "find_backlinks",
+            description: "Find every note that links to or embeds a given file — the reverse of resolve_link. Especially useful for non-note files: pass an image/attachment path (or bare basename) to see which notes embed it. Each candidate link is resolved before counting, so a basename shared by two files won't produce false hits. Accepts a vault-relative path (e.g. notes/apple/_attachments/foo.png) or a basename (foo.png).",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("The file to find references to — a vault-relative path or a bare basename")
+                    ])
+                ]),
+                "required": .array([.string("path")])
             ]),
             annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         ))
@@ -762,7 +800,8 @@ struct MCPServerSetup {
         auditLogger: AuditLogger,
         imageManager: ImageManager,
         canvasManager: CanvasManager,
-        attachmentManager: AttachmentManager
+        attachmentManager: AttachmentManager,
+        linkResolver: LinkResolver
     ) async throws -> CallTool.Result {
         // Note: searchEngine is a value type (struct), passed through for search handlers.
         // Audit log every tool call
@@ -789,6 +828,8 @@ struct MCPServerSetup {
         case "list_canvas": .read
         case "search_canvas": .search
         case "list_attachments": .read
+        case "resolve_link": .read
+        case "find_backlinks": .read
         case "create_canvas": .create
         case "update_canvas": .update
         case "delete_canvas": .delete
@@ -849,6 +890,10 @@ struct MCPServerSetup {
             return await handleSearchCanvas(params: params, canvasManager: canvasManager)
         case "list_attachments":
             return await handleListAttachments(params: params, attachmentManager: attachmentManager)
+        case "resolve_link":
+            return await handleResolveLink(params: params, linkResolver: linkResolver)
+        case "find_backlinks":
+            return await handleFindBacklinks(params: params, linkResolver: linkResolver)
         case "create_canvas":
             return await handleCreateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
         case "update_canvas":
@@ -1724,6 +1769,57 @@ struct MCPServerSetup {
                 let extStr = item.ext.isEmpty ? "(no ext)" : item.ext
                 let readableStr = item.readable ? "readable" : "unreadable"
                 lines.append("- `\(item.relativePath)` — \(extStr) · \(formatBytes(item.sizeBytes)) · \(readableStr)")
+            }
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    // MARK: - Link Handlers (Tier 2)
+
+    private static func handleResolveLink(
+        params: CallTool.Parameters,
+        linkResolver: LinkResolver
+    ) async -> CallTool.Result {
+        guard let link = params.arguments?["link"]?.stringValue, !link.isEmpty else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: link", annotations: nil, _meta: nil)], isError: true)
+        }
+        let from = params.arguments?["from"]?.stringValue
+
+        do {
+            let r = try linkResolver.resolve(link: link, from: from)
+            let kind = r.isEmbed ? "embed" : "link"
+            if r.matches.isEmpty {
+                return CallTool.Result(content: [.text(text: "No vault file resolves \(kind) '\(r.target)'.", annotations: nil, _meta: nil)])
+            }
+            if r.matches.count == 1 {
+                return CallTool.Result(content: [.text(text: "\(kind) '\(r.target)' → `\(r.matches[0])`", annotations: nil, _meta: nil)])
+            }
+            var lines = ["\(kind) '\(r.target)' is ambiguous — \(r.matches.count) candidates (best match first):"]
+            for path in r.matches { lines.append("  - `\(path)`") }
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func handleFindBacklinks(
+        params: CallTool.Parameters,
+        linkResolver: LinkResolver
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue, !path.isEmpty else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            let backlinks = try linkResolver.backlinks(to: path)
+            if backlinks.isEmpty {
+                return CallTool.Result(content: [.text(text: "No notes reference '\(path)'.", annotations: nil, _meta: nil)])
+            }
+            var lines = ["\(backlinks.count) note(s) reference '\(path)':", ""]
+            for b in backlinks {
+                lines.append("- `\(b.notePath)` \(b.isEmbed ? "(embed)" : "(link)"): \(b.raw)")
             }
             return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
         } catch {
