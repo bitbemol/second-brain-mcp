@@ -196,6 +196,15 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 | `list_attachments` | List binary attachments under `notes/` (anything that isn't a `.md` note or `.canvas`) — path, extension, size, and whether `read_image` can open it. Closes the image-discovery gap that `list_notes` leaves. |
 | `read_image` | Read an image (png/jpg/jpeg/gif/webp/heic/heif/tiff/bmp) from `notes/` or `references/` for viewing. Within-cap stills pass through unchanged, oversized ones are downscaled. **Animated GIFs** come back as a bundle of sampled PNG frames, each labeled with its wall-clock offset (read from the GIF's frame delays) plus the total duration, so the model reads them as a *timed* sequence. |
 
+### Links & backlinks
+
+Obsidian resolves a `[[wikilink]]` / `![[embed]]` by **basename across the whole vault**, so an embed written in one folder can point to a file in another (e.g. `![[screenshot.png]]` in `apple/uikit/` → `apple/_attachments/screenshot.png`). These tools expose that link graph.
+
+| Tool | Description |
+|------|-------------|
+| `resolve_link` | Resolve a link/embed target to its actual vault path. Bare basenames resolve vault-wide; extension-less targets imply a `.md` note; path-qualified targets match by path; ambiguous basenames return all candidates (best first, optionally disambiguated by the `from` note). Accepts the target bare or wrapped (`foo.png`, `[[Note]]`, `![[img.png\|alt]]`). |
+| `find_backlinks` | The reverse: which notes link to or embed a given file. Especially useful for non-note files — pass an image/attachment path or basename. Each link is resolved before counting, so a basename shared by two files won't produce false hits. |
+
 ### References (read-only)
 
 | Tool | Description |
