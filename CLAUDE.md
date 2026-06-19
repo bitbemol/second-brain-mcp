@@ -146,6 +146,19 @@ Commit messages and refs are sanitized to a safe character allowlist.
 
 The *why* behind the structure — follow these when adding code:
 
+- **Validate at ingress; own everything inside; never mutate what's outside.** This is the
+  load-bearing boundary that makes the tools safe to hand an autonomous agent. Data enters *only*
+  through a gate that **accepts or rejects by form** — path validation, canvas JSON decode, image
+  decode — never by patching. Once inside the vault it's trusted and ours, so full CRUD applies
+  (create / update / move / soft-delete, all recoverable). But the server's **entire write/delete
+  footprint is its own domain — the vault plus its internal data dir — and nothing else.** It freely
+  *reads* external things (the `references/` PDFs, a source image for `add_image`) but **never writes,
+  moves, or deletes a file it doesn't own.** The worst a hijacked tool call can do is be rejected at
+  the gate or touch *recoverable* vault state — never harm the user's wider filesystem. So: no tool
+  writes outside `notes/`; `add_image` reads its source and never removes it; deletion of imported
+  content is an *in-domain* soft-delete (`delete_attachment` → `.trash/`). **Don't add a tool that
+  mutates anything outside this domain** — if a workflow seems to need it, that cleanup belongs to
+  whoever owns the file, not to this server.
 - **Reject, don't sanitize.** Hostile input (bad paths, weird refs) is thrown, never "fixed";
   sanitization is where security bugs hide. The lone exception is git commit messages/refs, filtered
   to an allowlist *because* they're already inside the trust boundary.
