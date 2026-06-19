@@ -76,7 +76,7 @@ struct ImageImporterTests {
         #expect(Array((try Data(contentsOf: URL(fileURLWithPath: root + "/notes/assets/img.png"))).prefix(4)) == [0x89, 0x50, 0x4E, 0x47])
     }
 
-    @Test("Imports a JPEG, re-encodes to PNG, and deletes the source when asked")
+    @Test("Imports a JPEG, re-encodes to PNG, and trashes the source when asked")
     func importJPEGMove() async throws {
         let root = try makeVault()
         let src = srcPath("photo.jpg")

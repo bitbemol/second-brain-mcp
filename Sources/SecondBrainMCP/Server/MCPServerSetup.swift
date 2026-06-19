@@ -621,7 +621,7 @@ struct MCPServerSetup {
                         ]),
                         "delete_source": .object([
                             "type": .string("boolean"),
-                            "description": .string("Remove the source file after a successful import (default: false = copy, leave the source in place).")
+                            "description": .string("Move the source file to the Trash after a successful import (recoverable; default: false = copy, leave the source in place).")
                         ])
                     ]),
                     "required": .array([.string("source"), .string("destination")])
@@ -2012,13 +2012,24 @@ struct MCPServerSetup {
         let deleteSource = params.arguments?["delete_source"]?.boolValue ?? false
 
         do {
-            let r = try await imageImporter.add(source: source, destination: destination, deleteSource: deleteSource)
+            // Timeout protection: a crafted/corrupt source could hang the decoder.
+            // Race the work against a deadline, same pattern as handleReadImage.
+            let r = try await withThrowingTaskGroup(of: ImageImporter.ImportResult.self) { group in
+                group.addTask { try await imageImporter.add(source: source, destination: destination, deleteSource: deleteSource) }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(30))
+                    throw MCPError.internalError("Timeout: image import took longer than 30 seconds to process. The source may be corrupt.")
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
             if let git = gitManager {
                 try? await git.commitChange(files: [r.destination], message: "[SecondBrainMCP] Added image: \(r.destination)")
             }
             var msg = "Added image → `\(r.destination)` (\(r.sourceFormat.uppercased()) \(r.width)×\(r.height) re-encoded to PNG, \(formatBytes(r.bytesWritten)))"
             if deleteSource {
-                msg += r.sourceDeleted ? "; source deleted" : "; source NOT deleted (removal failed — file kept)"
+                msg += r.sourceDeleted ? "; source moved to Trash" : "; source NOT removed (trash failed — file kept)"
             }
             if let note = r.note { msg += "\n⚠ \(note)" }
             return CallTool.Result(content: [.text(text: msg, annotations: nil, _meta: nil)])

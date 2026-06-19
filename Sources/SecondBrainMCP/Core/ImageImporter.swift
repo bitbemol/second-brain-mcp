@@ -147,10 +147,12 @@ actor ImageImporter {
         }
 
         // 6. Optionally remove the source (best-effort; import already succeeded).
+        //    Soft-delete: move to the system Trash (recoverable) rather than unlink,
+        //    consistent with the vault's "soft deletes only" rule for user content.
         var sourceDeleted = false
         if deleteSource {
             do {
-                try FileManager.default.removeItem(atPath: src)
+                try FileManager.default.trashItem(at: URL(fileURLWithPath: src), resultingItemURL: nil)
                 sourceDeleted = true
             } catch {
                 sourceDeleted = false
