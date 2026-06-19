@@ -20,6 +20,7 @@ actor ImageImporter {
         case invalidDestination(String)
         case sourceNotFound(String)
         case sourceNotAFile(String)
+        case sourceInsideVault(String)
         case sourceTooLarge(bytes: Int, limit: Int)
         case notAnImage(String)
         case unsupportedFormat(String)
@@ -32,6 +33,7 @@ actor ImageImporter {
             case .invalidDestination(let reason): return "Invalid destination: \(reason)"
             case .sourceNotFound(let path): return "Source file not found: \(path)"
             case .sourceNotAFile(let path): return "Source is not a regular file: \(path)"
+            case .sourceInsideVault(let path): return "Source is inside the vault — add_image imports external files only: \(path)"
             case .sourceTooLarge(let bytes, let limit): return "Source image is too large: \(bytes) bytes (limit \(limit))"
             case .notAnImage(let path): return "Source is not a readable image: \(path)"
             case .unsupportedFormat(let fmt): return "Unsupported image format: \(fmt)"
@@ -83,19 +85,28 @@ actor ImageImporter {
             throw ImageImporterError.destinationExists(finalRel)
         }
 
-        // 2. Source (external) — exists, is a regular file, within the size cap.
-        let src = source.trimmingCharacters(in: .whitespaces)
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: src, isDirectory: &isDir) else {
+        // 2. Source (external). Canonicalize FIRST — resolve symlinks so every check
+        //    below applies to the *real* target, not a symlink that could point at a
+        //    file past the size cap, at a device/FIFO, or back inside the vault.
+        let src = URL(fileURLWithPath: source.trimmingCharacters(in: .whitespaces)).resolvingSymlinksInPath().path
+        guard FileManager.default.fileExists(atPath: src) else {
             throw ImageImporterError.sourceNotFound(source)
         }
-        guard !isDir.boolValue else {
+        let attrs = try FileManager.default.attributesOfItem(atPath: src)
+        // Must be a regular file — rejects directories, FIFOs, sockets, and devices.
+        // (A FIFO source would otherwise block the decoder and stall the actor.)
+        guard (attrs[.type] as? FileAttributeType) == .typeRegular else {
             throw ImageImporterError.sourceNotAFile(source)
         }
-        let attrs = try FileManager.default.attributesOfItem(atPath: src)
+        // Size cap on the *resolved* target (a symlink stats tiny, hiding a huge target).
         let bytes = (attrs[.size] as? Int) ?? 0
         guard bytes <= config.maxFileBytes else {
             throw ImageImporterError.sourceTooLarge(bytes: bytes, limit: config.maxFileBytes)
+        }
+        // add_image is for EXTERNAL files. Refuse a source inside the vault: otherwise
+        // delete_source would hard-delete vault content, bypassing soft-delete (Rule 5).
+        guard !Self.isInsideVault(src, vaultPath: vaultPath) else {
+            throw ImageImporterError.sourceInsideVault(source)
         }
 
         // 3. Prove it's a real, supported image WITHOUT decoding pixels, then bound
@@ -156,6 +167,15 @@ actor ImageImporter {
             sourceDeleted: sourceDeleted,
             note: note
         )
+    }
+
+    /// Whether `path` (already symlink-resolved) sits within the vault root. Both
+    /// sides are canonicalized and compared with a trailing-slash prefix so
+    /// `/vault-evil` doesn't count as inside `/vault`.
+    static func isInsideVault(_ path: String, vaultPath: String) -> Bool {
+        let root = URL(fileURLWithPath: vaultPath).resolvingSymlinksInPath().path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return path == root || path.hasPrefix(prefix)
     }
 
     /// We always store PNG, so force a `.png` extension on the destination

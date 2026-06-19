@@ -168,4 +168,68 @@ struct ImageImporterTests {
             try await importer.add(source: srcPath("nope.png"), destination: "notes/x.png", deleteSource: false)
         }
     }
+
+    // MARK: - Source hardening (adversarial)
+
+    @Test("A non-regular-file source (directory) is rejected")
+    func rejectsNonRegularFile() async throws {
+        let root = try makeVault()
+        let dir = srcPath("a-dir")
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
+        await #expect(throws: ImageImporter.ImageImporterError.self) {
+            try await importer.add(source: dir, destination: "notes/x.png", deleteSource: false)
+        }
+    }
+
+    @Test("Size cap applies to a symlink's target, not the symlink itself")
+    func symlinkSizeCapFollowsTarget() async throws {
+        let root = try makeVault()
+        let real = srcPath("big.bin")
+        try Data(count: 2000).write(to: URL(fileURLWithPath: real))   // 2 KB target
+        let link = srcPath("link.png")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+
+        // Cap below the target but well above the symlink's own (~path-length) size.
+        let tight = ImageManager.Config(maxLongEdge: 2576, maxFileBytes: 1000, maxMegapixels: 50, gifMaxFrames: 8, gifFrameMaxLongEdge: 1280)
+        let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder(), config: tight)
+        do {
+            _ = try await importer.add(source: link, destination: "notes/x.png", deleteSource: false)
+            Issue.record("expected the import to be rejected for size")
+        } catch let e as ImageImporter.ImageImporterError {
+            // Must be the size cap (proves we stat the 2 KB target, not the tiny symlink).
+            guard case .sourceTooLarge = e else {
+                Issue.record("expected sourceTooLarge, got: \(e)")
+                return
+            }
+        }
+    }
+
+    @Test("A symlink to a real image still imports (symlinks are followed)")
+    func symlinkSourceWorks() async throws {
+        let root = try makeVault()
+        let real = srcPath("real.png")
+        try makePNG(width: 30, height: 30).write(to: URL(fileURLWithPath: real))
+        let link = srcPath("alias.png")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+
+        let r = try await ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
+            .add(source: link, destination: "notes/from-link.png", deleteSource: false)
+        #expect(r.width == 30 && r.height == 30)
+        #expect(exists(root + "/notes/from-link.png"))
+    }
+
+    @Test("A source inside the vault is rejected and never deleted (no soft-delete bypass)")
+    func rejectsInVaultSource() async throws {
+        let root = try makeVault()
+        try FileManager.default.createDirectory(atPath: root + "/notes/_attachments", withIntermediateDirectories: true)
+        let inVault = root + "/notes/_attachments/existing.png"
+        try makePNG(width: 20, height: 20).write(to: URL(fileURLWithPath: inVault))
+
+        let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
+        await #expect(throws: ImageImporter.ImageImporterError.self) {
+            try await importer.add(source: inVault, destination: "notes/copy.png", deleteSource: true)
+        }
+        #expect(exists(inVault))   // vault content untouched — not hard-deleted
+    }
 }
