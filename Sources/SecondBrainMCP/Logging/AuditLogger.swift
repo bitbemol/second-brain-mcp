@@ -24,6 +24,18 @@ actor AuditLogger {
         case searchRef = "SEARCH_REF"
         case listRef = "LIST_REF"
         case metadataRef = "META_REF"
+
+        /// True for operations that mutate the vault. Used to enforce `--read-only`
+        /// at dispatch — otherwise read-only only *hides* write tools from
+        /// ListTools, and a client could still invoke one by name.
+        var isWrite: Bool {
+            switch self {
+            case .create, .update, .delete, .move:
+                return true
+            case .read, .search, .readRef, .searchRef, .listRef, .metadataRef:
+                return false
+            }
+        }
     }
 
     /// Log an operation with optional details.

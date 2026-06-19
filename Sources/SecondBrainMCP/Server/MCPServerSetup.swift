@@ -869,6 +869,17 @@ struct MCPServerSetup {
             await auditLogger.log(operation: op, path: path, details: params.name)
         }
 
+        // Enforce --read-only at dispatch, not just by hiding tools from ListTools:
+        // the MCP protocol lets a client call any tool by name, so a write tool that
+        // was omitted from the list would otherwise still execute here. The attempt
+        // is audited above before being rejected.
+        if config.readOnly, auditOp?.isWrite == true {
+            return CallTool.Result(
+                content: [.text(text: "Server is running in read-only mode; '\(params.name)' is not permitted.", annotations: nil, _meta: nil)],
+                isError: true
+            )
+        }
+
         switch params.name {
         // Note tools
         case "read_note":

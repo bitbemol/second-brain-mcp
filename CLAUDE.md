@@ -175,9 +175,12 @@ A tool is wired across four spots in `MCPServerSetup.swift` — miss one and it 
 `foo_note`:
 
 1. **`buildToolList()`** — append a `Tool(...)` with `inputSchema` and `annotations`. If it writes,
-   put it inside the `if !config.readOnly { }` block so read-only mode hides it.
+   put it inside the `if !config.readOnly { }` block so read-only mode hides it from the list.
 2. **`handleToolCall()`** — add the name→`AuditLogger.Operation` mapping in the `auditOp` switch,
-   AND a `case "foo_note":` in the dispatch switch.
+   AND a `case "foo_note":` in the dispatch switch. **Get the `auditOp` right for writes**
+   (`.create`/`.update`/`.delete`/`.move`): hiding a tool from `ListTools` does **not** stop a client
+   from calling it by name, so `--read-only` is *enforced* at dispatch by rejecting any op whose
+   `auditOp.isWrite` is true. A write tool mapped to a read op would execute in read-only mode.
 3. **Write `handleFooNote(params:...) -> CallTool.Result`** — `guard` each required param (return an
    `isError` result, don't throw), call the manager, format the output.
 4. **Writes only:** trigger the matching `GitManager` commit (`commitChange` / `commitMoves` /
