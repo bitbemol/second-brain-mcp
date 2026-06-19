@@ -626,7 +626,8 @@ struct MCPServerSetup {
                     ]),
                     "required": .array([.string("source"), .string("destination")])
                 ]),
-                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+                // destructiveHint: delete_source can irreversibly remove the source file.
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false)
             ))
         }
 
