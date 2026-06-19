@@ -607,13 +607,13 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "delete_attachment",
-                description: "Soft-delete a binary attachment — an image or other non-note/non-canvas file under notes/ — by moving it to .trash/. Recoverable, not permanently deleted. Use this to remove an imported image you no longer want. For notes use delete_note; for canvases use delete_canvas. Git auto-commits the deletion.",
+                description: "Soft-delete a binary attachment — ANY file under notes/ that isn't a note (.md) or canvas (.canvas): images, PDFs, CSVs, etc. — by moving it to .trash/. Recoverable, not permanently deleted. Pass the attachment's vault path (get it from list_attachments). For notes use delete_note; for canvases use delete_canvas. Git auto-commits the deletion.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "path": .object([
                             "type": .string("string"),
-                            "description": .string("Relative path to the attachment (e.g. notes/apple/_attachments/bug-repro.png)")
+                            "description": .string("Relative path to the attachment, e.g. notes/apple/_attachments/bug-repro.png (from list_attachments)")
                         ])
                     ]),
                     "required": .array([.string("path")])
