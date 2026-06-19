@@ -195,6 +195,7 @@ Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `
 |------|-------------|
 | `list_attachments` | List binary attachments under `notes/` (anything that isn't a `.md` note or `.canvas`) — path, extension, size, and whether `read_image` can open it. Closes the image-discovery gap that `list_notes` leaves. |
 | `read_image` | Read an image (png/jpg/jpeg/gif/webp/heic/heif/tiff/bmp) from `notes/` or `references/` for viewing. Within-cap stills pass through unchanged, oversized ones are downscaled. **Animated GIFs** come back as a bundle of sampled PNG frames, each labeled with its wall-clock offset (read from the GIF's frame delays) plus the total duration, so the model reads them as a *timed* sequence. |
+| `add_image` | Import an image from a path on disk into the vault. The file is validated as a real image and **re-encoded to a clean PNG** (EXIF, trailing bytes, and any non-image payload are stripped; non-images are rejected), then written under `notes/` and git-committed. Optional `delete_source` removes the original. Useful for filing bug-repro/test screenshots an agent produced — then `read_image` or embed the returned path. *(write tool; hidden in `--read-only`)* |
 
 ### Links & backlinks
 

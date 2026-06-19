@@ -66,7 +66,8 @@ Sources/SecondBrainMCP/
 │   ├── CanvasManager.swift     # actor — sandboxed .canvas CRUD + list + search (notes/, soft-delete, git)
 │   ├── LinkResolver.swift      # Sendable struct — resolve [[wikilinks]]/embeds by basename + backlinks (on-demand walk)
 │   ├── CanvasModel.swift       # enum/static — JSON Canvas 1.0 validation (validate, never re-serialize)
-│   ├── ImageManager.swift       # Sendable struct — PNG read policy (caps, pass-through vs downscale, bomb guard)
+│   ├── ImageManager.swift       # Sendable struct — image read policy (caps, pass-through vs downscale, bomb guard)
+│   ├── ImageImporter.swift      # actor — import an external image into notes/ (validate + re-encode to clean PNG, git)
 │   ├── ImageEncoding.swift     # protocol — platform seam for image inspect/encode
 │   ├── CoreGraphicsImageEncoder.swift # macOS ImageIO impl of ImageEncoding (#if canImport(ImageIO))
 │   └── DataPaths.swift         # internal data path resolution (see "Where data lives")
@@ -74,10 +75,10 @@ Sources/SecondBrainMCP/
 
 Tests/SecondBrainMCPTests/      # PathValidator (exhaustive — the security backbone),
                                 # VaultManager, MarkdownParser, SearchEngine, GitManager,
-                                # Canvas (model + manager), ImageManager (+ encoder), LinkResolver.
+                                # Canvas (model + manager), ImageManager (+ encoder), LinkResolver, ImageImporter.
 ```
 
-**Concurrency:** actors for mutable state + I/O (VaultManager, GitManager, AuditLogger);
+**Concurrency:** actors for mutable state + I/O (VaultManager, GitManager, AuditLogger, ImageImporter);
 Sendable structs for stateless concurrent work (ReferenceManager, SearchEngine, LinkResolver, ServerConfig);
 structs/enum with only static methods for pure logic (PathValidator, MarkdownParser,
 PDFPageRenderer, PDFTextExtractor, ReferenceCache). No data races by construction.
@@ -241,4 +242,5 @@ Server logs (stderr) are captured by Claude Desktop at
 - **`read_image` transforms only when it must.** A still within the model's native resolution (long edge ≤ 2576px) whose format the API accepts natively (png/jpeg/gif/webp) is passed through **byte-for-byte** with its own mime type — re-encoding does nothing for readability, the only reason to transform is size. Oversized stills, and formats the API won't accept (heic/tiff/bmp), are re-encoded to PNG. The **decode-bomb guard is `ImageEncoding.inspect`**: it reads dimensions + frame count *without* decoding, and `ImageManager` rejects >50 MP before any decode. Keep that order — inspect, reject, only then decode.
 - **Animated GIFs return a frame *bundle*, not one image.** The model can't perceive GIF motion from a single image, so `ImageManager` samples up to 8 evenly-spaced frames (first + last included; `sampleIndices`), re-encodes each to PNG, and `read_image` returns them as a time-ordered sequence. A single-frame GIF is a still. `ImageResult.frames` is therefore a list (1 for stills, N for animated GIFs). **Each frame also carries its wall-clock offset** (`Frame.timeOffsetSeconds`), with the total in `ImageResult.totalDurationSeconds` — both nil for stills or a GIF with no delay metadata. The delays come from `ImageInspection.frameDelays` (read in `inspect`, **metadata only — no pixel decode**, so the bomb guard is untouched); `ImageManager.cumulativeTime` does the summing. A live test confirmed the model could read frame *order* without these but not elapsed *time* — that's why they exist.
 - **`ImageManager.supportedExtensions` is the single source of truth** for which formats `read_image` opens — `AttachmentManager`'s `readable` flag reads it, so the two never drift. Widen formats there, not in two places. SVG is excluded (XXE).
+- **`add_image` is the *only* tool that reads a path *outside* the vault sandbox** — and that's deliberate, not a hole. The source path is arbitrary (a screenshot the agent produced); the **image decode in `ImageEncoding.inspect` is the security gate on it** — a renamed script/archive/non-image won't decode and is rejected before any write. The output is **re-encoded to a clean PNG** (decode→re-encode), so EXIF, trailing bytes, and polyglot/appended payloads never reach the vault — this is why `add_image` chose re-encode over a verbatim copy. The **destination is still fully `PathValidator`-gated** under `notes/` (reject-if-exists, extension normalized to `.png`). So the "one path gate" rule still holds for the *write* side; the source side is gated by image-validity instead. `delete_source` removing the original is the only action the server takes outside the vault, and it's opt-in + best-effort (a failed delete is reported, not fatal — the import already succeeded).
 - **Image platform code sits behind `ImageEncoding`.** `ImageManager` is pure policy (caps, pass-through decision, GIF sampling) and is unit-tested with a fake encoder; the macOS ImageIO work is `CoreGraphicsImageEncoder` (`#if canImport(ImageIO)`). A non-macOS port adds another conformer — don't put `ImageIO`/`AppKit` calls in `ImageManager`.
