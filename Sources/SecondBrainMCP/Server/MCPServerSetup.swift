@@ -38,6 +38,7 @@ struct MCPServerSetup {
         let searchEngine = SearchEngine(vaultPath: config.vaultPath)
         let auditLogger = AuditLogger(vaultPath: config.vaultPath)
         let imageManager = ImageManager(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
+        let imageImporter = ImageImporter(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
         let canvasManager = CanvasManager(vaultPath: config.vaultPath)
         let attachmentManager = AttachmentManager(vaultPath: config.vaultPath)
         let linkResolver = LinkResolver(vaultPath: config.vaultPath)
@@ -61,7 +62,8 @@ struct MCPServerSetup {
                 imageManager: imageManager,
                 canvasManager: canvasManager,
                 attachmentManager: attachmentManager,
-                linkResolver: linkResolver
+                linkResolver: linkResolver,
+                imageImporter: imageImporter
             )
         }
 
@@ -602,6 +604,30 @@ struct MCPServerSetup {
                 ]),
                 annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false)
             ))
+
+            tools.append(Tool(
+                name: "add_image",
+                description: "Import an image from a path on disk into the vault. Pass the source file path (e.g. a screenshot or test artifact you produced) and a destination under \"notes/\" (e.g. notes/apple/_attachments/bug-repro.png). The file is validated as a real image and re-encoded to a clean PNG — only pixels are kept, so EXIF, trailing bytes, and any non-image payload are stripped; a file that isn't a decodable image is rejected. The destination extension is normalized to .png and must not already exist. Useful for filing bug-repro or test-validation screenshots. Git auto-commits. After importing, use the returned path with read_image or embed it in a note.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source": .object([
+                            "type": .string("string"),
+                            "description": .string("Path on disk to the source image (absolute path recommended). Must be a real, decodable image.")
+                        ]),
+                        "destination": .object([
+                            "type": .string("string"),
+                            "description": .string("Vault destination under notes/ (e.g. notes/apple/_attachments/bug-repro.png). Stored as PNG; the extension is normalized to .png.")
+                        ]),
+                        "delete_source": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Remove the source file after a successful import (default: false = copy, leave the source in place).")
+                        ])
+                    ]),
+                    "required": .array([.string("source"), .string("destination")])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ))
         }
 
         // -- Git history tools (only if not read-only) -- Phase 4
@@ -801,7 +827,8 @@ struct MCPServerSetup {
         imageManager: ImageManager,
         canvasManager: CanvasManager,
         attachmentManager: AttachmentManager,
-        linkResolver: LinkResolver
+        linkResolver: LinkResolver,
+        imageImporter: ImageImporter
     ) async throws -> CallTool.Result {
         // Note: searchEngine is a value type (struct), passed through for search handlers.
         // Audit log every tool call
@@ -833,6 +860,7 @@ struct MCPServerSetup {
         case "create_canvas": .create
         case "update_canvas": .update
         case "delete_canvas": .delete
+        case "add_image": .create
         default: nil
         }
         if let op = auditOp {
@@ -900,6 +928,8 @@ struct MCPServerSetup {
             return await handleUpdateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
         case "delete_canvas":
             return await handleDeleteCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
+        case "add_image":
+            return await handleAddImage(params: params, imageImporter: imageImporter, gitManager: gitManager)
         default:
             return CallTool.Result(
                 content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)],
@@ -1951,6 +1981,35 @@ struct MCPServerSetup {
                 try? await git.commitDeletion(path: path, message: "[SecondBrainMCP] Deleted: \(path)")
             }
             return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    // MARK: - Image Import Handler
+
+    private static func handleAddImage(
+        params: CallTool.Parameters,
+        imageImporter: ImageImporter,
+        gitManager: GitManager?
+    ) async -> CallTool.Result {
+        guard let source = params.arguments?["source"]?.stringValue, !source.isEmpty,
+              let destination = params.arguments?["destination"]?.stringValue, !destination.isEmpty else {
+            return CallTool.Result(content: [.text(text: "Missing required parameters: source, destination", annotations: nil, _meta: nil)], isError: true)
+        }
+        let deleteSource = params.arguments?["delete_source"]?.boolValue ?? false
+
+        do {
+            let r = try await imageImporter.add(source: source, destination: destination, deleteSource: deleteSource)
+            if let git = gitManager {
+                try? await git.commitChange(files: [r.destination], message: "[SecondBrainMCP] Added image: \(r.destination)")
+            }
+            var msg = "Added image → `\(r.destination)` (\(r.sourceFormat.uppercased()) \(r.width)×\(r.height) re-encoded to PNG, \(formatBytes(r.bytesWritten)))"
+            if deleteSource {
+                msg += r.sourceDeleted ? "; source deleted" : "; source NOT deleted (removal failed — file kept)"
+            }
+            if let note = r.note { msg += "\n⚠ \(note)" }
+            return CallTool.Result(content: [.text(text: msg, annotations: nil, _meta: nil)])
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
