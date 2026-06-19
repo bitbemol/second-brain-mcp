@@ -606,28 +606,40 @@ struct MCPServerSetup {
             ))
 
             tools.append(Tool(
+                name: "delete_attachment",
+                description: "Soft-delete a binary attachment — an image or other non-note/non-canvas file under notes/ — by moving it to .trash/. Recoverable, not permanently deleted. Use this to remove an imported image you no longer want. For notes use delete_note; for canvases use delete_canvas. Git auto-commits the deletion.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("Relative path to the attachment (e.g. notes/apple/_attachments/bug-repro.png)")
+                        ])
+                    ]),
+                    "required": .array([.string("path")])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false)
+            ))
+
+            tools.append(Tool(
                 name: "add_image",
-                description: "Import an image from a path on disk into the vault. Pass the source file path (e.g. a screenshot or test artifact you produced) and a destination under \"notes/\" (e.g. notes/apple/_attachments/bug-repro.png). The file is validated as a real image and re-encoded to a clean PNG — only pixels are kept, so EXIF, trailing bytes, and any non-image payload are stripped; a file that isn't a decodable image is rejected. The destination extension is normalized to .png and must not already exist. Useful for filing bug-repro or test-validation screenshots. Git auto-commits. After importing, use the returned path with read_image or embed it in a note.",
+                description: "Import an image from a path on disk into the vault. Pass the source file path (e.g. a screenshot or test artifact you produced) and a destination under \"notes/\" (e.g. notes/apple/_attachments/bug-repro.png). The file is validated as a real image and re-encoded to a clean PNG — only pixels are kept, so EXIF, trailing bytes, and any non-image payload are stripped; a file that isn't a decodable image is rejected. The destination extension is normalized to .png and must not already exist. The source file is only read, never modified or removed — clean up the original yourself if needed. Useful for filing bug-repro or test-validation screenshots. Git auto-commits. After importing, use the returned path with read_image or embed it in a note.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "source": .object([
                             "type": .string("string"),
-                            "description": .string("Path on disk to the source image (absolute path recommended). Must be a real, decodable image.")
+                            "description": .string("Path on disk to the source image (absolute path recommended). Must be a real, decodable image. Read only — never modified.")
                         ]),
                         "destination": .object([
                             "type": .string("string"),
                             "description": .string("Vault destination under notes/ (e.g. notes/apple/_attachments/bug-repro.png). Stored as PNG; the extension is normalized to .png.")
-                        ]),
-                        "delete_source": .object([
-                            "type": .string("boolean"),
-                            "description": .string("Move the source file to the Trash after a successful import (recoverable; default: false = copy, leave the source in place).")
                         ])
                     ]),
                     "required": .array([.string("source"), .string("destination")])
                 ]),
-                // destructiveHint: delete_source can irreversibly remove the source file.
-                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false)
+                // Purely additive: creates a new vault file (reject-if-exists), never deletes anything.
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
             ))
         }
 
@@ -861,6 +873,7 @@ struct MCPServerSetup {
         case "create_canvas": .create
         case "update_canvas": .update
         case "delete_canvas": .delete
+        case "delete_attachment": .delete
         case "add_image": .create
         default: nil
         }
@@ -940,6 +953,8 @@ struct MCPServerSetup {
             return await handleUpdateCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
         case "delete_canvas":
             return await handleDeleteCanvas(params: params, canvasManager: canvasManager, gitManager: gitManager)
+        case "delete_attachment":
+            return await handleDeleteAttachment(params: params, attachmentManager: attachmentManager, gitManager: gitManager)
         case "add_image":
             return await handleAddImage(params: params, imageImporter: imageImporter, gitManager: gitManager)
         default:
@@ -1798,7 +1813,7 @@ struct MCPServerSetup {
         let recursive = params.arguments?["recursive"]?.boolValue ?? true
 
         do {
-            let items = try attachmentManager.list(directory: directory, recursive: recursive)
+            let items = try await attachmentManager.list(directory: directory, recursive: recursive)
             if items.isEmpty {
                 return CallTool.Result(content: [.text(text: "No attachments found.", annotations: nil, _meta: nil)])
             }
@@ -1998,6 +2013,26 @@ struct MCPServerSetup {
         }
     }
 
+    private static func handleDeleteAttachment(
+        params: CallTool.Parameters,
+        attachmentManager: AttachmentManager,
+        gitManager: GitManager?
+    ) async -> CallTool.Result {
+        guard let path = params.arguments?["path"]?.stringValue else {
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            let result = try await attachmentManager.delete(relativePath: path)
+            if let git = gitManager {
+                try? await git.commitDeletion(path: path, message: "[SecondBrainMCP] Deleted: \(path)")
+            }
+            return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
     // MARK: - Image Import Handler
 
     private static func handleAddImage(
@@ -2009,13 +2044,12 @@ struct MCPServerSetup {
               let destination = params.arguments?["destination"]?.stringValue, !destination.isEmpty else {
             return CallTool.Result(content: [.text(text: "Missing required parameters: source, destination", annotations: nil, _meta: nil)], isError: true)
         }
-        let deleteSource = params.arguments?["delete_source"]?.boolValue ?? false
 
         do {
             // Timeout protection: a crafted/corrupt source could hang the decoder.
             // Race the work against a deadline, same pattern as handleReadImage.
             let r = try await withThrowingTaskGroup(of: ImageImporter.ImportResult.self) { group in
-                group.addTask { try await imageImporter.add(source: source, destination: destination, deleteSource: deleteSource) }
+                group.addTask { try await imageImporter.add(source: source, destination: destination) }
                 group.addTask {
                     try await Task.sleep(for: .seconds(30))
                     throw MCPError.internalError("Timeout: image import took longer than 30 seconds to process. The source may be corrupt.")
@@ -2028,9 +2062,6 @@ struct MCPServerSetup {
                 try? await git.commitChange(files: [r.destination], message: "[SecondBrainMCP] Added image: \(r.destination)")
             }
             var msg = "Added image → `\(r.destination)` (\(r.sourceFormat.uppercased()) \(r.width)×\(r.height) re-encoded to PNG, \(formatBytes(r.bytesWritten)))"
-            if deleteSource {
-                msg += r.sourceDeleted ? "; source moved to Trash" : "; source NOT removed (trash failed — file kept)"
-            }
             if let note = r.note { msg += "\n⚠ \(note)" }
             return CallTool.Result(content: [.text(text: msg, annotations: nil, _meta: nil)])
         } catch {

@@ -66,28 +66,26 @@ struct ImageImporterTests {
         try makePNG(width: 120, height: 80).write(to: URL(fileURLWithPath: src))
 
         let r = try await ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
-            .add(source: src, destination: "notes/assets/img.png", deleteSource: false)
+            .add(source: src, destination: "notes/assets/img.png")
 
         #expect(r.destination == "notes/assets/img.png")
         #expect(r.width == 120 && r.height == 80)
-        #expect(r.sourceDeleted == false)
-        #expect(exists(src))                                       // copy: source intact
+        #expect(exists(src))                                       // source only read, never touched
         #expect(exists(root + "/notes/assets/img.png"))            // stored
         #expect(Array((try Data(contentsOf: URL(fileURLWithPath: root + "/notes/assets/img.png"))).prefix(4)) == [0x89, 0x50, 0x4E, 0x47])
     }
 
-    @Test("Imports a JPEG, re-encodes to PNG, and trashes the source when asked")
-    func importJPEGMove() async throws {
+    @Test("Imports a JPEG, re-encoded to PNG, source left intact")
+    func importJPEG() async throws {
         let root = try makeVault()
         let src = srcPath("photo.jpg")
         try makeJPEG(width: 64, height: 64).write(to: URL(fileURLWithPath: src))
 
         let r = try await ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
-            .add(source: src, destination: "notes/a/photo.png", deleteSource: true)
+            .add(source: src, destination: "notes/a/photo.png")
 
         #expect(r.sourceFormat == "jpeg")                          // detected source format
-        #expect(r.sourceDeleted == true)
-        #expect(!exists(src))                                      // move: source gone
+        #expect(exists(src))                                       // source only read, never touched
         #expect(exists(root + "/notes/a/photo.png"))
     }
 
@@ -98,7 +96,7 @@ struct ImageImporterTests {
         try makePNG(width: 10, height: 10).write(to: URL(fileURLWithPath: src))
 
         let r = try await ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
-            .add(source: src, destination: "notes/a/shot.jpg", deleteSource: false)
+            .add(source: src, destination: "notes/a/shot.jpg")
         #expect(r.destination == "notes/a/shot.png")
         #expect(exists(root + "/notes/a/shot.png"))
     }
@@ -114,7 +112,7 @@ struct ImageImporterTests {
         try bytes.write(to: URL(fileURLWithPath: src))
 
         let r = try await ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
-            .add(source: src, destination: "notes/assets/clean.png", deleteSource: false)
+            .add(source: src, destination: "notes/assets/clean.png")
 
         let stored = try Data(contentsOf: URL(fileURLWithPath: root + "/" + r.destination))
         #expect(!bytesContain(stored, "HIDDEN_PAYLOAD"))           // payload gone
@@ -129,7 +127,7 @@ struct ImageImporterTests {
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
 
         await #expect(throws: ImageImporter.ImageImporterError.self) {
-            try await importer.add(source: src, destination: "notes/x.png", deleteSource: false)
+            try await importer.add(source: src, destination: "notes/x.png")
         }
         #expect(!exists(root + "/notes/x.png"))
     }
@@ -142,7 +140,7 @@ struct ImageImporterTests {
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
 
         await #expect(throws: ImageImporter.ImageImporterError.self) {
-            try await importer.add(source: src, destination: "references/x.png", deleteSource: false)
+            try await importer.add(source: src, destination: "references/x.png")
         }
     }
 
@@ -156,7 +154,7 @@ struct ImageImporterTests {
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
 
         await #expect(throws: ImageImporter.ImageImporterError.self) {
-            try await importer.add(source: src, destination: "notes/a/taken.png", deleteSource: false)
+            try await importer.add(source: src, destination: "notes/a/taken.png")
         }
     }
 
@@ -165,7 +163,7 @@ struct ImageImporterTests {
         let root = try makeVault()
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
         await #expect(throws: ImageImporter.ImageImporterError.self) {
-            try await importer.add(source: srcPath("nope.png"), destination: "notes/x.png", deleteSource: false)
+            try await importer.add(source: srcPath("nope.png"), destination: "notes/x.png")
         }
     }
 
@@ -178,7 +176,7 @@ struct ImageImporterTests {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
         await #expect(throws: ImageImporter.ImageImporterError.self) {
-            try await importer.add(source: dir, destination: "notes/x.png", deleteSource: false)
+            try await importer.add(source: dir, destination: "notes/x.png")
         }
     }
 
@@ -194,7 +192,7 @@ struct ImageImporterTests {
         let tight = ImageManager.Config(maxLongEdge: 2576, maxFileBytes: 1000, maxMegapixels: 50, gifMaxFrames: 8, gifFrameMaxLongEdge: 1280)
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder(), config: tight)
         do {
-            _ = try await importer.add(source: link, destination: "notes/x.png", deleteSource: false)
+            _ = try await importer.add(source: link, destination: "notes/x.png")
             Issue.record("expected the import to be rejected for size")
         } catch let e as ImageImporter.ImageImporterError {
             // Must be the size cap (proves we stat the 2 KB target, not the tiny symlink).
@@ -214,12 +212,12 @@ struct ImageImporterTests {
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
 
         let r = try await ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
-            .add(source: link, destination: "notes/from-link.png", deleteSource: false)
+            .add(source: link, destination: "notes/from-link.png")
         #expect(r.width == 30 && r.height == 30)
         #expect(exists(root + "/notes/from-link.png"))
     }
 
-    @Test("A source inside the vault is rejected and never deleted (no soft-delete bypass)")
+    @Test("A source inside the vault is rejected (add_image is for external files)")
     func rejectsInVaultSource() async throws {
         let root = try makeVault()
         try FileManager.default.createDirectory(atPath: root + "/notes/_attachments", withIntermediateDirectories: true)
@@ -228,8 +226,8 @@ struct ImageImporterTests {
 
         let importer = ImageImporter(vaultPath: root, encoder: CoreGraphicsImageEncoder())
         await #expect(throws: ImageImporter.ImageImporterError.self) {
-            try await importer.add(source: inVault, destination: "notes/copy.png", deleteSource: true)
+            try await importer.add(source: inVault, destination: "notes/copy.png")
         }
-        #expect(exists(inVault))   // vault content untouched — not hard-deleted
+        #expect(exists(inVault))   // untouched
     }
 }

@@ -50,7 +50,6 @@ actor ImageImporter {
         let width: Int
         let height: Int
         let bytesWritten: Int
-        let sourceDeleted: Bool
         let note: String?          // non-fatal note, e.g. an animated source flattened to one frame
     }
 
@@ -65,10 +64,10 @@ actor ImageImporter {
     }
 
     /// Validate `source` as a real image and import it into the vault at
-    /// `destination` (normalized to a `.png`), re-encoded to a clean PNG. When
-    /// `deleteSource` is true the source file is removed afterward (best-effort —
-    /// the import has already succeeded, so a failed removal is reported, not fatal).
-    func add(source: String, destination: String, deleteSource: Bool) throws -> ImportResult {
+    /// `destination` (normalized to a `.png`), re-encoded to a clean PNG. Purely
+    /// additive: the source is only ever **read** — never moved, deleted, or
+    /// otherwise touched. The vault is this server's entire write domain.
+    func add(source: String, destination: String) throws -> ImportResult {
         // 1. Destination (vault side) — must be under notes/, normalized to .png,
         //    path-gated, and must not already exist (no clobber).
         let finalRel = Self.normalizedDestination(destination)
@@ -103,8 +102,8 @@ actor ImageImporter {
         guard bytes <= config.maxFileBytes else {
             throw ImageImporterError.sourceTooLarge(bytes: bytes, limit: config.maxFileBytes)
         }
-        // add_image is for EXTERNAL files. Refuse a source inside the vault: otherwise
-        // delete_source would hard-delete vault content, bypassing soft-delete (Rule 5).
+        // add_image imports EXTERNAL files. A source already inside the vault is
+        // refused — manage existing vault images with the vault's own tools.
         guard !Self.isInsideVault(src, vaultPath: vaultPath) else {
             throw ImageImporterError.sourceInsideVault(source)
         }
@@ -146,19 +145,6 @@ actor ImageImporter {
             throw ImageImporterError.writeFailed(finalRel, underlying: error.localizedDescription)
         }
 
-        // 6. Optionally remove the source (best-effort; import already succeeded).
-        //    Soft-delete: move to the system Trash (recoverable) rather than unlink,
-        //    consistent with the vault's "soft deletes only" rule for user content.
-        var sourceDeleted = false
-        if deleteSource {
-            do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: src), resultingItemURL: nil)
-                sourceDeleted = true
-            } catch {
-                sourceDeleted = false
-            }
-        }
-
         let note = info.frameCount > 1 ? "source was an animated image; imported its first frame only" : nil
         return ImportResult(
             destination: finalRel,
@@ -166,7 +152,6 @@ actor ImageImporter {
             width: info.pixelWidth,
             height: info.pixelHeight,
             bytesWritten: png.count,
-            sourceDeleted: sourceDeleted,
             note: note
         )
     }

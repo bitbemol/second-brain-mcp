@@ -1,10 +1,11 @@
 import Foundation
 
-/// Read-only listing of binary attachments — any file under `notes/` that isn't a
-/// first-class content type (note or canvas). Sendable struct, reuses
-/// `VaultEnumerator` for the walk. Closes the discovery gap: images and other
-/// attachments embedded in notes weren't enumerable through the server.
-struct AttachmentManager: Sendable {
+/// Listing and soft-deletion of binary attachments — any file under `notes/` that
+/// isn't a first-class content type (note or canvas). Actor: `list` reuses
+/// `VaultEnumerator` for the walk; `delete` soft-deletes to the vault `.trash/`.
+/// The write is why this is an actor (serialized I/O, mirroring `CanvasManager`).
+/// Closes the discovery + cleanup gap for images and other attachments.
+actor AttachmentManager {
 
     private let vaultPath: String
 
@@ -25,10 +26,14 @@ struct AttachmentManager: Sendable {
 
     enum AttachmentError: Error, CustomStringConvertible {
         case invalidPath(String)
+        case notFound(String)
+        case notAnAttachment(String)
 
         var description: String {
             switch self {
             case .invalidPath(let reason): return "Invalid path: \(reason)"
+            case .notFound(let path): return "Attachment not found: \(path)"
+            case .notAnAttachment(let path): return "Not an attachment — use delete_note or delete_canvas: \(path)"
             }
         }
     }
@@ -68,5 +73,38 @@ struct AttachmentManager: Sendable {
             ))
         }
         return results.sorted { $0.modifiedDate > $1.modifiedDate }
+    }
+
+    /// Soft-delete an attachment by moving it to the vault `.trash/` (recoverable;
+    /// the handler git-commits the deletion). Rejects notes and canvases — those
+    /// have their own delete tools — and any path outside `notes/`. Mirrors
+    /// `CanvasManager.delete`.
+    func delete(relativePath: String) throws -> String {
+        guard relativePath.hasPrefix("notes/") else {
+            throw AttachmentError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        guard !Self.contentExtensions.contains(ext) else {
+            throw AttachmentError.notAnAttachment(relativePath)
+        }
+        let resolved: String
+        do {
+            resolved = try PathValidator.resolve(relativePath: relativePath, root: vaultPath, allowedExtensions: nil)
+        } catch {
+            throw AttachmentError.invalidPath("\(error)")
+        }
+        guard FileManager.default.fileExists(atPath: resolved) else {
+            throw AttachmentError.notFound(relativePath)
+        }
+
+        let trashDir = vaultPath + "/.trash"
+        try FileManager.default.createDirectory(atPath: trashDir, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let filename = (resolved as NSString).lastPathComponent
+        let trashPath = trashDir + "/\(timestamp)_\(filename)"
+
+        try FileManager.default.moveItem(atPath: resolved, toPath: trashPath)
+        return "Deleted: \(relativePath) → .trash/\(timestamp)_\(filename)"
     }
 }

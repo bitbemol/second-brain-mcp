@@ -21,11 +21,13 @@ struct AttachmentManagerTests {
         return root
     }
 
+    // MARK: - Listing
+
     @Test("Lists attachments, excludes notes/canvas/placeholders")
-    func listing() throws {
+    func listing() async throws {
         let root = try makeVault()
         let mgr = AttachmentManager(vaultPath: root)
-        let items = try mgr.list()
+        let items = try await mgr.list()
         let paths = Set(items.map(\.relativePath))
         #expect(paths == [
             "notes/img/a.png", "notes/b.jpg", "notes/c.webp", "notes/sub-d.png", "notes/data.csv"
@@ -36,10 +38,10 @@ struct AttachmentManagerTests {
     }
 
     @Test("Readable flag is true for read_image formats, false for other files")
-    func readableFlag() throws {
+    func readableFlag() async throws {
         let root = try makeVault()
         let mgr = AttachmentManager(vaultPath: root)
-        let items = try mgr.list()
+        let items = try await mgr.list()
         let png = try #require(items.first { $0.relativePath == "notes/img/a.png" })
         let jpg = try #require(items.first { $0.relativePath == "notes/b.jpg" })
         let csv = try #require(items.first { $0.relativePath == "notes/data.csv" })
@@ -51,28 +53,72 @@ struct AttachmentManagerTests {
     }
 
     @Test("Reports byte size")
-    func size() throws {
+    func size() async throws {
         let root = try makeVault()
         let mgr = AttachmentManager(vaultPath: root)
-        let items = try mgr.list()
+        let items = try await mgr.list()
         let png = try #require(items.first { $0.relativePath == "notes/img/a.png" })
         #expect(png.sizeBytes == 100)
     }
 
     @Test("Scopes to a subdirectory")
-    func scoped() throws {
+    func scoped() async throws {
         let root = try makeVault()
         let mgr = AttachmentManager(vaultPath: root)
-        let items = try mgr.list(directory: "notes/img")
+        let items = try await mgr.list(directory: "notes/img")
         #expect(items.map(\.relativePath) == ["notes/img/a.png"])
     }
 
     @Test("Directory outside notes/ is rejected")
-    func outsideNotes() throws {
+    func outsideNotes() async throws {
         let root = try makeVault()
         let mgr = AttachmentManager(vaultPath: root)
-        #expect(throws: AttachmentManager.AttachmentError.self) {
-            try mgr.list(directory: "references")
+        await #expect(throws: AttachmentManager.AttachmentError.self) {
+            try await mgr.list(directory: "references")
+        }
+    }
+
+    // MARK: - Soft-delete
+
+    @Test("Soft-deletes an attachment to .trash/ and drops it from the listing")
+    func deleteSoftDeletes() async throws {
+        let root = try makeVault()
+        let mgr = AttachmentManager(vaultPath: root)
+
+        let msg = try await mgr.delete(relativePath: "notes/b.jpg")
+        #expect(msg.contains(".trash/"))
+        #expect(!FileManager.default.fileExists(atPath: root + "/notes/b.jpg"))   // gone from notes/
+
+        let trashed = (try? FileManager.default.contentsOfDirectory(atPath: root + "/.trash")) ?? []
+        #expect(trashed.contains { $0.hasSuffix("_b.jpg") })                      // recoverable in .trash/
+
+        let paths = Set(try await mgr.list().map(\.relativePath))
+        #expect(!paths.contains("notes/b.jpg"))
+    }
+
+    @Test("Refuses to delete notes or canvases (those have their own tools)")
+    func deleteRejectsContentTypes() async throws {
+        let root = try makeVault()
+        let mgr = AttachmentManager(vaultPath: root)
+        await #expect(throws: AttachmentManager.AttachmentError.self) {
+            try await mgr.delete(relativePath: "notes/note.md")
+        }
+        await #expect(throws: AttachmentManager.AttachmentError.self) {
+            try await mgr.delete(relativePath: "notes/board.canvas")
+        }
+        #expect(FileManager.default.fileExists(atPath: root + "/notes/note.md"))
+        #expect(FileManager.default.fileExists(atPath: root + "/notes/board.canvas"))
+    }
+
+    @Test("Rejects a missing attachment and any path outside notes/")
+    func deleteRejectsMissingAndOutside() async throws {
+        let root = try makeVault()
+        let mgr = AttachmentManager(vaultPath: root)
+        await #expect(throws: AttachmentManager.AttachmentError.self) {
+            try await mgr.delete(relativePath: "notes/nope.png")
+        }
+        await #expect(throws: AttachmentManager.AttachmentError.self) {
+            try await mgr.delete(relativePath: "references/x.png")
         }
     }
 }
