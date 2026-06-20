@@ -39,6 +39,7 @@ struct MCPServerSetup {
         let auditLogger = AuditLogger(vaultPath: config.vaultPath)
         let imageManager = ImageManager(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
         let imageImporter = ImageImporter(vaultPath: config.vaultPath, encoder: CoreGraphicsImageEncoder())
+        let videoImporter = VideoImporter(vaultPath: config.vaultPath, encoder: AVFoundationVideoEncoder())
         let canvasManager = CanvasManager(vaultPath: config.vaultPath)
         let attachmentManager = AttachmentManager(vaultPath: config.vaultPath)
         let linkResolver = LinkResolver(vaultPath: config.vaultPath)
@@ -63,7 +64,8 @@ struct MCPServerSetup {
                 canvasManager: canvasManager,
                 attachmentManager: attachmentManager,
                 linkResolver: linkResolver,
-                imageImporter: imageImporter
+                imageImporter: imageImporter,
+                videoImporter: videoImporter
             )
         }
 
@@ -641,6 +643,27 @@ struct MCPServerSetup {
                 // Purely additive: creates a new vault file (reject-if-exists), never deletes anything.
                 annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
             ))
+
+            tools.append(Tool(
+                name: "add_video",
+                description: "Import a video from a path on disk into the vault as an animated GIF — so you can \"watch\" it with read_image (which samples an animated GIF into a time-ordered frame bundle) and it plays inline in Obsidian. Pass the source file path (e.g. an issue screen recording) and a destination under \"notes/\" (e.g. notes/apple/_attachments/repro.gif). The video is sampled to frames and assembled into a GIF in-process (AVFoundation, no ffmpeg); audio is dropped. The destination extension is normalized to .gif and must not already exist. The source file is only read, never modified or removed — clean up the original yourself if needed. Git auto-commits. After importing, use the returned path with read_image to watch the recording, or embed it in a note.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source": .object([
+                            "type": .string("string"),
+                            "description": .string("Path on disk to the source video (absolute path recommended). Must be a real, decodable video. Read only — never modified.")
+                        ]),
+                        "destination": .object([
+                            "type": .string("string"),
+                            "description": .string("Vault destination under notes/ (e.g. notes/apple/_attachments/repro.gif). Stored as an animated GIF; the extension is normalized to .gif.")
+                        ])
+                    ]),
+                    "required": .array([.string("source"), .string("destination")])
+                ]),
+                // Purely additive: creates a new vault file (reject-if-exists), never deletes anything.
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ))
         }
 
         // -- Git history tools (only if not read-only) -- Phase 4
@@ -841,7 +864,8 @@ struct MCPServerSetup {
         canvasManager: CanvasManager,
         attachmentManager: AttachmentManager,
         linkResolver: LinkResolver,
-        imageImporter: ImageImporter
+        imageImporter: ImageImporter,
+        videoImporter: VideoImporter
     ) async throws -> CallTool.Result {
         // Note: searchEngine is a value type (struct), passed through for search handlers.
         // Audit log every tool call
@@ -875,6 +899,7 @@ struct MCPServerSetup {
         case "delete_canvas": .delete
         case "delete_attachment": .delete
         case "add_image": .create
+        case "add_video": .create
         default: nil
         }
         if let op = auditOp {
@@ -957,6 +982,8 @@ struct MCPServerSetup {
             return await handleDeleteAttachment(params: params, attachmentManager: attachmentManager, gitManager: gitManager)
         case "add_image":
             return await handleAddImage(params: params, imageImporter: imageImporter, gitManager: gitManager)
+        case "add_video":
+            return await handleAddVideo(params: params, videoImporter: videoImporter, gitManager: gitManager)
         default:
             return CallTool.Result(
                 content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)],
@@ -2063,6 +2090,45 @@ struct MCPServerSetup {
             }
             var msg = "Added image → `\(r.destination)` (\(r.sourceFormat.uppercased()) \(r.width)×\(r.height) re-encoded to PNG, \(formatBytes(r.bytesWritten)))"
             if let note = r.note { msg += "\n⚠ \(note)" }
+            return CallTool.Result(content: [.text(text: msg, annotations: nil, _meta: nil)])
+        } catch {
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    // MARK: - Video Import Handler
+
+    private static func handleAddVideo(
+        params: CallTool.Parameters,
+        videoImporter: VideoImporter,
+        gitManager: GitManager?
+    ) async -> CallTool.Result {
+        guard let source = params.arguments?["source"]?.stringValue, !source.isEmpty,
+              let destination = params.arguments?["destination"]?.stringValue, !destination.isEmpty else {
+            return CallTool.Result(content: [.text(text: "Missing required parameters: source, destination", annotations: nil, _meta: nil)], isError: true)
+        }
+
+        do {
+            // Timeout protection: a long / high-resolution / crafted source could make
+            // the conversion run away. Race it against a deadline, same pattern as
+            // handleReadReference — but a wider 120s window, since transcoding many
+            // frames is heavier than rendering a single image.
+            let r = try await withThrowingTaskGroup(of: VideoImporter.ImportResult.self) { group in
+                group.addTask { try await videoImporter.add(source: source, destination: destination) }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(120))
+                    throw MCPError.internalError("Timeout: video conversion took longer than 120 seconds. The source may be very long or high-resolution — try a shorter clip.")
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+            if let git = gitManager {
+                try? await git.commitChange(files: [r.destination], message: "[SecondBrainMCP] Added video (GIF): \(r.destination)")
+            }
+            let msg = "Added video → `\(r.destination)` (animated GIF \(r.width)×\(r.height), "
+                + "\(String(format: "%.1f", r.durationSeconds))s, \(r.frameCount) frames @ ~\(String(format: "%.1f", r.fps)) fps, "
+                + "\(formatBytes(r.bytesWritten))). Use read_image on this path to watch it, or embed it in a note."
             return CallTool.Result(content: [.text(text: msg, annotations: nil, _meta: nil)])
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
