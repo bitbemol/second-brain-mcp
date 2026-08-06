@@ -1,0 +1,162 @@
+import Foundation
+import Testing
+@testable import SecondBrainMCP
+
+@Suite("Vault process-data directory")
+struct VaultDataDirectoryTests {
+    @Test("Migrates known legacy data without deleting unknown files")
+    func migratesLegacyDataSelectively() throws {
+        let roots = try makeRoots()
+        let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
+        try FileManager.default.createDirectory(
+            at: legacyRoot.appendingPathComponent("cache"),
+            withIntermediateDirectories: true
+        )
+        try Data("old audit".utf8).write(
+            to: legacyRoot.appendingPathComponent("audit.log")
+        )
+        try Data("lock".utf8).write(
+            to: legacyRoot.appendingPathComponent("extraction.lock")
+        )
+        try Data("preserve".utf8).write(
+            to: legacyRoot.appendingPathComponent("unknown.data")
+        )
+
+        let prepared = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+        let repeated = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+
+        #expect(prepared.rootURL == repeated.rootURL)
+        #expect(try String(contentsOf: prepared.auditLogURL, encoding: .utf8) == "old audit")
+        #expect(!FileManager.default.fileExists(
+            atPath: legacyRoot.appendingPathComponent("cache").path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: legacyRoot.appendingPathComponent("extraction.lock").path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: legacyRoot.appendingPathComponent("unknown.data").path
+        ))
+    }
+
+    @Test("Removes an empty legacy directory after migration")
+    func removesEmptyLegacyRoot() throws {
+        let roots = try makeRoots()
+        let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
+        try FileManager.default.createDirectory(
+            at: legacyRoot,
+            withIntermediateDirectories: true
+        )
+        try Data("old audit".utf8).write(
+            to: legacyRoot.appendingPathComponent("audit.log")
+        )
+
+        let prepared = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+
+        #expect(FileManager.default.fileExists(atPath: prepared.rootURL.path))
+        #expect(FileManager.default.fileExists(atPath: prepared.auditLogURL.path))
+        #expect(!FileManager.default.fileExists(atPath: legacyRoot.path))
+    }
+
+    @Test("Migration never follows a symlinked legacy root")
+    func preservesSymlinkedLegacyRootAndExternalData() throws {
+        let roots = try makeRoots()
+        let external = roots.vault
+            .deletingLastPathComponent()
+            .appendingPathComponent("external")
+        let externalCache = external.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(
+            at: externalCache,
+            withIntermediateDirectories: true
+        )
+        let marker = externalCache.appendingPathComponent("keep.txt")
+        try Data("preserve".utf8).write(to: marker)
+        try FileManager.default.createSymbolicLink(
+            at: roots.vault.appendingPathComponent(".secondbrain-mcp"),
+            withDestinationURL: external
+        )
+
+        _ = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        #expect(FileManager.default.fileExists(
+            atPath: roots.vault.appendingPathComponent(".secondbrain-mcp").path
+        ))
+    }
+
+    @Test("Migration preserves symlinked known entries")
+    func preservesSymlinkedKnownEntries() throws {
+        let roots = try makeRoots()
+        let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
+        let external = roots.vault
+            .deletingLastPathComponent()
+            .appendingPathComponent("external-cache")
+        try FileManager.default.createDirectory(
+            at: legacyRoot,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: external,
+            withIntermediateDirectories: true
+        )
+        let marker = external.appendingPathComponent("keep.txt")
+        try Data("preserve".utf8).write(to: marker)
+        try FileManager.default.createSymbolicLink(
+            at: legacyRoot.appendingPathComponent("cache"),
+            withDestinationURL: external
+        )
+
+        _ = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        #expect(FileManager.default.fileExists(
+            atPath: legacyRoot.appendingPathComponent("cache").path
+        ))
+    }
+
+    @Test("Preparation surfaces filesystem failures")
+    func reportsPreparationFailure() throws {
+        let roots = try makeRoots()
+        let blockingFile = roots.support.appendingPathComponent("not-a-directory")
+        try FileManager.default.createDirectory(
+            at: roots.support,
+            withIntermediateDirectories: true
+        )
+        try Data("blocking".utf8).write(to: blockingFile)
+
+        do {
+            _ = try VaultDataDirectory.prepare(
+                vaultPath: roots.vault.path,
+                supportRoot: blockingFile
+            )
+            Issue.record("Expected process-data preparation to fail")
+        } catch {
+            // The failure is the contract: bootstrap must not silently continue.
+        }
+    }
+
+    private func makeRoots() throws -> (vault: URL, support: URL) {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("VaultDataDirectoryTests-\(UUID().uuidString)")
+        let vault = base.appendingPathComponent("vault")
+        try FileManager.default.createDirectory(
+            at: vault,
+            withIntermediateDirectories: true
+        )
+        return (vault, base.appendingPathComponent("support"))
+    }
+}

@@ -77,50 +77,50 @@ struct PathValidatorTraversalTests {
 
     @Test("Basic parent traversal is rejected")
     func basicTraversal() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "../etc/passwd", root: root)
         }
     }
 
     @Test("Deep traversal is rejected")
     func deepTraversal() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "../../../../../../etc/passwd", root: root)
         }
     }
 
     @Test("Traversal hidden in subdirectory is rejected")
     func hiddenTraversal() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/../../etc/passwd", root: root)
         }
     }
 
     @Test("Traversal at end of path is rejected")
     func trailingTraversal() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/..", root: root)
         }
     }
 
     @Test("URL-encoded traversal is rejected (%2e%2e%2f)")
     func urlEncodedTraversal() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "%2e%2e%2fetc/passwd", root: root)
         }
     }
 
     @Test("Double URL-encoded traversal is rejected (%252e%252e)")
     func doubleEncodedTraversal() {
-        // %252e decodes to %2e on first pass. We decode once and check.
-        #expect(throws: PathValidator.PathError.self) {
-            try PathValidator.resolve(relativePath: "%2e%2e/etc/passwd", root: root)
+        // The first pass produces %2e%2e; the second exposes the parent component.
+        #expect(throws: PathValidationError.self) {
+            try PathValidator.resolve(relativePath: "%252e%252e/etc/passwd", root: root)
         }
     }
 
     @Test("Mixed traversal with valid prefix is rejected")
     func mixedTraversal() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/projects/../../..", root: root)
         }
     }
@@ -147,7 +147,7 @@ struct PathValidatorSymlinkTests {
         // Create a symlink inside the vault that points to /tmp
         try fm.createSymbolicLink(atPath: symlinkPath, withDestinationPath: "/tmp")
 
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/evil-link", root: root)
         }
     }
@@ -183,21 +183,21 @@ struct PathValidatorEdgeCaseTests {
 
     @Test("Empty path is rejected")
     func emptyPath() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "", root: root)
         }
     }
 
     @Test("Absolute path is rejected")
     func absolutePath() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "/etc/passwd", root: root)
         }
     }
 
     @Test("Disallowed extension is rejected")
     func disallowedExtension() {
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(
                 relativePath: "notes/secrets.env",
                 root: root,
@@ -228,7 +228,7 @@ struct PathValidatorEdgeCaseTests {
         fm.createFile(atPath: evilRoot + "/stolen.md", contents: nil)
 
         // Attempt to access sibling via traversal — this must fail
-        #expect(throws: PathValidator.PathError.self) {
+        #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(
                 relativePath: "../" + (root as NSString).lastPathComponent + "-evil/stolen.md",
                 root: root

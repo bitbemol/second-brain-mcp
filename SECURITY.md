@@ -1,9 +1,9 @@
 # Security
 
 SecondBrainMCP runs **locally** as a subprocess of an MCP client (e.g. Claude Desktop or Claude
-Code), communicating only over stdin/stdout (`StdioTransport`). It has read/write access to a
-Markdown note vault and read-only access to a PDF library. Because it touches personal files,
-security is treated as a design constraint, not a feature.
+Code), communicating only over stdin/stdout (`StdioTransport`). It has format-aware read/write
+access under `notes/` and structurally read-only access under `references/`. Because it touches
+personal files, security is treated as a design constraint, not a feature.
 
 This document covers how to report a vulnerability, the server's security posture, and how to
 independently verify its network behavior and dependencies.
@@ -21,9 +21,10 @@ fix or mitigation will be coordinated before any public disclosure.
 ## Threat model
 
 - **Trusted:** the local user, and the MCP client the server is launched by.
-- **Not trusted:** the *arguments* of individual tool calls. Paths, refs, and messages are treated
-  as hostile input and validated/rejected — a buggy or adversarial caller must not be able to read
-  or write outside the vault, run arbitrary commands, or permanently destroy data.
+- **Not trusted:** the *arguments* of individual tool calls. Paths and content are treated
+  as hostile input and validated/rejected. A caller cannot write outside the vault, run arbitrary
+  commands, or permanently destroy data. External reads are limited to an explicitly supplied,
+  content-gated image/video source for media creation.
 - **Out of scope:** what the MCP client does with vault data after the server returns it (that is
   governed by the client and the AI provider's own terms), and physical/OS-level access to the machine.
 
@@ -31,12 +32,13 @@ fix or mitigation will be coordinated before any public disclosure.
 
 | Guarantee | How it's enforced |
 |-----------|-------------------|
-| **No path escapes the vault** | Every note path goes through `PathValidator`: rejects absolute paths, screens for `..` (incl. percent-encoded / Unicode dots) before and after resolution, resolves symlinks, and asserts containment within the vault root. Exhaustively tested in `PathValidatorTests`. |
-| **References are read-only by construction** | `ReferenceManager` has **zero** write methods — it is structurally impossible to modify `references/` through the server, not merely disabled by a flag. |
-| **No arbitrary shell execution** | The only subprocesses are `/usr/bin/git` and `/usr/bin/grep`, at hardcoded paths, invoked with programmatically built argument arrays and `--` guards. No user input is ever interpolated into a command. Commit messages and git refs are sanitized to a safe character allowlist. |
-| **No hard deletes of user content** | `delete_note` moves files to `.trash/<timestamp>_<name>`; `removeItem` is never called on user content. |
-| **Full history of every write** | Every note write is auto-committed to git, so any change is reviewable and revertible. |
-| **Optional read-only mode** | `--read-only` un-registers all write/delete/revert tools so the client never even sees them. |
+| **No vault path escapes the vault** | Every caller-controlled vault path goes through `PathValidator`: rejects absolute paths, screens for `..` (incl. percent-encoded / Unicode dots), resolves symlinks, and asserts containment within the canonical vault root. Writable targets reject every symlink component and are revalidated immediately before use. The declared concrete format must also match the extension. |
+| **References are read-only by construction** | `WritableFileTarget` can only be resolved under `notes/`, and catalog mutation bindings permit only the notes area. There is no writable representation of a `references/` target. |
+| **External sources are content-gated** | Opaque text/structured formats require inline content and cannot read arbitrary source paths. Only PNG image import and video-to-GIF conversion accept an external source; `ExternalFileSourceValidator` requires the canonical target to be a size-capped regular file outside the vault, then copies it through an opened descriptor into a bounded private snapshot before media decoding. Sources are never mutated. |
+| **No arbitrary shell execution** | The only subprocess is `/usr/bin/git` at a hardcoded path, invoked with programmatically built argument arrays, literal pathspec mode, and `--` guards. Inherited `GIT_*` variables are removed so callers cannot redirect the repository, worktree, index, or configuration. No user input is interpolated into a command. Commit messages are sanitized to a safe character allowlist. |
+| **No hard deletes of user content** | `delete_file` moves files to a collision-proof recoverable name under a real, non-symlink `.trash/` directory; `removeItem` is never called on user content. |
+| **Full history of every mutation** | `VaultMutationExecutor` serializes persistence → Git commit → audit, completes Git after persistence even if the request is canceled, and propagates commit failures instead of swallowing them. |
+| **Optional read-only mode** | `--read-only` hides mutating tools, removes mutating operations from capability discovery, rejects direct calls at both frontend and backend boundaries, and skips vault migration and Git initialization. |
 
 ## Network activity
 
@@ -46,7 +48,7 @@ The server makes **zero outbound network connections** in normal operation.
   instantiates a network transport.
 - **The MCP SDK ships HTTP/SSE transports** (pulled in via `swift-nio` and `eventsource`); that code
   is compiled into the binary but is **never instantiated or invoked** by SecondBrainMCP.
-- **Git** runs only local operations (`init`, `add`, `commit`, `log`, `show`, `checkout`) against
+- **Git** runs only local operations (`init`, `add`, `commit`, `status`) against
   the vault. The server never runs `push`, `fetch`, or `remote` — it does not contact a git remote,
   even if the vault has one configured.
 - **PDFKit** is a macOS system framework and performs no network activity here.
@@ -73,7 +75,7 @@ pulls new versions. The table below reflects the committed lockfile — regenera
 ## Data flow
 
 ```
-Vault (local disk)
+Vault + an explicitly supplied image/video source (local disk)
   → SecondBrainMCP (local process, stdin/stdout only)
     → MCP client (e.g. Claude Desktop / Claude Code)
       → AI provider API (HTTPS, performed by the client — not by this server)

@@ -52,9 +52,82 @@ struct VideoImporterTests {
             if failInspect { throw FakeError.boom }
             return inspection
         }
-        func makeGIF(url: URL, atTimes times: [Double], frameDelay: Double, maxLongEdge: Int) async throws -> Data {
+        func makeGIF(
+            url: URL,
+            atTimes times: [Double],
+            frameDelay: Double,
+            maxLongEdge: Int,
+            maximumBytes: Int
+        ) async throws -> Data {
             if failMakeGIF { throw FakeError.boom }
             return gif
+        }
+    }
+
+    private actor ConversionProbe {
+        private var active = 0
+        private(set) var maximumActive = 0
+
+        func enter() {
+            active += 1
+            maximumActive = max(maximumActive, active)
+        }
+
+        func leave() {
+            active -= 1
+        }
+    }
+
+    private struct TrackingVideoEncoder: VideoEncoding {
+        let probe: ConversionProbe
+
+        func inspect(url: URL) async throws -> VideoInspection {
+            await probe.enter()
+            try await Task.sleep(for: .milliseconds(10))
+            await probe.leave()
+            return VideoInspection(
+                durationSeconds: 0.1,
+                width: 16,
+                height: 16,
+                hasVideoTrack: true
+            )
+        }
+
+        func makeGIF(
+            url: URL,
+            atTimes times: [Double],
+            frameDelay: Double,
+            maxLongEdge: Int,
+            maximumBytes: Int
+        ) async throws -> Data {
+            await probe.enter()
+            try await Task.sleep(for: .milliseconds(10))
+            await probe.leave()
+            return Data("GIF89a".utf8)
+        }
+    }
+
+    private struct CancellingVideoEncoder: VideoEncoding {
+        let cancelDuringInspection: Bool
+
+        func inspect(url: URL) async throws -> VideoInspection {
+            if cancelDuringInspection { throw CancellationError() }
+            return VideoInspection(
+                durationSeconds: 1,
+                width: 16,
+                height: 16,
+                hasVideoTrack: true
+            )
+        }
+
+        func makeGIF(
+            url: URL,
+            atTimes times: [Double],
+            frameDelay: Double,
+            maxLongEdge: Int,
+            maximumBytes: Int
+        ) async throws -> Data {
+            throw CancellationError()
         }
     }
 
@@ -109,73 +182,71 @@ struct VideoImporterTests {
         return CGImageSourceGetCount(src)
     }
 
-    // MARK: - Frame-schedule math (pure)
-
-    @Test("Short clip is sampled at full fps")
-    func scheduleShortClip() {
-        // 2s × 10fps = 20 frames; spaced every 0.1s across [0, 2).
-        let s = VideoImporter.frameSchedule(duration: 2.0, fps: 10, maxFrames: 120)
-        #expect(s.times.count == 20)
-        #expect(abs(s.frameDelay - 0.1) < 1e-9)
-        #expect(s.times.first == 0)
-        #expect(s.times.last! < 2.0)
-        // Evenly spaced.
-        #expect(abs(s.times[1] - 0.1) < 1e-9)
-    }
-
-    @Test("Long clip spreads evenly across the whole video within maxFrames")
-    func scheduleLongClip() {
-        // 100s × 10fps would be 1000 frames; capped at 120 spread across the clip.
-        let s = VideoImporter.frameSchedule(duration: 100, fps: 10, maxFrames: 120)
-        #expect(s.times.count == 120)
-        #expect(abs(s.frameDelay - 100.0 / 120.0) < 1e-9)
-        #expect(s.times.first == 0)
-        #expect(s.times.last! < 100)
-        #expect(s.times.last! > 99)   // (119/120)·100 ≈ 99.17 — reaches the tail
-    }
-
-    @Test("A sub-frame clip still yields exactly one frame")
-    func scheduleOneFrameEdge() {
-        let s = VideoImporter.frameSchedule(duration: 0.05, fps: 10, maxFrames: 120)
-        #expect(s.times == [0])
-        #expect(abs(s.frameDelay - 0.05) < 1e-9)
-    }
-
-    @Test("A zero-duration clip degrades to one frame, no NaN")
-    func scheduleZeroDuration() {
-        let s = VideoImporter.frameSchedule(duration: 0, fps: 10, maxFrames: 120)
-        #expect(s.times == [0])
-        #expect(s.frameDelay == 0)
-    }
-
-    // MARK: - Destination normalization
-
-    @Test("Destination extension is normalized to .gif")
-    func normalizesExtension() {
-        #expect(VideoImporter.normalizedDestination("notes/a/clip.mov") == "notes/a/clip.gif")
-        #expect(VideoImporter.normalizedDestination("notes/a/clip") == "notes/a/clip.gif")
-        #expect(VideoImporter.normalizedDestination("  notes/a/clip.mp4 ") == "notes/a/clip.gif")
-    }
-
     // MARK: - Policy (fake encoder)
 
-    @Test("Happy path writes a .gif and leaves the source untouched")
+    @Test("Happy path prepares GIF data and leaves the source untouched")
     func happyPath() async throws {
         let root = try makeVault()
         let src = srcPath("clip.mov")
         try Data(count: 4096).write(to: URL(fileURLWithPath: src))   // source is faked; bytes don't matter
         let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 256))
 
-        let r = try await VideoImporter(vaultPath: root, encoder: enc)
-            .add(source: src, destination: "notes/clips/demo.mov")
+        let prepared = try await VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc
+        )
+            .prepare(source: src)
 
-        #expect(r.destination == "notes/clips/demo.gif")           // normalized to .gif
-        #expect(r.width == 320 && r.height == 240)
-        #expect(r.frameCount == 20)                                 // 2s × 10fps
-        #expect(r.bytesWritten == 256)
-        #expect(exists(src))                                        // source only read, never touched
-        let stored = try Data(contentsOf: URL(fileURLWithPath: root + "/notes/clips/demo.gif"))
-        #expect(Array(stored.prefix(4)) == Array("GIF8".utf8))
+        #expect(prepared.width == 320 && prepared.height == 240)
+        #expect(prepared.frameCount == 20)
+        #expect(prepared.data.count == 256)
+        #expect(Array(prepared.data.prefix(4)) == Array("GIF8".utf8))
+        #expect(exists(src))
+    }
+
+    @Test("Concurrent requests serialize complete video conversions")
+    func serializesConversions() async throws {
+        let root = try makeVault()
+        let sources = try (0..<4).map { index in
+            let source = srcPath("clip-\(index).mov")
+            try Data(count: 64).write(to: URL(fileURLWithPath: source))
+            return source
+        }
+        let probe = ConversionProbe()
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: TrackingVideoEncoder(probe: probe)
+        )
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for source in sources {
+                group.addTask {
+                    _ = try await importer.prepare(source: source)
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(await probe.maximumActive == 1)
+    }
+
+    @Test("Video inspection and encoding preserve cancellation")
+    func preservesCancellation() async throws {
+        let root = try makeVault()
+        let source = srcPath("cancel.mov")
+        try Data(count: 64).write(to: URL(fileURLWithPath: source))
+
+        for cancelDuringInspection in [true, false] {
+            let importer = VideoImporter(
+                sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+                encoder: CancellingVideoEncoder(
+                    cancelDuringInspection: cancelDuringInspection
+                )
+            )
+            await #expect(throws: CancellationError.self) {
+                _ = try await importer.prepare(source: source)
+            }
+        }
     }
 
     @Test("A non-video source (no video track) is rejected, nothing written")
@@ -187,12 +258,14 @@ struct VideoImporterTests {
             inspection: VideoInspection(durationSeconds: 5, width: 0, height: 0, hasVideoTrack: false),
             gif: gifData(byteCount: 64)
         )
-        let importer = VideoImporter(vaultPath: root, encoder: enc)
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc
+        )
 
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: src, destination: "notes/x.gif")
+        await #expect(throws: VideoImportError.self) {
+            try await importer.prepare(source: src)
         }
-        #expect(!exists(root + "/notes/x.gif"))
     }
 
     @Test("A clip longer than the duration cap is rejected")
@@ -200,12 +273,26 @@ struct VideoImporterTests {
         let root = try makeVault()
         let src = srcPath("long.mov")
         try Data(count: 1024).write(to: URL(fileURLWithPath: src))
-        let tight = VideoImporter.Config(fps: 10, maxLongEdge: 1080, maxFrames: 120, maxSourceBytes: 512 << 20, maxDurationSeconds: 1, maxOutputBytes: 50 << 20)
-        let enc = FakeVideoEncoder(inspection: validInspection(duration: 10), gif: gifData(byteCount: 64))
-        let importer = VideoImporter(vaultPath: root, encoder: enc, config: tight)
+        let tight = VideoImportConfiguration(
+            fps: 10,
+            maxLongEdge: 1080,
+            maxFrames: 120,
+            maxSourceBytes: 512 << 20,
+            maxDurationSeconds: 1,
+            maxOutputBytes: 50 << 20
+        )
+        let enc = FakeVideoEncoder(
+            inspection: validInspection(duration: 10),
+            gif: gifData(byteCount: 64)
+        )
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc,
+            configuration: tight
+        )
 
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: src, destination: "notes/x.gif")
+        await #expect(throws: VideoImportError.self) {
+            try await importer.prepare(source: src)
         }
     }
 
@@ -215,14 +302,27 @@ struct VideoImporterTests {
         let src = srcPath("clip.mov")
         try Data(count: 1024).write(to: URL(fileURLWithPath: src))
         // makeGIF returns 100 bytes; cap is 10.
-        let tight = VideoImporter.Config(fps: 10, maxLongEdge: 1080, maxFrames: 120, maxSourceBytes: 512 << 20, maxDurationSeconds: 1800, maxOutputBytes: 10)
-        let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 100))
-        let importer = VideoImporter(vaultPath: root, encoder: enc, config: tight)
+        let tight = VideoImportConfiguration(
+            fps: 10,
+            maxLongEdge: 1080,
+            maxFrames: 120,
+            maxSourceBytes: 512 << 20,
+            maxDurationSeconds: 1800,
+            maxOutputBytes: 10
+        )
+        let enc = FakeVideoEncoder(
+            inspection: validInspection(),
+            gif: gifData(byteCount: 100)
+        )
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc,
+            configuration: tight
+        )
 
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: src, destination: "notes/x.gif")
+        await #expect(throws: VideoImportError.self) {
+            try await importer.prepare(source: src)
         }
-        #expect(!exists(root + "/notes/x.gif"))   // rejected before writing
     }
 
     @Test("Source larger than the size cap is rejected before conversion")
@@ -230,14 +330,25 @@ struct VideoImporterTests {
         let root = try makeVault()
         let src = srcPath("big.mov")
         try Data(count: 2000).write(to: URL(fileURLWithPath: src))
-        let tight = VideoImporter.Config(fps: 10, maxLongEdge: 1080, maxFrames: 120, maxSourceBytes: 1000, maxDurationSeconds: 1800, maxOutputBytes: 50 << 20)
+        let tight = VideoImportConfiguration(
+            fps: 10,
+            maxLongEdge: 1080,
+            maxFrames: 120,
+            maxSourceBytes: 1000,
+            maxDurationSeconds: 1800,
+            maxOutputBytes: 50 << 20
+        )
         let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 64))
-        let importer = VideoImporter(vaultPath: root, encoder: enc, config: tight)
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc,
+            configuration: tight
+        )
 
         do {
-            _ = try await importer.add(source: src, destination: "notes/x.gif")
+            _ = try await importer.prepare(source: src)
             Issue.record("expected the import to be rejected for source size")
-        } catch let e as VideoImporter.VideoImporterError {
+        } catch let e as ExternalFileSourceValidator.ValidationError {
             guard case .sourceTooLarge = e else {
                 Issue.record("expected sourceTooLarge, got: \(e)")
                 return
@@ -249,51 +360,29 @@ struct VideoImporterTests {
     func rejectsMissingSource() async throws {
         let root = try makeVault()
         let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 64))
-        let importer = VideoImporter(vaultPath: root, encoder: enc)
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: srcPath("nope.mov"), destination: "notes/x.gif")
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc
+        )
+        await #expect(throws: ExternalFileSourceValidator.ValidationError.self) {
+            try await importer.prepare(source: srcPath("nope.mov"))
         }
     }
 
-    @Test("Destination outside notes/ is rejected")
-    func rejectsOutsideNotes() async throws {
-        let root = try makeVault()
-        let src = srcPath("clip.mov")
-        try Data(count: 1024).write(to: URL(fileURLWithPath: src))
-        let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 64))
-        let importer = VideoImporter(vaultPath: root, encoder: enc)
-
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: src, destination: "references/x.gif")
-        }
-    }
-
-    @Test("Existing destination is not clobbered")
-    func rejectsExisting() async throws {
-        let root = try makeVault()
-        try FileManager.default.createDirectory(atPath: root + "/notes/a", withIntermediateDirectories: true)
-        try Data([0]).write(to: URL(fileURLWithPath: root + "/notes/a/taken.gif"))
-        let src = srcPath("clip.mov")
-        try Data(count: 1024).write(to: URL(fileURLWithPath: src))
-        let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 64))
-        let importer = VideoImporter(vaultPath: root, encoder: enc)
-
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: src, destination: "notes/a/taken.gif")
-        }
-    }
-
-    @Test("A source inside the vault is rejected (add_video is for external files)")
+    @Test("A source inside the vault is rejected")
     func rejectsInVaultSource() async throws {
         let root = try makeVault()
         try FileManager.default.createDirectory(atPath: root + "/notes/_attachments", withIntermediateDirectories: true)
         let inVault = root + "/notes/_attachments/existing.mov"
         try Data(count: 1024).write(to: URL(fileURLWithPath: inVault))
         let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 64))
-        let importer = VideoImporter(vaultPath: root, encoder: enc)
+        let importer = VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: enc
+        )
 
-        await #expect(throws: VideoImporter.VideoImporterError.self) {
-            try await importer.add(source: inVault, destination: "notes/copy.gif")
+        await #expect(throws: ExternalFileSourceValidator.ValidationError.self) {
+            try await importer.prepare(source: inVault)
         }
         #expect(exists(inVault))   // untouched
     }
@@ -318,28 +407,32 @@ struct VideoImporterTests {
 
         let enc = AVFoundationVideoEncoder()
         let info = try await enc.inspect(url: mov)
-        let schedule = VideoImporter.frameSchedule(duration: info.durationSeconds, fps: 10, maxFrames: 120)
+        let schedule = VideoFrameSchedule(
+            duration: info.durationSeconds,
+            framesPerSecond: 10,
+            maximumFrames: 120
+        )
         let gif = try await enc.makeGIF(url: mov, atTimes: schedule.times, frameDelay: schedule.frameDelay, maxLongEdge: 1080)
 
         #expect(Array(gif.prefix(4)) == Array("GIF8".utf8))
         #expect(gifFrameCount(gif) == schedule.times.count)
     }
 
-    @Test("Real encoder: add() imports a generated .mov as a .gif, source untouched")
-    func realEncoderImport() async throws {
+    @Test("Real encoder prepares a generated MOV as GIF data")
+    func realEncoderPreparation() async throws {
         let root = try makeVault()
         let mov = try await makeTinyMOV(width: 48, height: 32, frames: 8, fps: 8)
         defer { try? FileManager.default.removeItem(at: mov) }
 
-        let r = try await VideoImporter(vaultPath: root, encoder: AVFoundationVideoEncoder())
-            .add(source: mov.path, destination: "notes/clips/rec.mov")
+        let prepared = try await VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: AVFoundationVideoEncoder()
+        )
+            .prepare(source: mov.path)
 
-        #expect(r.destination == "notes/clips/rec.gif")
-        #expect(r.frameCount >= 1)
-        #expect(exists(root + "/notes/clips/rec.gif"))
-        #expect(exists(mov.path))   // source only read, never touched
-        let stored = try Data(contentsOf: URL(fileURLWithPath: root + "/notes/clips/rec.gif"))
-        #expect(Array(stored.prefix(4)) == Array("GIF8".utf8))
-        #expect(gifFrameCount(stored) == r.frameCount)
+        #expect(prepared.frameCount >= 1)
+        #expect(exists(mov.path))
+        #expect(Array(prepared.data.prefix(4)) == Array("GIF8".utf8))
+        #expect(gifFrameCount(prepared.data) == prepared.frameCount)
     }
 }

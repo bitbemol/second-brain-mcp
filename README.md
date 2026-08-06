@@ -1,28 +1,25 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives Claude Desktop read/write access to a Markdown note vault and read-only access to a PDF reference library. Every note edit is automatically committed to git.
+A local MCP server in Swift that gives MCP clients a compact, format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every mutation is automatically committed to git.
 
 ```
-Claude Desktop  ─┐
-                 ├── stdio ──> SecondBrainMCP
-Claude Code CLI ─┘                |
-                                  +── notes/       (Markdown, read/write, git tracked)
-                                  +── references/  (PDFs, read-only)
+stdio-capable MCP client ──> SecondBrainMCP
+                                  |
+                                  +── notes/       (supported files, read/write, git tracked)
+                                  +── references/  (supported files, read-only)
 ```
-
-> **Important:** MCP servers only work with **Claude Desktop** (the macOS app) and **Claude Code** (the CLI). They do **not** work with claude.ai in the browser.
 
 ## Features
 
-- **17 MCP tools** — search, read (single & batch), create, update, move, delete notes; search and read PDFs; git history and revert
-- **4 MCP resources** — vault index, recent notes, tags summary, references index
+- **Four generic file CRUD tools** — `create_file`, `read_file`, `update_file`, and `delete_file`; every request declares a concrete format
+- **Concrete format routing** — Markdown, Canvas, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
+- **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
 - **Git auto-commit** — every write creates a commit with `[SecondBrainMCP]` prefix
-- **Soft deletes** — deleted notes move to `.trash/`, never permanently removed
-- **Full-text search** — disk-based grep across notes and PDF search cache
+- **Soft deletes** — deleted files move to `.trash/`, never permanently removed
 - **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
-- **Read-only mode** — `--read-only` flag hides all write tools
+- **Read-only mode** — `--read-only` hides write tools and disables vault migration/Git mutation in the backend
 - **Path security** — symlink resolution, traversal prevention, extension allowlists
-- **Audit log** — every operation logged to `.secondbrain-mcp/audit.log`
+- **Audit log** — every operation is logged under `~/Library/Application Support/SecondBrainMCP/`
 - **Works alongside Obsidian, iA Writer, Logseq** — the vault is plain Markdown; app config directories are ignored
 - **Custom instructions** — drop an `INSTRUCTIONS.md` in your vault root to define your own conventions
 
@@ -65,7 +62,9 @@ cp .build/release/second-brain-mcp /usr/local/bin/
 
 ## Connecting to Claude
 
-SecondBrainMCP works with **Claude Desktop** (the macOS app) and **Claude Code** (the CLI). It does **not** work with claude.ai in the browser.
+SecondBrainMCP uses the standard stdio MCP transport. The examples below configure Claude Desktop
+and Claude Code; another MCP client can use the same executable and arguments when it supports
+launching local stdio servers.
 
 ### Option A: Claude Desktop (the macOS app)
 
@@ -125,114 +124,70 @@ Then fully restart: **Cmd+Q and reopen Claude Desktop**, or start a new `claude`
 
 If new tools still don't appear, confirm the client's `command` points at `.build/release/second-brain-mcp` (the symlink, see [Installation](#installation)) and not a stale architecture-specific path.
 
-### What does NOT work
-
-- **claude.ai** (the website) — does not support MCP servers
-- **Claude mobile apps** — do not support MCP servers
-- Any Claude interface that isn't Claude Desktop or Claude Code
-
 ## Vault Structure
 
 ```
 ~/SecondBrain/
-├── notes/              <- Your Markdown notes (editable, git tracked)
+├── notes/              <- Supported files (editable, git tracked)
 │   ├── projects/
 │   ├── journal/
-│   └── ideas/
-├── references/         <- PDF books and papers (read-only)
+│   └── artifacts/
+├── references/         <- PDF/image reference library (read-only)
 ├── INSTRUCTIONS.md     <- Optional: custom rules for the AI (see below)
 ├── .git/               <- Auto-created on first run
-├── .trash/             <- Soft-deleted notes land here
-└── .secondbrain-mcp/   <- Audit log + lightweight search cache
+└── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Everything else is auto-created on first startup.
+Only `notes/` and `references/` need to exist. Writable startup prepares Git metadata as needed; read-only startup leaves the vault untouched. Size-rotated audit logs live outside the vault under `~/Library/Application Support/SecondBrainMCP/`.
 
 ## CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vault <path>` | *(required)* | Path to your vault directory |
-| `--read-only` | `false` | Disable all write/delete/revert tools |
-| `--extensions <list>` | `md,markdown` | Allowed note file extensions |
-| `--log-level <level>` | `info` | `debug`, `info`, `warning`, `error` |
+| `--read-only` | `false` | Expose only `read_file` |
 
-## Tools
+## File API
 
-### Notes
+File CRUD has exactly four MCP tools. The caller must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. This is deliberate: clients can see the allowed enum before sending data instead of guessing what the server might accept.
 
-| Tool | Description |
-|------|-------------|
-| `read_note` | Read a note's full content |
-| `read_notes` | Read up to 20 notes in one call, with summary index and per-note error reporting |
-| `list_notes` | List notes, filter by directory or tag |
-| `get_note_metadata` | Title, tags, word count, links |
-| `search_notes` | Full-text grep search across all notes |
-| `create_note` | Create with auto-generated frontmatter |
-| `update_note` | Replace or append mode |
-| `move_note` | Move/rename a note within notes/, preserves git history |
-| `move_notes` | Batch move up to 20 notes atomically (all-or-nothing) |
-| `delete_note` | Soft-delete to `.trash/` |
+| Tool | Purpose |
+|------|---------|
+| `create_file` | Validate/transform input, atomically create under `notes/`, and git-commit |
+| `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
+| `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
+| `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then git-commit |
 
-### Canvas
+### Formats and operations
 
-Obsidian [JSON Canvas](https://jsoncanvas.org) (`.canvas`) files, stored under `notes/`. Writes validate against the JSON Canvas 1.0 spec, then persist your original bytes (so plugin-added keys survive).
+| Format | Extensions | Create | Read | Update | Delete |
+|--------|------------|:------:|:----:|:------:|:------:|
+| `markdown` | `.md`, `.markdown` | notes | notes | replace/append/patch | notes |
+| `canvas` | `.canvas` | notes | notes | replace | notes |
+| `har` | `.har` | notes | notes | — | notes |
+| `patch` | `.patch`, `.diff` | notes | notes | — | notes |
+| `log` | `.log` | notes | notes | append | notes |
+| `png` | `.png` | external image → clean/resized PNG | notes, references | — | notes |
+| `gif` | `.gif` | external video + `video_to_gif` | notes, references | — | notes |
+| `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
+| `pdf` | `.pdf` | — | references | — | notes |
 
-| Tool | Description |
-|------|-------------|
-| `list_canvas` | List canvases with node/edge counts and a per-type breakdown (metadata only) |
-| `read_canvas` | Node/edge summary + raw JSON |
-| `search_canvas` | Literal, case-insensitive keyword search over text-node text and node/group labels; returns matching node ids + snippets (file/link refs are out of scope) |
-| `create_canvas` | Create a validated `.canvas` file |
-| `update_canvas` | Replace an existing canvas's full contents (validated) |
-| `delete_canvas` | Soft-delete to `.trash/` |
+The matrix is generated from registered operation bindings rather than maintained separately at runtime. Read `secondbrain://file-capabilities` for the server's effective capabilities and allowed vault areas for each operation. Internal handler identities stay private, so they can be refactored without changing the API. In `--read-only` mode, mutating operations disappear from both tool discovery and this resource.
 
-`read_canvas` flags `file`-nodes whose target doesn't exist with `⚠ file not found`. These are **not** rejected on write: unlike edge→node references (validated for structural integrity), a `file`-node→file reference is a soft link the JSON Canvas spec and Obsidian both tolerate (forward references, files added later).
+Format-specific behavior stays behind the four endpoints:
 
-### Images & attachments
-
-| Tool | Description |
-|------|-------------|
-| `list_attachments` | List binary attachments under `notes/` (anything that isn't a `.md` note or `.canvas`) — path, extension, size, and whether `read_image` can open it. Closes the image-discovery gap that `list_notes` leaves. |
-| `read_image` | Read an image (png/jpg/jpeg/gif/webp/heic/heif/tiff/bmp) from `notes/` or `references/` for viewing. Within-cap stills pass through unchanged, oversized ones are downscaled. **Animated GIFs** come back as a bundle of sampled PNG frames, each labeled with its wall-clock offset (read from the GIF's frame delays) plus the total duration, so the model reads them as a *timed* sequence. |
-| `add_image` | Import an image from a path on disk into the vault. The file is validated as a real image and **re-encoded to a clean PNG** (EXIF, trailing bytes, and any non-image payload are stripped; non-images are rejected), then written under `notes/` and git-committed. The source is only **read** — never moved or deleted (the vault is the server's entire write domain). Useful for filing bug-repro/test screenshots an agent produced — then `read_image` or embed the returned path. *(write tool; hidden in `--read-only`)* |
-| `add_video` | Import a video from a path on disk into the vault **as an animated GIF**, so the model can "watch" it via `read_image` (which samples an animated GIF into a timed frame bundle) and it plays inline in Obsidian. The video is sampled to frames and assembled into a GIF **in-process** (AVFoundation + ImageIO — no ffmpeg / subprocess); audio is dropped. Same source trust model as `add_image`: external files only, source only **read**, decode is the gate (a non-video is rejected). Destination normalized to `.gif` under `notes/`, reject-if-exists, git-committed. Balanced caps: 10 fps · long edge ≤ 1080 · ≤ 120 frames · source ≤ 512 MB · duration ≤ 30 min · **output GIF ≤ 50 MB** (the real guard). Useful for filing an issue screen-recording an agent captured. *(write tool; hidden in `--read-only`)* |
-| `delete_attachment` | Soft-delete a binary attachment (image or other non-note/non-canvas file under `notes/`) to `.trash/` — recoverable, git-committed. Use it to remove an imported image you no longer want. *(write tool; hidden in `--read-only`)* |
-
-### Links & backlinks
-
-Obsidian resolves a `[[wikilink]]` / `![[embed]]` by **basename across the whole vault**, so an embed written in one folder can point to a file in another (e.g. `![[screenshot.png]]` in `apple/uikit/` → `apple/_attachments/screenshot.png`). These tools expose that link graph.
-
-| Tool | Description |
-|------|-------------|
-| `resolve_link` | Resolve a link/embed target to its actual vault path. Bare basenames resolve vault-wide; extension-less targets imply a `.md` note; path-qualified targets match by path; ambiguous basenames return all candidates (best first, optionally disambiguated by the `from` note). Accepts the target bare or wrapped (`foo.png`, `[[Note]]`, `![[img.png\|alt]]`). |
-| `find_backlinks` | The reverse: which notes link to or embed a given file. Especially useful for non-note files — pass an image/attachment path or basename. Each link is resolved before counting, so a basename shared by two files won't produce false hits. |
-
-### References (read-only)
-
-| Tool | Description |
-|------|-------------|
-| `list_references` | List all PDFs with metadata |
-| `read_reference` | Read pages as text + JPEG images, with page/range/query/book_page modes |
-| `search_references` | Full-text search across all PDFs |
-| `get_reference_metadata` | PDF metadata without reading content |
-
-### Git History
-
-| Tool | Description |
-|------|-------------|
-| `note_history` | Commit history for a specific note |
-| `revert_note` | Revert to a previous version (new commit) |
-| `vault_changelog` | Recent changes across the vault |
+- HAR input must have a valid HAR `log` structure; reads return a request/status/host/timing summary, with raw JSON only when requested.
+- Patch input must be a unified diff; reads report affected files, hunks, additions, and deletions.
+- Logs default to the last 500 lines, support bounded line ranges, and can only be appended.
+- Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
+- Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
+- PDF reads return extracted text plus rendered page images and support page, printed-page, range, and query navigation.
 
 ## Resources
 
 | URI | Description |
 |-----|-------------|
-| `secondbrain://index` | All notes: paths, titles, tags |
-| `secondbrain://recent` | Notes modified in the last 7 days |
-| `secondbrain://tags` | All tags with note counts |
-| `secondbrain://references` | All PDFs with metadata |
+| `secondbrain://file-capabilities` | Effective file formats, extensions, CRUD operations, and vault areas |
 
 ## Custom Instructions
 
@@ -250,8 +205,8 @@ The server appends the file contents to its default instructions during startup.
 ## Security
 
 - **Path traversal prevention** — all paths validated through `PathValidator` with symlink resolution
-- **No arbitrary shell execution** — only `/usr/bin/git` and `/usr/bin/grep` with programmatic argument arrays
-- **Structural write boundaries** — `ReferenceManager` has zero write methods by design
+- **No arbitrary shell execution** — only `/usr/bin/git`, with programmatic argument arrays
+- **Structural write boundaries** — `WritableFileTarget` cannot represent a path under `references/`
 - **Soft deletes only** — files are never permanently deleted
 - **Commit message sanitization** — shell metacharacters stripped from git messages
 
@@ -261,35 +216,43 @@ See [SECURITY.md](SECURITY.md) for the full threat model, network-activity audit
 
 ```
 Sources/SecondBrainMCP/
-├── main.swift                    # Entry point
-├── Config/ServerConfig.swift     # CLI args -> config
-├── Server/MCPServerSetup.swift   # Server init, all handlers
-├── Core/
-│   ├── PathValidator.swift       # Path security (struct, static)
-│   ├── VaultManager.swift        # Note I/O (actor)
-│   ├── ReferenceManager.swift    # PDF ops, zero write methods (Sendable struct)
-│   ├── PDFPageRenderer.swift     # PDF page JPEG rendering + outline extraction (struct, static)
-│   ├── PDFTextExtractor.swift    # PDFKit text extraction + search (struct, static)
-│   ├── ReferenceCache.swift      # Lightweight search cache (enum, pure namespace)
-│   ├── SearchEngine.swift        # Disk-based grep search (Sendable struct)
-│   ├── GitManager.swift          # Git via /usr/bin/git (actor)
-│   └── MarkdownParser.swift      # YAML frontmatter (struct, static)
-└── Logging/AuditLogger.swift     # Operation log (actor)
+├── Frontend/                           # Public CLI and MCP API boundary
+│   ├── Application/main.swift
+│   ├── Configuration/                  # Argument parsing
+│   └── MCP/
+│       └── Files/                      # Four generic CRUD tools + capabilities
+├── Backend/                            # Internal behavior; never imports MCP
+│   ├── Concurrency/                    # Reusable cancellation-aware async gates
+│   ├── Files/
+│   │   ├── Ingress/                    # Stored-text request-to-bytes policy
+│   │   ├── Operations/                 # Format-specific validation/transformation
+│   │   ├── Routing/                    # Catalog, bindings, and routed service
+│   │   ├── Storage/                    # Generic snapshots, persistence, and soft deletion
+│   │   ├── Targets/                    # Validated readable/writable vault paths
+│   │   ├── Transactions/               # Mutation, Git, and audit sequencing
+│   │   └── Validation/                 # Vault and external-source security
+│   ├── Media/                          # Image and video processing
+│   └── …                               # Canvas, references, Git, logging, infrastructure
+└── Shared/                             # Cross-boundary values and small utilities
+    ├── Files/                          # Formats, requests, capabilities, and outputs
+    └── Logging/                        # Shared stderr logger
 ```
 
-**Concurrency model:** Actors for mutable state (VaultManager, GitManager, AuditLogger), Sendable structs for stateless I/O (ReferenceManager, SearchEngine), structs with static methods for pure logic (PathValidator, PDFPageRenderer, PDFTextExtractor, MarkdownParser), enum namespace for cache operations (ReferenceCache). Swift 6.2 strict concurrency — no data races by construction.
+Dependencies flow inward as `Frontend → Backend → Shared`. Frontend translates CLI/MCP
+inputs into plain Swift values. Backend owns vault behavior, routing, processing, and persistence.
+Shared contains only stable contracts or genuinely cross-boundary utilities; feature orchestration
+does not belong there. Backend and Shared never depend on Frontend.
 
-## Tests
+`VaultRuntime` is the backend composition root. `FileFormatDefinition` is the wiring point: each
+concrete format registers only the operations it supports and binds those operations to reusable
+functions. `VaultFileService` validates and routes requests; `TextFileIngress` converts stored-text
+create requests into bounded inline bytes before their semantic handler; and
+`VaultMutationExecutor` serializes the prepared storage mutation, Git commit, and audit record.
+Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
+persistence component for the generic API. Writable targets cannot represent `references/`.
 
-```bash
-swift test                            # Run all 92 tests
-swift test --filter PathValidatorTests # Run specific suite
-```
-
-| Suite | Tests | What it covers |
-|-------|-------|----------------|
-| PathValidator (4 suites) | 24 | Traversal attacks, symlinks, edge cases |
-| GitManager | 8 | Init, commit, log, sanitization |
-| MarkdownParser (4 suites) | 16 | Frontmatter, links, generation |
-| VaultManager (2 suites) | 28 | Read, list, filter, metadata, move, batch move |
-| SearchEngine | 16 | Disk-based grep, snippet generation, reference search |
+**Concurrency model:** actors serialize mutable state and I/O; immutable routing definitions and
+stateless handlers are `Sendable`. `AsyncExclusiveGate` keeps each generic file mutation and its
+Git commit together inside `VaultMutationExecutor`, and also prevents actor reentrancy from running
+multiple video conversions at once. Snapshot comparison rejects stale updates from concurrent
+external edits.

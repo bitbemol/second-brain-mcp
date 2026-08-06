@@ -1,0 +1,66 @@
+import MCP
+
+/// Translates and dispatches the four MCP file tools to the backend service.
+///
+/// The controller owns boundary orchestration and read-only rejection. Dedicated
+/// collaborators own decoding, execution policy, and MCP result conversion.
+struct FileToolController: Sendable {
+    private let readOnly: Bool
+    private let rejections: any FileRequestRejectionReporting
+    private let executor: FileToolExecutor
+
+    /// Creates a controller for one initialized vault runtime.
+    init(
+        readOnly: Bool,
+        rejections: any FileRequestRejectionReporting,
+        files: any FileCRUDService
+    ) {
+        self.readOnly = readOnly
+        self.rejections = rejections
+        self.executor = FileToolExecutor(files: files)
+    }
+
+    /// Dispatches an MCP tool call or returns a transport-level error result.
+    func call(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        try Task.checkCancellation()
+        guard let tool = FileToolName(rawValue: params.name) else {
+            try Task.checkCancellation()
+            return FileToolResultMapper.failure("Unknown tool: \(params.name)")
+        }
+
+        if readOnly, tool.operation.isMutation {
+            await rejections.record(FileRequestRejection(
+                operation: tool.operation,
+                path: FileToolRequestDecoder.path(from: params),
+                reason: .readOnly
+            ))
+            try Task.checkCancellation()
+            return FileToolResultMapper.failure(
+                "Server is running in read-only mode; '\(params.name)' is not permitted."
+            )
+        }
+
+        let request: FileToolRequest
+        do {
+            request = try FileToolRequestDecoder.decode(params, for: tool)
+        } catch let error as FileToolRequestDecoder.DecodingError {
+            try Task.checkCancellation()
+            return FileToolResultMapper.failure(error.description)
+        } catch {
+            try Task.checkCancellation()
+            return FileToolResultMapper.failure("Error: \(error)")
+        }
+
+        do {
+            let output = try await executor.execute(request)
+            try Task.checkCancellation()
+            return FileToolResultMapper.success(output)
+        } catch is CancellationError {
+            // MCP suppresses a response only when cancellation escapes the handler.
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            return FileToolResultMapper.failure("Error: \(error)")
+        }
+    }
+}
