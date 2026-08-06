@@ -101,6 +101,8 @@ struct VaultFileServiceTests {
             .init(format: .har, operations: createReadDelete),
             .init(format: .patch, operations: createReadDelete),
             .init(format: .log, operations: textCRUD),
+            .init(format: .json, operations: textCRUD),
+            .init(format: .csv, operations: textCRUD),
             .init(format: .png, operations: createReadDeleteMedia),
             .init(format: .jpeg, operations: readDeleteMedia),
             .init(format: .gif, operations: createReadDeleteMedia),

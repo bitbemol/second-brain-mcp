@@ -13,6 +13,10 @@ enum FileHandlerID: String, Sendable {
     case patch
     /// UTF-8 log preparation and bounded reading.
     case log
+    /// General JSON validation and lossless reading.
+    case json
+    /// CSV validation and lossless reading.
+    case csv
     /// External image normalization and image reading.
     case image
     /// External video conversion to animated GIF.

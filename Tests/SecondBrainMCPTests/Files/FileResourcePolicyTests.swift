@@ -6,7 +6,7 @@ import Testing
 struct FileResourcePolicyTests {
     @Test("Every concrete format belongs to an explicit file-size tier")
     func formatTiers() {
-        for format in [FileFormat.markdown, .canvas, .patch] {
+        for format in [FileFormat.markdown, .canvas, .patch, .json, .csv] {
             #expect(format.maximumFileBytes == 10 * 1024 * 1024)
         }
         for format in [

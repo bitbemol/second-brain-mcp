@@ -69,7 +69,7 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read a supported concrete file with format-specific behavior. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Images may be resized or decomposed into timed GIF frames; PDFs return text plus rendered pages; HAR returns a summary unless raw=true; patches return a summary plus diff; logs default to the last 500 lines.",
+                description: "Read a supported concrete file with format-specific behavior. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. JSON and CSV return their complete validated source text. Images may be resized or decomposed into timed GIF frames; PDFs return text plus rendered pages; HAR returns a summary unless raw=true; patches return a summary plus diff; logs default to the last 500 lines.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
@@ -114,7 +114,7 @@ enum FileToolDefinitions {
         case .update:
             Tool(
                 name: tool.rawValue,
-                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. Markdown supports replace, append, and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
+                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. Markdown and CSV support replace, append, and exact text replacements. JSON supports replace and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .update),
                     formatDescription: "Concrete file format",
@@ -130,7 +130,7 @@ enum FileToolDefinitions {
                         .content: .object(["type": .string("string"), "description": .string("Required for replace or append")]),
                         .replacements: .object([
                             "type": .string("array"),
-                            "description": .string("Markdown patch mode: up to 20 exact, unique replacements"),
+                            "description": .string("Patch mode for Markdown, JSON, and CSV: up to 20 exact, unique replacements"),
                             "items": .object([
                                 "type": .string("object"),
                                 "properties": argumentObject([

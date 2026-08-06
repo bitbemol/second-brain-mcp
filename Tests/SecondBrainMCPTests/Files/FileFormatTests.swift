@@ -15,9 +15,13 @@ struct FileFormatTests {
     func aliases() {
         #expect(FileFormat.jpeg.extensions == ["jpg", "jpeg"])
         #expect(FileFormat.patch.extensions == ["patch", "diff"])
+        #expect(FileFormat.json.extensions == ["json"])
+        #expect(FileFormat.csv.extensions == ["csv"])
         #expect(FileFormat.heic.extensions == ["heic", "heif"])
         #expect(FileFormat.markdown.accepts(path: "notes/a.md"))
         #expect(!FileFormat.har.accepts(path: "notes/a.json"))
+        #expect(FileFormat.json.accepts(path: "notes/a.json"))
+        #expect(FileFormat.csv.accepts(path: "notes/a.csv"))
     }
 
     @Test("Image format normalization derives every alias from extensions")

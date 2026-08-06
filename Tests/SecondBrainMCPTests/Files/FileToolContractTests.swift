@@ -12,6 +12,18 @@ struct FileToolContractTests {
             .update: [.notes],
             .delete: [.notes],
         ]),
+        .init(format: .json, operations: [
+            .create: [.notes],
+            .read: [.notes],
+            .update: [.notes],
+            .delete: [.notes],
+        ]),
+        .init(format: .csv, operations: [
+            .create: [.notes],
+            .read: [.notes],
+            .update: [.notes],
+            .delete: [.notes],
+        ]),
         .init(format: .pdf, operations: [
             .read: [.references],
         ]),
@@ -47,6 +59,16 @@ struct FileToolContractTests {
             updateProperties["mutation_id"]?.objectValue?["format"]?.stringValue
                 == "uuid"
         )
+        let replacementDescription = updateProperties["replacements"]?
+            .objectValue?["description"]?.stringValue ?? ""
+        #expect(replacementDescription.contains("Markdown"))
+        #expect(replacementDescription.contains("JSON"))
+        #expect(replacementDescription.contains("CSV"))
+
+        for operation in FileToolName.allCases.map(\.rawValue) {
+            let formats = try formatInputs(of: #require(tools[operation]))
+            #expect(formats.isSuperset(of: ["json", "csv"]))
+        }
     }
 
     @Test("Structured result schemas expose revision and replay metadata")
@@ -114,6 +136,12 @@ struct FileToolContractTests {
     private func inputProperties(of tool: MCP.Tool) throws -> [String: MCP.Value] {
         let schema = try #require(tool.inputSchema.objectValue)
         return try #require(schema["properties"]?.objectValue)
+    }
+
+    private func formatInputs(of tool: MCP.Tool) throws -> Set<String> {
+        let properties = try inputProperties(of: tool)
+        let format = try #require(properties["format"]?.objectValue)
+        return Set(try #require(format["enum"]?.arrayValue).compactMap(\.stringValue))
     }
 
     private func requiredOutputs(of tool: MCP.Tool) throws -> [String] {

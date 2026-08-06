@@ -42,6 +42,19 @@ enum TextFileSupport {
         return text
     }
 
+    /// Strictly decodes UTF-8 while retaining a leading byte-order mark.
+    ///
+    /// `String(data:encoding:)` validates UTF-8 but consumes its leading BOM.
+    /// JSON and CSV use this variant because their handlers promise byte-faithful
+    /// reads and updates. The second decode cannot repair invalid input because
+    /// the strict validation has already succeeded.
+    static func stringPreservingByteOrderMark(from data: Data) throws -> String {
+        guard String(data: data, encoding: .utf8) != nil else {
+            throw TextError.invalidUTF8
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     /// Appends text with one line boundary when neither side already supplies one.
     ///
     /// Empty values are concatenated unchanged, so appending to an empty file never

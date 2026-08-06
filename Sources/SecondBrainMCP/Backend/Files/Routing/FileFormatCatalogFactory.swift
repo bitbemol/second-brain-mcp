@@ -27,6 +27,8 @@ enum FileFormatCatalogFactory {
         let har = HARFileOperations()
         let patch = PatchFileOperations()
         let log = LogFileOperations()
+        let json = JSONFileOperations()
+        let csv = CSVFileOperations()
         let image = ImageFileOperations(
             imageReader: imageReader,
             imageImporter: imageImporter,
@@ -75,6 +77,20 @@ enum FileFormatCatalogFactory {
                 create: log.prepareCreate,
                 read: log.read,
                 update: log.prepareUpdate
+            ),
+            storedFiles.definition(
+                format: .json,
+                handler: .json,
+                create: json.prepareCreate,
+                read: json.read,
+                update: json.prepareUpdate
+            ),
+            storedFiles.definition(
+                format: .csv,
+                handler: .csv,
+                create: csv.prepareCreate,
+                read: csv.read,
+                update: csv.prepareUpdate
             ),
             imageFiles.definition(
                 .png,

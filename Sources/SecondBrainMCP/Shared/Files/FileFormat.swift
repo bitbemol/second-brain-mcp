@@ -16,6 +16,10 @@ enum FileFormat: String, CaseIterable, Codable, Sendable {
     case patch
     /// Append-oriented UTF-8 log content.
     case log
+    /// General JavaScript Object Notation content.
+    case json
+    /// Comma-separated tabular text.
+    case csv
     /// Portable Network Graphics image.
     case png
     /// JPEG image stored as `.jpg` or `.jpeg`.
@@ -41,6 +45,8 @@ enum FileFormat: String, CaseIterable, Codable, Sendable {
         case .har: ["har"]
         case .patch: ["patch", "diff"]
         case .log: ["log"]
+        case .json: ["json"]
+        case .csv: ["csv"]
         case .png: ["png"]
         case .jpeg: ["jpg", "jpeg"]
         case .gif: ["gif"]

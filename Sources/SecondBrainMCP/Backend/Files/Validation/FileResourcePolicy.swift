@@ -27,7 +27,7 @@ enum FileResourcePolicy {
     /// - Returns: Maximum size accepted for storage and reading.
     static func maximumBytes(for format: FileFormat) -> Int {
         switch format {
-        case .markdown, .canvas, .patch:
+        case .markdown, .canvas, .patch, .json, .csv:
             10 * 1024 * 1024
         case .har, .log, .png, .jpeg, .gif, .webp, .heic, .tiff, .bmp:
             25 * 1024 * 1024

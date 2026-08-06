@@ -12,7 +12,7 @@ stdio-capable MCP client ──> SecondBrainMCP
 ## Features
 
 - **Four generic file CRUD tools** — `create_file`, `read_file`, `update_file`, and `delete_file`; every request declares a concrete format
-- **Concrete format routing** — Markdown, Canvas, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
+- **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
 - **Git auto-commit** — every successful changed-byte write creates a scoped commit with `[SecondBrainMCP]` prefix
@@ -170,6 +170,8 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 | `har` | `.har` | notes | notes | — | notes |
 | `patch` | `.patch`, `.diff` | notes | notes | — | notes |
 | `log` | `.log` | notes | notes | append | notes |
+| `json` | `.json` | notes | notes | replace/patch | notes |
+| `csv` | `.csv` | notes | notes | replace/append/patch | notes |
 | `png` | `.png` | external image → clean/resized PNG | notes, references | — | notes |
 | `gif` | `.gif` | external video + `video_to_gif` | notes, references | — | notes |
 | `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
@@ -182,6 +184,8 @@ Format-specific behavior stays behind the four endpoints:
 - HAR input must have a valid HAR `log` structure; reads return a request/status/host/timing summary, with raw JSON only when requested.
 - Patch input must be a unified diff; reads report affected files, hunks, additions, and deletions.
 - Logs default to the last 500 lines, support bounded line ranges, and can only be appended.
+- JSON accepts any valid top-level JSON value, preserves its original representation, and validates replacements or exact text patches before persistence.
+- CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
 - Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
 - PDF reads return extracted text plus rendered page images and support page, printed-page, range, and query navigation.
