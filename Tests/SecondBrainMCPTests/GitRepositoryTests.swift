@@ -160,10 +160,11 @@ struct GitRepositoryTests {
             atomically: true,
             encoding: .utf8
         )
+        let identifier = MutationID()
 
         try await git.commitChange(
             files: ["notes/*.md"],
-            message: "[SecondBrainMCP] Created markdown"
+            message: "[SecondBrainMCP] Created markdown [mutation \(identifier.rawValue)]"
         )
 
         let committedPaths = try runGit(
@@ -176,6 +177,16 @@ struct GitRepositoryTests {
             try runGit(["status", "--porcelain"], at: root)
                 .contains("notes/sibling.md")
         )
+        let foundLiteral = try await git.containsMutationCommit(
+            identifier: identifier,
+            path: "notes/*.md"
+        )
+        let foundSibling = try await git.containsMutationCommit(
+            identifier: identifier,
+            path: "notes/sibling.md"
+        )
+        #expect(foundLiteral)
+        #expect(!foundSibling)
     }
 
     @Test("Commits a scoped file change")

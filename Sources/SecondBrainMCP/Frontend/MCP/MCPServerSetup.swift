@@ -32,9 +32,13 @@ struct MCPServerSetup {
             This is a personal knowledge vault with format-aware file access. \
             Use create_file, read_file, update_file, and delete_file with an explicit \
             concrete format. Read secondbrain://file-capabilities before operating when \
-            format support is uncertain. All file mutations are automatically committed \
-            to git. The references/ area is read-only. Paths are always relative to the \
-            vault root (for example, "notes/projects/app.md").
+            format support is uncertain. Every file mutation that changes vault bytes is \
+            automatically committed to git. Every mutation requires a fresh caller-generated mutation_id UUID; \
+            reuse it only when retrying that exact request after a lost response. Before \
+            update_file or delete_file, read the note and return its structured revision \
+            as expected_revision. A revision conflict requires reading and reconsidering \
+            the note, never blindly retrying. The references/ area is read-only. Paths are \
+            always relative to the vault root (for example, "notes/projects/app.md").
             """ + (customInstructions.map { "\n\n" + $0 } ?? ""),
             capabilities: .init(
                 resources: .init(subscribe: false, listChanged: false),

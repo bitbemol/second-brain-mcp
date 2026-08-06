@@ -149,6 +149,43 @@ struct VaultDataDirectoryTests {
         }
     }
 
+    @Test("The vault-wide lock serializes simultaneous legacy migration")
+    func coordinatesConcurrentMigration() async throws {
+        let roots = try makeRoots()
+        let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
+        try FileManager.default.createDirectory(
+            at: legacyRoot.appendingPathComponent("cache"),
+            withIntermediateDirectories: true
+        )
+        try Data("old audit".utf8).write(
+            to: legacyRoot.appendingPathComponent("audit.log")
+        )
+        let prepared = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support,
+            migrateLegacyData: false
+        )
+        let lock = POSIXAdvisoryFileLock(
+            url: prepared.lockDirectoryURL
+                .appendingPathComponent("vault-mutations.lock"),
+            retryNanoseconds: 1_000_000
+        )
+
+        async let first: Void = lock.withLock(.exclusive) {
+            try prepared.migrateLegacyData(from: roots.vault.path)
+        }
+        async let second: Void = lock.withLock(.exclusive) {
+            try prepared.migrateLegacyData(from: roots.vault.path)
+        }
+        _ = try await (first, second)
+
+        #expect(
+            try String(contentsOf: prepared.auditLogURL, encoding: .utf8)
+                == "old audit"
+        )
+        #expect(!FileManager.default.fileExists(atPath: legacyRoot.path))
+    }
+
     private func makeRoots() throws -> (vault: URL, support: URL) {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("VaultDataDirectoryTests-\(UUID().uuidString)")

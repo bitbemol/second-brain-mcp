@@ -2,6 +2,11 @@ import Foundation
 
 /// The only component that mutates first-class files managed by the generic API.
 /// Format handlers prepare bytes; this actor owns atomic persistence and soft-delete.
+///
+/// Caller revisions and path leases provide compare-and-swap semantics among
+/// cooperating MCP runtimes. An unrelated application does not honor those
+/// leases and can still write during the final compare-to-rename filesystem
+/// window; no pathname API supplies a universal cross-application CAS.
 actor VaultCRUDStore {
 
     /// Persistence failures independent of concrete file-format semantics.
@@ -56,14 +61,28 @@ actor VaultCRUDStore {
         )
     }
 
+    /// Confirms a create destination is still absent before durable intent.
+    ///
+    /// ``create(target:data:)`` repeats this check and retains its atomic
+    /// no-clobber move. This earlier validation keeps an ordinary existing-file
+    /// rejection outside the mutation executor's point of no return.
+    func requireAbsent(_ target: WritableFileTarget) throws {
+        try target.revalidate()
+        guard !FileManager.default.fileExists(atPath: target.url.path) else {
+            throw StoreError.alreadyExists(target.relativePath)
+        }
+    }
+
     /// Atomically creates a new file without clobbering an existing destination.
     ///
     /// - Parameters:
     ///   - target: Structurally writable target under `notes/`.
     ///   - data: Fully prepared bytes from a format handler.
+    /// - Returns: Revision of the exact bytes created.
     /// - Throws: ``StoreError/alreadyExists(_:)``, ``FileResourcePolicy/Violation``,
     ///   or a filesystem error.
-    func create(target: WritableFileTarget, data: Data) throws {
+    @discardableResult
+    func create(target: WritableFileTarget, data: Data) throws -> FileRevision {
         let fm = FileManager.default
         try target.revalidate()
         try FileResourcePolicy.validate(
@@ -86,6 +105,7 @@ actor VaultCRUDStore {
         do {
             try data.write(to: temporary, options: .atomic)
             try fm.moveItem(at: temporary, to: target.url)
+            return FileSnapshot(data: data, modifiedDate: nil).revision
         } catch {
             try? fm.removeItem(at: temporary)
             if fm.fileExists(atPath: target.url.path) {
@@ -100,30 +120,48 @@ actor VaultCRUDStore {
     /// - Parameters:
     ///   - target: Structurally writable target under `notes/`.
     ///   - data: Fully prepared replacement bytes.
-    ///   - expected: Snapshot captured before format-specific preparation.
+    ///   - expectedRevision: Caller revision that must still identify the file.
+    /// - Returns: Revision of the exact replacement bytes.
     /// - Throws: ``StoreError/changedSinceRead(_:)`` if an external edit won the
     ///   race, or ``FileResourcePolicy/Violation`` when replacement data is too large.
-    func replace(target: WritableFileTarget, data: Data, expected: FileSnapshot) throws {
+    @discardableResult
+    func replace(
+        target: WritableFileTarget,
+        data: Data,
+        expectedRevision: FileRevision
+    ) throws -> FileRevision {
         try FileResourcePolicy.validate(
             bytes: data.count,
             format: target.format,
             path: target.relativePath
         )
         let current = try snapshot(target.readable)
-        guard current.data == expected.data else {
+        guard current.revision == expectedRevision else {
             throw StoreError.changedSinceRead(target.relativePath)
         }
         try data.write(to: target.url, options: .atomic)
+        return FileSnapshot(data: data, modifiedDate: nil).revision
     }
 
     /// Moves a file to a collision-proof recoverable path under `.trash/`.
     ///
-    /// - Parameter target: Structurally writable target under `notes/`.
-    /// - Returns: Vault-relative trash path.
+    /// - Parameters:
+    ///   - target: Structurally writable target under `notes/`.
+    ///   - expectedRevision: Caller revision that must still identify the file.
+    /// - Returns: Vault-relative trash path and the revision that was removed.
     /// - Throws: ``VaultFileInspector/InspectionError`` or a filesystem move error.
-    func softDelete(target: WritableFileTarget) throws -> String {
+    func softDelete(
+        target: WritableFileTarget,
+        expectedRevision: FileRevision
+    ) throws -> (trashPath: String, deletedRevision: FileRevision) {
         let fm = FileManager.default
-        _ = try VaultFileInspector.inspect(target.readable)
+        // Capture and compare the bytes immediately before the move. This makes
+        // deletion use the same compare-and-swap contract as replacement rather
+        // than deleting whichever version happens to occupy the path now.
+        let current = try snapshot(target.readable)
+        guard current.revision == expectedRevision else {
+            throw StoreError.changedSinceRead(target.relativePath)
+        }
 
         let canonicalVault = URL(fileURLWithPath: vaultPath)
             .standardized
@@ -154,7 +192,10 @@ actor VaultCRUDStore {
         )
         try fm.moveItem(at: target.url, to: destination)
         cleanupEmptyDirectories(from: target.url.deletingLastPathComponent())
-        return ".trash/\(destination.lastPathComponent)"
+        return (
+            ".trash/\(destination.lastPathComponent)",
+            current.revision
+        )
     }
 
     private func cleanupEmptyDirectories(from startingURL: URL) {

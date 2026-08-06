@@ -21,7 +21,10 @@ enum FileToolResultMapper {
                 )
             }
         }
-        return CallTool.Result(content: content)
+        return CallTool.Result(
+            content: content,
+            structuredContent: output.metadata.map(structuredContent)
+        )
     }
 
     /// Creates a failed MCP result containing one diagnostic text block.
@@ -33,5 +36,23 @@ enum FileToolResultMapper {
             content: [.text(text: message, annotations: nil, _meta: nil)],
             isError: true
         )
+    }
+
+    /// Converts transport-neutral operation metadata to its stable MCP shape.
+    private static func structuredContent(
+        _ metadata: FileOperationMetadata
+    ) -> Value {
+        var values: [String: Value] = [
+            FileToolOutputField.path.rawValue: .string(metadata.path),
+            FileToolOutputField.area.rawValue: .string(metadata.area.rawValue),
+            FileToolOutputField.replayed.rawValue: .bool(metadata.replayed),
+        ]
+        if let revision = metadata.revision {
+            values[FileToolOutputField.revision] = .string(revision.rawValue)
+        }
+        if let mutationID = metadata.mutationID {
+            values[FileToolOutputField.mutationID] = .string(mutationID.rawValue)
+        }
+        return .object(values)
     }
 }

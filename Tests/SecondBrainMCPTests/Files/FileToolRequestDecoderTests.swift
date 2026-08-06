@@ -4,6 +4,9 @@ import Testing
 
 @Suite("MCP file request decoder")
 struct FileToolRequestDecoderTests {
+    private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
+    private let revision = "sha256:" + String(repeating: "a", count: 64)
+
     @Test("Create arguments decode into shared request values")
     func createRequest() throws {
         let params = CallTool.Parameters(
@@ -11,6 +14,7 @@ struct FileToolRequestDecoderTests {
             arguments: [
                 "format": .string("gif"),
                 "path": .string("notes/demo.gif"),
+                "mutation_id": .string(mutationID),
                 "source": .string("/tmp/demo.mov"),
                 "tags": .array([.string("demo"), .string("video")]),
                 "transform": .string("video_to_gif"),
@@ -27,6 +31,7 @@ struct FileToolRequestDecoderTests {
 
         #expect(request.format == .gif)
         #expect(request.path == "notes/demo.gif")
+        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.source == "/tmp/demo.mov")
         #expect(request.tags == ["demo", "video"])
         #expect(request.transform == .videoToGIF)
@@ -66,6 +71,8 @@ struct FileToolRequestDecoderTests {
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/page.md"),
+                "mutation_id": .string(mutationID),
+                "expected_revision": .string(revision),
                 "mode": .string("patch"),
                 "replacements": .array([
                     .object([
@@ -85,9 +92,87 @@ struct FileToolRequestDecoderTests {
         }
 
         #expect(request.mode == .patch)
+        #expect(request.mutationID.rawValue == mutationID)
+        #expect(request.expectedRevision.rawValue == revision)
         #expect(request.replacements.count == 1)
         #expect(request.replacements.first?.oldText == "before")
         #expect(request.replacements.first?.newText == "after")
+    }
+
+    @Test("Delete requires and preserves mutation consistency values")
+    func deleteRequest() throws {
+        let params = CallTool.Parameters(
+            name: "delete_file",
+            arguments: [
+                "format": .string("markdown"),
+                "path": .string("notes/page.md"),
+                "mutation_id": .string(mutationID.uppercased()),
+                "expected_revision": .string(revision),
+            ]
+        )
+
+        guard case .delete(let request) = try FileToolRequestDecoder.decode(
+            params,
+            for: .delete
+        ) else {
+            Issue.record("Expected a delete request")
+            return
+        }
+
+        #expect(request.mutationID.rawValue == mutationID)
+        #expect(request.expectedRevision.rawValue == revision)
+    }
+
+    @Test("Mutation identities and expected revisions are strict")
+    func mutationConsistencyValidation() {
+        expectError(
+            "Missing required parameter: mutation_id",
+            decoding: CallTool.Parameters(
+                name: FileToolName.create.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/page.md"),
+                ]
+            ),
+            for: .create
+        )
+        expectError(
+            "Invalid mutation_id: expected a UUID",
+            decoding: CallTool.Parameters(
+                name: FileToolName.create.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/page.md"),
+                    "mutation_id": .string("retry-this"),
+                ]
+            ),
+            for: .create
+        )
+        expectError(
+            "Missing required parameter: expected_revision",
+            decoding: CallTool.Parameters(
+                name: FileToolName.delete.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/page.md"),
+                    "mutation_id": .string(mutationID),
+                ]
+            ),
+            for: .delete
+        )
+        expectError(
+            "Invalid expected_revision: expected sha256: followed by 64 lowercase hexadecimal digits",
+            decoding: CallTool.Parameters(
+                name: FileToolName.delete.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/page.md"),
+                    "mutation_id": .string(mutationID),
+                    "expected_revision": .string("sha256:ABC"),
+                ]
+            ),
+            for: .delete
+        )
     }
 
     @Test("Invalid update mode retains its boundary error")
@@ -197,6 +282,7 @@ struct FileToolRequestDecoderTests {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
+                    "mutation_id": .string(mutationID),
                     "tags": .array([.string("valid"), .int(1)]),
                 ]
             ),

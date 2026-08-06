@@ -101,7 +101,7 @@ enum FileFormatCatalogFactory {
                         execute: pdf.read
                     ),
                     update: nil,
-                    delete: softDelete
+                    delete: nil
                 )
             )
         ]

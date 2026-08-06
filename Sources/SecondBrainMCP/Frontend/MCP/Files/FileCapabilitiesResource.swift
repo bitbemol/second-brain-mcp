@@ -17,6 +17,25 @@ enum FileCapabilitiesResource {
     private struct OperationManifest: Encodable {
         /// Stable, sorted structural vault areas.
         let areas: [VaultArea]
+        /// Areas whose successful result includes an exact stored-byte revision.
+        let revisionAreas: [VaultArea]
+        /// Whether the request must carry the revision returned by `read_file`.
+        let requiresExpectedRevision: Bool
+        /// Whether the request must carry a caller-generated replay identity.
+        let requiresMutationID: Bool
+        /// Whether safe retries return the durable result of the original mutation.
+        let durableReplay: Bool
+        /// Whether creation succeeds only when the destination is absent.
+        let createRequiresAbsence: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case areas
+            case revisionAreas = "revision_areas"
+            case requiresExpectedRevision = "requires_expected_revision"
+            case requiresMutationID = "requires_mutation_id"
+            case durableReplay = "durable_replay"
+            case createRequiresAbsence = "create_requires_absence"
+        }
     }
 
     /// Builds the complete v2 MCP resource surface.
@@ -27,7 +46,7 @@ enum FileCapabilitiesResource {
             Resource(
                 name: "File Capabilities",
                 uri: "secondbrain://file-capabilities",
-                description: "Concrete file formats and their effective CRUD operations, extensions, and vault areas",
+                description: "Concrete file formats and their effective CRUD operations, extensions, vault areas, revision preconditions, and durable-replay requirements",
                 mimeType: "application/json"
             )
         ]
@@ -39,7 +58,7 @@ enum FileCapabilitiesResource {
     ///   - capabilities: Effective format, operation, and area support.
     ///   - readOnly: Whether mutation capabilities must be omitted.
     /// - Returns: A JSON MCP resource response with formats, extensions,
-    ///   operations, and allowed vault areas.
+    ///   operations, allowed vault areas, and consistency requirements.
     /// - Throws: An encoding error if the typed capability manifest cannot be
     ///   serialized.
     static func read(
@@ -55,7 +74,15 @@ enum FileCapabilitiesResource {
                     continue
                 }
                 operations[operation.rawValue] = OperationManifest(
-                    areas: areas.sorted { $0.rawValue < $1.rawValue }
+                    areas: areas.sorted { $0.rawValue < $1.rawValue },
+                    revisionAreas: revisionAreas(
+                        for: operation,
+                        allowedAreas: areas
+                    ),
+                    requiresExpectedRevision: operation == .update || operation == .delete,
+                    requiresMutationID: operation.isMutation,
+                    durableReplay: operation.isMutation,
+                    createRequiresAbsence: operation == .create
                 )
             }
 
@@ -73,5 +100,16 @@ enum FileCapabilitiesResource {
         return ReadResource.Result(contents: [
             .text(json, uri: "secondbrain://file-capabilities", mimeType: "application/json")
         ])
+    }
+
+    /// Returns areas whose operation results identify surviving stored bytes.
+    private static func revisionAreas(
+        for operation: FileCRUDOperation,
+        allowedAreas: Set<VaultArea>
+    ) -> [VaultArea] {
+        guard operation != .delete, allowedAreas.contains(.notes) else {
+            return []
+        }
+        return [.notes]
     }
 }

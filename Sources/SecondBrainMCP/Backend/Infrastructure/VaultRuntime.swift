@@ -23,18 +23,47 @@ struct VaultRuntime: Sendable {
     ) async throws -> VaultRuntime {
         let dataDirectory = try VaultDataDirectory.prepare(
             vaultPath: vaultPath,
-            migrateLegacyData: !readOnly
+            // Writable startup performs migration below while holding the same
+            // cross-process lock as Git bootstrap. Read-only startup never migrates.
+            migrateLegacyData: false
         )
 
+        let processMutationLock = POSIXAdvisoryFileLock(
+            url: dataDirectory.lockDirectoryURL
+                .appendingPathComponent("vault-mutations.lock")
+        )
+        let mutationReceipts = MutationReceiptStore(dataDirectory: dataDirectory)
         let git = GitRepository(repoPath: vaultPath)
         if !readOnly {
-            try await git.ensureRepository()
+            // Legacy migration, startup snapshots, and CRUD commits share one
+            // repository-wide lock across every MCP process using this vault.
+            try await processMutationLock.withLock(.exclusive) {
+                // A dirty vault may belong to a transaction awaiting commit-only
+                // recovery. Do not let startup migration or snapshotting obscure it.
+                let bootstrapIsSafe = try mutationReceipts
+                    .clearCompletedActiveTransactionForBootstrap()
+                if bootstrapIsSafe {
+                    try dataDirectory.migrateLegacyData(from: vaultPath)
+                    try await git.ensureRepository()
+                }
+            }
         }
 
-        let audit = AuditLogger(dataDirectory: dataDirectory)
+        let audit = AuditLogger(
+            dataDirectory: dataDirectory,
+            coordinateAcrossProcesses: true
+        )
         let rejections = AuditRejectionReporter(audit: audit)
         let store = VaultCRUDStore(vaultPath: vaultPath)
-        let mutations = VaultMutationExecutor(git: git, audit: audit)
+        let mutations = VaultMutationExecutor(
+            git: git,
+            audit: audit,
+            processMutationLock: processMutationLock,
+            receipts: mutationReceipts
+        )
+        let operations = VaultOperationCoordinator(
+            lockDirectoryURL: dataDirectory.lockDirectoryURL
+        )
         let limits = ImageLimits.default
         let externalSources = ExternalFileSourceValidator(vaultPath: vaultPath)
         let imageReader = ImageReader(
@@ -62,6 +91,7 @@ struct VaultRuntime: Sendable {
             catalog: catalog,
             store: store,
             mutations: mutations,
+            operations: operations,
             audit: audit,
             readOnly: readOnly
         )

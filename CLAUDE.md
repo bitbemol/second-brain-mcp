@@ -1,9 +1,9 @@
 # SecondBrainMCP
 
 A local MCP server in Swift that gives MCP clients format-aware access to a knowledge vault.
-Files under `notes/` are writable, `references/` is structurally read-only, and every mutation
-is auto-committed to git. File CRUD is exposed through four generic tools with an explicit
-concrete `format` argument.
+Files under `notes/` are writable, `references/` is structurally read-only, and every successful
+changed-byte mutation is auto-committed to git. File CRUD is exposed through four generic tools
+with an explicit concrete `format` argument.
 
 The codebase favors **clear boundaries and structural safety over cleverness**: security is
 enforced by architecture (not runtime flags), there are zero third-party dependencies beyond the
@@ -21,7 +21,7 @@ resource reference).
 - MCP SDK: `modelcontextprotocol/swift-sdk`, pinned `from: "0.12.0"` (see `Package.swift`)
 - Transport: `StdioTransport` (stdin/stdout JSON-RPC)
 - PDF: `PDFKit` (system framework, zero deps) — page→JPEG rendering + text extraction
-- Subprocesses: `/usr/bin/git` only (see Rule 4)
+- Built-in subprocess boundary: `/usr/bin/git` only (see Rule 4)
 
 ## Commands
 
@@ -88,9 +88,19 @@ belong to vault area/policy, never in that enum. `FileFormatDefinition` binds ea
 independently, so multiple formats can share a handler and a format can use a special handler for
 only one operation.
 
-**Concurrency:** mutable state and filesystem sequencing use actors. Routing definitions and
-stateless handlers are `Sendable`. `AsyncExclusiveGate` keeps each generic mutation and its git
-commit together across actor suspension; snapshot comparison rejects stale updates.
+**Concurrency:** note reads use shared per-path leases; note mutations use exclusive per-path leases
+held through persistence, Git, audit, and receipt storage. A fair actor prevents reader barging in one
+runtime, persistent advisory locks coordinate independent processes, and a vault-wide mutation lock
+protects the shared Git index. `read_file` returns an exact-byte revision for notes; update/delete
+must compare that opaque value before changing bytes. References are read-only and remain concurrent.
+
+Every mutation requires a caller-generated `mutation_id`. The executor stores durable receipts so an
+exact retry after a lost response replays the original outcome; reuse with different request bytes is
+rejected. Queued cancellation does no work. After the point of no return, the mutation finishes in a
+cancellation-independent task. After an ordinary process crash, a surviving active marker blocks
+other mutations and permits only conservative exact-request recovery. Sudden machine or storage
+power loss is outside this transaction guarantee: vault bytes, Git refs, and external receipts are
+not one jointly synchronized filesystem transaction.
 
 ### Layering & guardrails
 
@@ -139,10 +149,12 @@ the declared format to match the path extension.
 `WritableFileTarget` has no representation for `references/`, and catalog mutation bindings must
 remain restricted to `notes/`.
 
-### 4. No arbitrary shell execution
+### 4. No caller-selected command execution
 
-Only `/usr/bin/git` (via `GitRepository`) may run, with programmatic argument arrays and `--`
-guards. Never interpolate user input into a command.
+Only `/usr/bin/git` (via `GitRepository`) may be launched directly, with programmatic argument
+arrays and `--` guards. Never interpolate user input into a command. Git may honor hooks, signing,
+filters, or other extension points installed by the trusted local user; do not describe this as a
+general process sandbox.
 
 ### 5. Soft deletes only
 
@@ -152,10 +164,11 @@ remove user content. Removing a temporary file created by the store itself is al
 ### 6. Mutation → Git → audit is one transaction responsibility
 
 `VaultFileService` validates, prepares, and submits a `VaultMutationPlan`.
-`VaultMutationExecutor` owns serialized persistence, Git commit, and audit sequencing through
-`AsyncExclusiveGate`. Do not persist or commit in a format handler or MCP adapter. Git failures are
-propagated explicitly—even if the filesystem mutation already succeeded—rather than swallowed
-with `try?`.
+`VaultMutationExecutor` owns serialized persistence, Git commit, audit, and mutation-receipt
+sequencing through its local and cross-process vault-wide locks. `VaultOperationCoordinator` owns
+the shared/exclusive notes-path lease surrounding the complete service operation. Do not persist or
+commit in a format handler or MCP adapter. Git failures are propagated explicitly—even if the
+filesystem mutation already succeeded—rather than swallowed with `try?`.
 
 ## Conventions & design intent
 
@@ -173,7 +186,9 @@ with `try?`.
   bind them to the same operation function. Add a special function only for the operation that
   needs it.
 - **No swallowed errors in security/mutation paths.**
-- **Use actors for mutable state, Sendable values for wiring, and no `@unchecked Sendable`.**
+- **Use actors for mutable state and Sendable values for wiring.** A narrow synchronized resource
+  wrapper may use `@unchecked Sendable` only when its invariants and locking are documented, as with
+  the idempotently closed advisory-lock lease.
 - **Keep files focused.** One cohesive type or family per file; split before a file becomes a
   mixed-responsibility boundary.
 - **Tests use temporary vaults** and never touch user content.

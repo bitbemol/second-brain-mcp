@@ -37,8 +37,23 @@ struct VaultMutationPlan: Sendable {
     let format: FileFormat
     /// Validated vault-relative target path.
     let path: String
+    /// Validated target retained for commit-only recovery state checks.
+    let target: WritableFileTarget
     /// Format handler that prepared or authorized the mutation.
     let handler: FileHandlerID
+    /// Caller identity included in commit metadata for retry diagnostics.
+    let mutationID: MutationID
+
+    /// Stable Git message carrying the required replay identity.
+    var commitMessage: String {
+        "[SecondBrainMCP] \(kind.commitVerb) \(format.rawValue): \(path) "
+            + "[mutation \(mutationID.rawValue)]"
+    }
+
+    /// Stable audit context shared by normal execution and recovery.
+    var auditDetails: String {
+        return "\(handler.rawValue); mutation_id=\(mutationID.rawValue)"
+    }
 
     /// Creates transaction metadata from the exact target being mutated.
     ///
@@ -49,10 +64,18 @@ struct VaultMutationPlan: Sendable {
     ///   - kind: Mutation category used for Git and audit behavior.
     ///   - target: Structurally writable target passed to persistence.
     ///   - handler: Format handler that prepared or authorized the mutation.
-    init(kind: Kind, target: WritableFileTarget, handler: FileHandlerID) {
+    ///   - mutationID: Caller identity used for durable retry handling.
+    init(
+        kind: Kind,
+        target: WritableFileTarget,
+        handler: FileHandlerID,
+        mutationID: MutationID
+    ) {
         self.kind = kind
         self.format = target.format
         self.path = target.relativePath
+        self.target = target
         self.handler = handler
+        self.mutationID = mutationID
     }
 }

@@ -35,22 +35,25 @@ fix or mitigation will be coordinated before any public disclosure.
 | **No vault path escapes the vault** | Every caller-controlled vault path goes through `PathValidator`: rejects absolute paths, screens for `..` (incl. percent-encoded / Unicode dots), resolves symlinks, and asserts containment within the canonical vault root. Writable targets reject every symlink component and are revalidated immediately before use. The declared concrete format must also match the extension. |
 | **References are read-only by construction** | `WritableFileTarget` can only be resolved under `notes/`, and catalog mutation bindings permit only the notes area. There is no writable representation of a `references/` target. |
 | **External sources are content-gated** | Opaque text/structured formats require inline content and cannot read arbitrary source paths. Only PNG image import and video-to-GIF conversion accept an external source; `ExternalFileSourceValidator` requires the canonical target to be a size-capped regular file outside the vault, then copies it through an opened descriptor into a bounded private snapshot before media decoding. Sources are never mutated. |
-| **No arbitrary shell execution** | The only subprocess is `/usr/bin/git` at a hardcoded path, invoked with programmatically built argument arrays, literal pathspec mode, and `--` guards. Inherited `GIT_*` variables are removed so callers cannot redirect the repository, worktree, index, or configuration. No user input is interpolated into a command. Commit messages are sanitized to a safe character allowlist. |
+| **No caller-selected command execution** | The server directly launches only `/usr/bin/git` at a hardcoded path, with programmatically built argument arrays, literal pathspec mode, and `--` guards. Inherited `GIT_*` variables are removed so callers cannot redirect the repository, worktree, index, or configuration. No user input is interpolated into a command. Commit messages are sanitized to a safe character allowlist. Git still honors extension points configured by the trusted local user, such as hooks, signing, and filters. |
 | **No hard deletes of user content** | `delete_file` moves files to a collision-proof recoverable name under a real, non-symlink `.trash/` directory; `removeItem` is never called on user content. |
-| **Full history of every mutation** | `VaultMutationExecutor` serializes persistence → Git commit → audit, completes Git after persistence even if the request is canceled, and propagates commit failures instead of swallowing them. |
+| **Stale cooperating note edits are rejected** | Reads under `notes/` return a SHA-256 identity of the bytes observed during the protected read. Updates and deletes require that opaque revision and compare it again under an exclusive per-path lease; conflicts never disclose a replacement token that could enable blind retry. Applications outside this MCP protocol do not honor its locks, so their writes are rechecked but cannot participate in an atomic cross-application compare-and-swap. |
+| **Concurrent MCP clients cannot interleave note mutations** | Fair actor-based reader/writer leases coordinate tasks in one runtime; persistent shared/exclusive advisory locks enforce the same path exclusion across independent MCP processes. OS record-lock polling does not guarantee strict cross-process FIFO order. A vault-wide process lock also protects the shared Git index and commit sequence. Read-only reference/PDF access remains concurrent. |
+| **Timed-out mutations are idempotent** | Every mutation requires a caller-generated UUID. Durable receipts replay only the exact same request, reject identifier reuse, and record an in-progress intent before persistence so an interrupted process does not apply the request twice. After an ordinary process crash, a surviving active marker blocks other mutations and permits only conservative exact-request recovery. |
+| **Scoped Git history for completed mutations** | `VaultMutationExecutor` orders persistence → Git commit → best-effort audit → receipt, completes the critical phase after persistence even if the request is canceled, and propagates commit failures instead of swallowing them. A durable active marker prevents later mutations from blurring a failed commit and permits commit-only retry with the original mutation ID. Sudden machine or storage power loss is outside the transaction guarantee because vault bytes, Git objects/refs, and external receipts are not jointly journaled and synchronized. |
 | **Optional read-only mode** | `--read-only` hides mutating tools, removes mutating operations from capability discovery, rejects direct calls at both frontend and backend boundaries, and skips vault migration and Git initialization. |
 
 ## Network activity
 
-The server makes **zero outbound network connections** in normal operation.
+The server contains no network client and requests no outbound network operation in normal use.
 
 - **Transport:** `StdioTransport` only — it reads stdin and writes stdout. The server never
   instantiates a network transport.
 - **The MCP SDK ships HTTP/SSE transports** (pulled in via `swift-nio` and `eventsource`); that code
   is compiled into the binary but is **never instantiated or invoked** by SecondBrainMCP.
-- **Git** runs only local operations (`init`, `add`, `commit`, `status`) against
-  the vault. The server never runs `push`, `fetch`, or `remote` — it does not contact a git remote,
-  even if the vault has one configured.
+- **Git** is asked to run only local operations (`init`, `add`, `commit`, `status`) against
+  the vault. The server never requests `push`, `fetch`, or `remote`. Git hooks, signing programs,
+  filters, and similar extensions configured by the trusted local user remain outside this claim.
 - **PDFKit** is a macOS system framework and performs no network activity here.
 
 You don't have to take that on faith — see [Verifying](#verifying-it-yourself) below.

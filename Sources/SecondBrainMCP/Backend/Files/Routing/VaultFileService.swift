@@ -8,6 +8,7 @@ actor VaultFileService: FileCRUDService {
     private let vaultPath: String
     private let store: VaultCRUDStore
     private let mutations: VaultMutationExecutor
+    private let operations: VaultOperationCoordinator
     private let audit: AuditLogger
     private let readOnly: Bool
 
@@ -18,6 +19,7 @@ actor VaultFileService: FileCRUDService {
     ///   - catalog: Immutable format-operation registrations.
     ///   - store: Sole generic persistence actor.
     ///   - mutations: Serialized persistence, Git, and audit transaction boundary.
+    ///   - operations: Fair notes-path coordination shared across processes.
     ///   - audit: Append-only operation log.
     ///   - readOnly: Whether mutation methods must fail before resolving or writing.
     init(
@@ -25,6 +27,7 @@ actor VaultFileService: FileCRUDService {
         catalog: FileFormatCatalog,
         store: VaultCRUDStore,
         mutations: VaultMutationExecutor,
+        operations: VaultOperationCoordinator,
         audit: AuditLogger,
         readOnly: Bool = false
     ) {
@@ -32,6 +35,7 @@ actor VaultFileService: FileCRUDService {
         self.catalog = catalog
         self.store = store
         self.mutations = mutations
+        self.operations = operations
         self.audit = audit
         self.readOnly = readOnly
     }
@@ -48,20 +52,52 @@ actor VaultFileService: FileCRUDService {
             format: request.format
         )
         let binding = try catalog.createBinding(for: request.format, in: target.area)
-        let prepared = try await binding.execute(request, target)
-
         let store = self.store
-        _ = try await mutations.execute(
-            VaultMutationPlan(
-                kind: .create,
-                target: target,
-                handler: binding.id
-            ),
-            apply: {
-                try await store.create(target: target, data: prepared.data)
-            }
+        let mutations = self.mutations
+        let fingerprint = try MutationRequestFingerprint.make(
+            operation: .create,
+            request: request
         )
-        return prepared.output
+        let plan = VaultMutationPlan(
+            kind: .create,
+            target: target,
+            handler: binding.id,
+            mutationID: request.mutationID
+        )
+        return try await operations.withWrite(target: target) {
+            try await mutations.executeIdempotent(
+                plan: plan,
+                fingerprint: fingerprint,
+                prepare: {
+                    try await store.requireAbsent(target)
+                    let prepared = try await binding.execute(request, target)
+                    // Preparation may invoke native media work. Repeat the
+                    // absence check before the executor records durable intent.
+                    try await store.requireAbsent(target)
+                    let revision = FileSnapshot(
+                        data: prepared.data,
+                        modifiedDate: nil
+                    ).revision
+                    let output = prepared.output.withMetadata(FileOperationMetadata(
+                        path: target.relativePath,
+                        area: target.area,
+                        revision: revision,
+                        mutationID: request.mutationID,
+                        replayed: false
+                    ))
+                    return PreparedVaultMutation(
+                        requiresCommit: true,
+                        perform: {
+                            _ = try await store.create(
+                                target: target,
+                                data: prepared.data
+                            )
+                            return output
+                        }
+                    )
+                }
+            )
+        }
     }
 
     /// Validates a target, routes its format-specific read, and audits access.
@@ -76,7 +112,41 @@ actor VaultFileService: FileCRUDService {
             vaultPath: vaultPath
         )
         let binding = try catalog.readBinding(for: request.format, in: target.area)
-        let output = try await binding.execute(request, target)
+        let output: FileOperationOutput
+        if target.area == .notes {
+            let store = self.store
+            output = try await operations.withRead(target: target) {
+                // The lease keeps every cooperating MCP writer off this path
+                // while both the displayed content and its revision are read.
+                // The confirmation also detects ordinary external edits, while
+                // an uncoordinated ABA change remains outside this protocol.
+                let snapshot = try await store.snapshot(target)
+                let resolved = try await binding.execute(request, target)
+                let confirmed = try await store.snapshot(target)
+                guard confirmed.revision == snapshot.revision else {
+                    throw FileRoutingError.changedDuringRead(target.relativePath)
+                }
+                return resolved.withMetadata(FileOperationMetadata(
+                    path: target.relativePath,
+                    area: target.area,
+                    revision: snapshot.revision,
+                    mutationID: nil,
+                    replayed: false
+                ))
+            }
+        } else {
+            // References are structurally immutable through this service and
+            // deliberately remain unconstrained concurrent reads.
+            output = try await binding.execute(request, target).withMetadata(
+                FileOperationMetadata(
+                    path: target.relativePath,
+                    area: target.area,
+                    revision: nil,
+                    mutationID: nil,
+                    replayed: false
+                )
+            )
+        }
         await audit.log(
             operation: .read,
             area: target.area,
@@ -100,29 +170,63 @@ actor VaultFileService: FileCRUDService {
             format: request.format
         )
         let binding = try catalog.updateBinding(for: request.format, in: target.area)
-        let snapshot = try await store.snapshot(target.readable)
-        let prepared = try await binding.execute(request, target, snapshot)
-        if prepared.data == snapshot.data {
-            await audit.log(
-                operation: .update,
-                path: target.relativePath,
-                details: "\(binding.id.rawValue); no changes"
-            )
-            return .text("No changes: \(target.relativePath)")
-        }
-
         let store = self.store
-        _ = try await mutations.execute(
-            VaultMutationPlan(
-                kind: .update,
-                target: target,
-                handler: binding.id
-            ),
-            apply: {
-                try await store.replace(target: target, data: prepared.data, expected: snapshot)
-            }
+        let mutations = self.mutations
+        let fingerprint = try MutationRequestFingerprint.make(
+            operation: .update,
+            request: request
         )
-        return prepared.output
+        let plan = VaultMutationPlan(
+            kind: .update,
+            target: target,
+            handler: binding.id,
+            mutationID: request.mutationID
+        )
+        return try await operations.withWrite(target: target) {
+            try await mutations.executeIdempotent(
+                plan: plan,
+                fingerprint: fingerprint,
+                prepare: {
+                    let snapshot = try await store.snapshot(target.readable)
+                    guard snapshot.revision == request.expectedRevision else {
+                        throw FileRoutingError.revisionConflict(target.relativePath)
+                    }
+                    let prepared = try await binding.execute(request, target, snapshot)
+                    let noChanges = prepared.data == snapshot.data
+                    let revision = noChanges
+                        ? snapshot.revision
+                        : FileSnapshot(data: prepared.data, modifiedDate: nil).revision
+                    let baseOutput = noChanges
+                        ? FileOperationOutput.text("No changes: \(target.relativePath)")
+                        : prepared.output
+                    let output = baseOutput.withMetadata(FileOperationMetadata(
+                        path: target.relativePath,
+                        area: target.area,
+                        revision: revision,
+                        mutationID: request.mutationID,
+                        replayed: false
+                    ))
+                    return PreparedVaultMutation(
+                        requiresCommit: !noChanges,
+                        perform: {
+                            guard !noChanges else { return output }
+                            do {
+                                _ = try await store.replace(
+                                    target: target,
+                                    data: prepared.data,
+                                    expectedRevision: request.expectedRevision
+                                )
+                            } catch VaultCRUDStore.StoreError.changedSinceRead {
+                                throw FileRoutingError.revisionConflict(
+                                    target.relativePath
+                                )
+                            }
+                            return output
+                        }
+                    )
+                }
+            )
+        }
     }
 
     /// Moves a writable file to `.trash/`, commits, and audits the deletion.
@@ -137,20 +241,66 @@ actor VaultFileService: FileCRUDService {
             format: request.format
         )
         let binding = try catalog.deleteBinding(for: request.format, in: target.area)
-        try await binding.execute(request, target)
-
         let store = self.store
-        let trashPath = try await mutations.execute(
-            VaultMutationPlan(
-                kind: .delete,
-                target: target,
-                handler: binding.id
-            ),
-            apply: {
-                try await store.softDelete(target: target)
-            }
+        let mutations = self.mutations
+        let fingerprint = try MutationRequestFingerprint.make(
+            operation: .delete,
+            request: request
         )
-        return .text("Deleted \(target.relativePath) → \(trashPath)")
+        let plan = VaultMutationPlan(
+            kind: .delete,
+            target: target,
+            handler: binding.id,
+            mutationID: request.mutationID
+        )
+        return try await operations.withWrite(target: target) {
+            try await mutations.executeIdempotent(
+                plan: plan,
+                fingerprint: fingerprint,
+                prepare: {
+                    let snapshot = try await store.snapshot(target.readable)
+                    guard snapshot.revision == request.expectedRevision else {
+                        throw FileRoutingError.revisionConflict(target.relativePath)
+                    }
+                    try await binding.execute(request, target)
+                    return PreparedVaultMutation(
+                        requiresCommit: true,
+                        performWithRecoveryEvidence: {
+                            let deletion: (
+                                trashPath: String,
+                                deletedRevision: FileRevision
+                            )
+                            do {
+                                deletion = try await store.softDelete(
+                                    target: target,
+                                    expectedRevision: request.expectedRevision
+                                )
+                            } catch VaultCRUDStore.StoreError.changedSinceRead {
+                                throw FileRoutingError.revisionConflict(
+                                    target.relativePath
+                                )
+                            }
+                            let output = FileOperationOutput.text(
+                                "Deleted \(target.relativePath) → \(deletion.trashPath)"
+                            ).withMetadata(FileOperationMetadata(
+                                path: target.relativePath,
+                                area: target.area,
+                                revision: nil,
+                                mutationID: request.mutationID,
+                                replayed: false
+                            ))
+                            return PersistedVaultMutation(
+                                output: output,
+                                recoveryEvidence: .softDeleted(
+                                    path: deletion.trashPath,
+                                    revision: deletion.deletedRevision
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+        }
     }
 
     private func resolveWritableTarget(

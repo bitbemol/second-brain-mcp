@@ -3,17 +3,23 @@ import Foundation
 
 /// Prepared process-owned storage associated with one managed vault.
 ///
-/// Construction creates the hashed support directory and coordinates legacy
-/// migration before exposing usable paths to downstream infrastructure.
+/// Preparation creates the hashed support directory and may migrate legacy
+/// state. Production coordinates that migration through its vault-wide lock.
 struct VaultDataDirectory: Sendable {
     /// Vault-specific process-data directory outside the managed vault.
     let rootURL: URL
     /// Append-only audit-log destination inside ``rootURL``.
     let auditLogURL: URL
+    /// Persistent advisory-lock files shared by every process for this vault.
+    let lockDirectoryURL: URL
+    /// Durable successful-mutation receipts used for timeout-safe replay.
+    let receiptDirectoryURL: URL
 
     private init(rootURL: URL) {
         self.rootURL = rootURL
         self.auditLogURL = rootURL.appendingPathComponent("audit.log")
+        self.lockDirectoryURL = rootURL.appendingPathComponent("locks", isDirectory: true)
+        self.receiptDirectoryURL = rootURL.appendingPathComponent("receipts", isDirectory: true)
     }
 
     /// Prepares production process storage for one vault.
@@ -60,18 +66,43 @@ struct VaultDataDirectory: Sendable {
                 isDirectory: true
             )
         )
-        try fileManager.createDirectory(
-            at: directory.rootURL,
-            withIntermediateDirectories: true
+        try prepareDirectory(directory.rootURL, fileManager: fileManager)
+        try prepareDirectory(directory.lockDirectoryURL, fileManager: fileManager)
+        try prepareDirectory(
+            directory.lockDirectoryURL.appendingPathComponent("paths", isDirectory: true),
+            fileManager: fileManager
         )
+        try prepareDirectory(
+            directory.lockDirectoryURL.appendingPathComponent("mutations", isDirectory: true),
+            fileManager: fileManager
+        )
+        try prepareDirectory(directory.receiptDirectoryURL, fileManager: fileManager)
         if migrateLegacyData {
-            try LegacyVaultDataMigrator.migrate(
-                from: URL(fileURLWithPath: vaultPath),
-                destinationAuditLog: directory.auditLogURL,
+            try directory.migrateLegacyData(
+                from: vaultPath,
                 fileManager: fileManager
             )
         }
         return directory
+    }
+
+    /// Migrates obsolete vault-local process data into this prepared directory.
+    ///
+    /// Production invokes this method while holding the vault-wide process lock
+    /// so simultaneous MCP startups cannot race the compatibility move.
+    ///
+    /// - Parameters:
+    ///   - vaultPath: Canonical managed vault root.
+    ///   - fileManager: Filesystem implementation used for migration.
+    func migrateLegacyData(
+        from vaultPath: String,
+        fileManager: FileManager = .default
+    ) throws {
+        try LegacyVaultDataMigrator.migrate(
+            from: URL(fileURLWithPath: vaultPath),
+            destinationAuditLog: auditLogURL,
+            fileManager: fileManager
+        )
     }
 
     private static func hashPath(_ path: String) -> String {
@@ -79,5 +110,23 @@ struct VaultDataDirectory: Sendable {
             .prefix(16)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    /// Creates one process-owned directory and refuses symlink substitutions.
+    private static func prepareDirectory(
+        _ url: URL,
+        fileManager: FileManager
+    ) throws {
+        if !fileManager.fileExists(atPath: url.path) {
+            try fileManager.createDirectory(
+                at: url,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
     }
 }

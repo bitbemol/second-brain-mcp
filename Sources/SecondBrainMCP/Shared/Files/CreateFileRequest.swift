@@ -1,5 +1,7 @@
 /// Transport-neutral input for a generic file creation.
-struct CreateFileRequest: Sendable {
+struct CreateFileRequest: Sendable, Codable {
+    /// Caller-generated identity used to replay a timed-out mutation safely.
+    let mutationID: MutationID
     /// Declared concrete storage format.
     let format: FileFormat
     /// Vault-relative destination under `notes/`.

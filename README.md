@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients a compact, format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every mutation is automatically committed to git.
+A local MCP server in Swift that gives MCP clients a compact, format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every successful changed-byte mutation is committed to git; a post-persistence Git failure is surfaced explicitly and blocks later mutations until recovery.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -13,13 +13,14 @@ stdio-capable MCP client ──> SecondBrainMCP
 
 - **Four generic file CRUD tools** — `create_file`, `read_file`, `update_file`, and `delete_file`; every request declares a concrete format
 - **Concrete format routing** — Markdown, Canvas, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
+- **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
-- **Git auto-commit** — every write creates a commit with `[SecondBrainMCP]` prefix
+- **Git auto-commit** — every successful changed-byte write creates a scoped commit with `[SecondBrainMCP]` prefix
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed
 - **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
 - **Read-only mode** — `--read-only` hides write tools and disables vault migration/Git mutation in the backend
 - **Path security** — symlink resolution, traversal prevention, extension allowlists
-- **Audit log** — every operation is logged under `~/Library/Application Support/SecondBrainMCP/`
+- **Audit log** — best-effort operation records live under `~/Library/Application Support/SecondBrainMCP/`
 - **Works alongside Obsidian, iA Writer, Logseq** — the vault is plain Markdown; app config directories are ignored
 - **Custom instructions** — drop an `INSTRUCTIONS.md` in your vault root to define your own conventions
 
@@ -151,6 +152,8 @@ Only `notes/` and `references/` need to exist. Writable startup prepares Git met
 
 File CRUD has exactly four MCP tools. The caller must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. This is deliberate: clients can see the allowed enum before sending data instead of guessing what the server might accept.
 
+Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse that UUID only when retrying the exact same request after a timeout or lost response. Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions.
+
 | Tool | Purpose |
 |------|---------|
 | `create_file` | Validate/transform input, atomically create under `notes/`, and git-commit |
@@ -170,7 +173,7 @@ File CRUD has exactly four MCP tools. The caller must provide `format`; the serv
 | `png` | `.png` | external image → clean/resized PNG | notes, references | — | notes |
 | `gif` | `.gif` | external video + `video_to_gif` | notes, references | — | notes |
 | `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
-| `pdf` | `.pdf` | — | references | — | notes |
+| `pdf` | `.pdf` | — | references | — | — |
 
 The matrix is generated from registered operation bindings rather than maintained separately at runtime. Read `secondbrain://file-capabilities` for the server's effective capabilities and allowed vault areas for each operation. Internal handler identities stay private, so they can be refactored without changing the API. In `--read-only` mode, mutating operations disappear from both tool discovery and this resource.
 
@@ -205,7 +208,7 @@ The server appends the file contents to its default instructions during startup.
 ## Security
 
 - **Path traversal prevention** — all paths validated through `PathValidator` with symlink resolution
-- **No arbitrary shell execution** — only `/usr/bin/git`, with programmatic argument arrays
+- **No caller-selected commands** — only `/usr/bin/git`, with programmatic argument arrays
 - **Structural write boundaries** — `WritableFileTarget` cannot represent a path under `references/`
 - **Soft deletes only** — files are never permanently deleted
 - **Commit message sanitization** — shell metacharacters stripped from git messages
@@ -251,8 +254,23 @@ create requests into bounded inline bytes before their semantic handler; and
 Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
 persistence component for the generic API. Writable targets cannot represent `references/`.
 
-**Concurrency model:** actors serialize mutable state and I/O; immutable routing definitions and
-stateless handlers are `Sendable`. `AsyncExclusiveGate` keeps each generic file mutation and its
-Git commit together inside `VaultMutationExecutor`, and also prevents actor reentrancy from running
-multiple video conversions at once. Snapshot comparison rejects stale updates from concurrent
-external edits.
+**Concurrency model:** reads of the same note may overlap, while a fair keyed reader/writer actor
+gives each note mutation exclusive access and prevents later readers from bypassing a queued writer
+inside one runtime. Persistent advisory locks extend exclusion across independent MCP processes;
+OS scheduling does not promise strict FIFO ordering between separate processes. A separate
+vault-wide cross-process mutation lock keeps filesystem persistence, the Git index/commit, audit logging, and
+the durable retry receipt in one ordered critical phase. Exact-byte revisions reject stale edits by
+every cooperating MCP caller. The store also rechecks bytes immediately before persistence to catch
+ordinary external edits, but an application that ignores these locks can still write inside the
+final compare-to-rename window; filesystem path replacement has no universal cross-application CAS.
+Reference reads bypass note locks and remain concurrent because `references/` has no writable
+representation.
+
+Cancellation while queued performs no mutation. Once persistence begins, the critical phase runs to
+completion even if its MCP caller stops listening; retrying the exact request with the same
+`mutation_id` returns its durable result instead of applying it again. The server writes an
+in-progress intent before that point of no return. If the process stops unexpectedly during that
+narrow phase, a surviving active marker blocks other mutations and permits only conservative exact-request
+recovery rather than risking a duplicate mutation. Sudden machine or storage power loss is outside
+this transaction guarantee because vault bytes, Git objects/refs, and the external receipt directory
+are not one jointly synchronized filesystem transaction.

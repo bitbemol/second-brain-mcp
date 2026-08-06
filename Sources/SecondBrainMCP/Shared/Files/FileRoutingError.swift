@@ -18,6 +18,10 @@ enum FileRoutingError: Error, CustomStringConvertible {
         operation: FileCRUDOperation,
         area: VaultArea
     )
+    /// Mutable note bytes no longer match the revision supplied by the caller.
+    case revisionConflict(String)
+    /// Note bytes changed while a read result was being assembled.
+    case changedDuringRead(String)
 
     /// Human-readable routing failure suitable for an MCP error response.
     var description: String {
@@ -40,6 +44,11 @@ enum FileRoutingError: Error, CustomStringConvertible {
         case .operationNotSupported(let format, let operation, let area):
             return "Operation '\(operation.rawValue)' is not supported for "
                 + "'\(format.rawValue)' files in \(area.rawValue)/"
+        case .revisionConflict(let path):
+            return "File changed since it was read: \(path). Read it again "
+                + "before updating or deleting it."
+        case .changedDuringRead(let path):
+            return "File changed while it was being read: \(path). Read it again."
         }
     }
 }

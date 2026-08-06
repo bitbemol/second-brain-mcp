@@ -93,6 +93,7 @@ struct StructuredFileOperationsTests {
         let create = try #require(definition.operations.create)
         let target = try WritableFileTarget.resolve(path: "notes/import.log", format: .log, vaultPath: root)
         let request = CreateFileRequest(
+            mutationID: MutationID(),
             format: .log,
             path: target.relativePath,
             content: nil,
@@ -160,7 +161,15 @@ struct StructuredFileOperationsTests {
         #expect(text.contains("two\nthree"))
 
         let snapshot = try await store.snapshot(target.readable)
-        let update = UpdateFileRequest(format: .log, path: target.relativePath, content: "four", mode: .append, replacements: [])
+        let update = UpdateFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: snapshot.revision,
+            format: .log,
+            path: target.relativePath,
+            content: "four",
+            mode: .append,
+            replacements: []
+        )
         let updated = try operations.prepareUpdate(update, target: target, snapshot: snapshot)
         #expect(try TextFileSupport.string(from: updated.data).hasSuffix("three\nfour"))
     }
@@ -176,6 +185,8 @@ struct StructuredFileOperationsTests {
             vaultPath: root
         )
         let markdownRequest = UpdateFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: snapshot.revision,
             format: .markdown,
             path: markdownTarget.relativePath,
             content: "first",
@@ -194,6 +205,8 @@ struct StructuredFileOperationsTests {
             vaultPath: root
         )
         let logRequest = UpdateFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: snapshot.revision,
             format: .log,
             path: logTarget.relativePath,
             content: "first",

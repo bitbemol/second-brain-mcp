@@ -57,6 +57,27 @@ actor GitRepository {
         ])
     }
 
+    /// Reports whether Git already contains the uniquely identified mutation.
+    ///
+    /// Commit-only recovery calls this before creating a commit so a crash after
+    /// Git succeeded but before receipt finalization cannot create or require a
+    /// second commit.
+    func containsMutationCommit(
+        identifier: MutationID,
+        path: String
+    ) async throws -> Bool {
+        let output = try await run([
+            "--literal-pathspecs",
+            "log",
+            "--fixed-strings",
+            "--grep=[mutation \(identifier.rawValue)]",
+            "--format=%H",
+            "--",
+            path
+        ])
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Converts untrusted operation text into a single-line Git commit message.
     static func sanitizeCommitMessage(_ message: String) -> String {
         message

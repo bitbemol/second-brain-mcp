@@ -1,0 +1,124 @@
+import Darwin
+import Foundation
+
+/// Cancellation-aware advisory lock backed by a persistent regular file.
+///
+/// Lock acquisition always uses a nonblocking open-file-description record
+/// lock; contention suspends with `Task.sleep` rather than blocking a Swift
+/// cooperative executor thread.
+struct POSIXAdvisoryFileLock: Sendable {
+    /// Shared-reader or exclusive-writer mode.
+    enum Mode: Sendable {
+        case shared
+        case exclusive
+    }
+
+    /// Failures opening or locking the process-owned lock file.
+    struct LockError: Error, CustomStringConvertible, Sendable {
+        let path: String
+        let operation: String
+        let code: Int32
+
+        var description: String {
+            "Cannot \(operation) coordination lock at \(path) (errno \(code))"
+        }
+    }
+
+    /// Held descriptor whose close releases the advisory lock after crashes too.
+    final class Lease: @unchecked Sendable {
+        private let mutex = NSLock()
+        private var descriptor: Int32?
+
+        fileprivate init(descriptor: Int32) {
+            self.descriptor = descriptor
+        }
+
+        /// Releases the lock and closes its descriptor exactly once.
+        func release() {
+            mutex.lock()
+            let current = descriptor
+            descriptor = nil
+            mutex.unlock()
+            guard let current else { return }
+            _ = POSIXAdvisoryFileLock.setLock(
+                descriptor: current,
+                type: Int16(F_UNLCK)
+            )
+            _ = Darwin.close(current)
+        }
+
+        deinit { release() }
+    }
+
+    private let url: URL
+    private let retryNanoseconds: UInt64
+
+    /// Creates a lock adapter for one persistent process-owned file.
+    init(url: URL, retryNanoseconds: UInt64 = 20_000_000) {
+        self.url = url
+        self.retryNanoseconds = retryNanoseconds
+    }
+
+    /// Acquires a shared or exclusive lease without blocking an executor thread.
+    func acquire(_ mode: Mode) async throws -> Lease {
+        try Task.checkCancellation()
+        let descriptor = Darwin.open(
+            url.path,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard descriptor >= 0 else {
+            throw LockError(path: url.path, operation: "open", code: errno)
+        }
+
+        do {
+            var metadata = stat()
+            guard Darwin.fstat(descriptor, &metadata) == 0,
+                  metadata.st_mode & S_IFMT == S_IFREG else {
+                throw LockError(path: url.path, operation: "validate", code: errno)
+            }
+
+            let lockType = mode == .shared ? Int16(F_RDLCK) : Int16(F_WRLCK)
+            while Self.setLock(descriptor: descriptor, type: lockType) != 0 {
+                let code = errno
+                guard code == EWOULDBLOCK || code == EAGAIN || code == EACCES else {
+                    throw LockError(path: url.path, operation: "acquire", code: code)
+                }
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: retryNanoseconds)
+            }
+            try Task.checkCancellation()
+            return Lease(descriptor: descriptor)
+        } catch {
+            _ = Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    /// Runs an operation while holding one advisory lease.
+    func withLock<Result: Sendable>(
+        _ mode: Mode,
+        operation: @escaping @Sendable () async throws -> Result
+    ) async throws -> Result {
+        let lease = try await acquire(mode)
+        defer { lease.release() }
+        return try await operation()
+    }
+
+    /// Applies a nonblocking open-file-description lock to the whole file.
+    ///
+    /// Darwin's Swift overlay exposes `flock` as the record-lock structure and
+    /// not the same-named C function. `F_OFD_SETLK` also has better semantics
+    /// here: each lease belongs to its exact open descriptor, so closing one of
+    /// several concurrent shared-reader descriptors cannot release the others.
+    private static func setLock(descriptor: Int32, type: Int16) -> Int32 {
+        var record = flock()
+        record.l_type = type
+        record.l_whence = Int16(SEEK_SET)
+        record.l_start = 0
+        record.l_len = 0
+        return Darwin.fcntl(descriptor, F_OFD_SETLK, &record)
+    }
+}
+
+extension POSIXAdvisoryFileLock.Mode: Equatable {}

@@ -28,12 +28,13 @@ enum FileToolDefinitions {
         case .create:
             Tool(
                 name: tool.rawValue,
-                description: "Create a supported concrete file under notes/. The declared format, destination extension, and actual content must agree. Text and structured formats require inline content. PNG imports and cleans an external image source. GIF creation accepts an external video source with transform=video_to_gif. Rejects existing destinations and git-commits the write.",
+                description: "Create a supported concrete file under notes/. mutation_id is a caller-generated UUID: reuse it only to retry this exact request after a timeout. Creation is atomic and requires the destination to be absent. The declared format, destination extension, and actual content must agree. Text and structured formats require inline content. PNG imports and cleans an external image source. GIF creation accepts an external video source with transform=video_to_gif. Successful results return the stored revision and are git-committed.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .create),
                     formatDescription: "Concrete stored file format",
                     pathDescription: "Destination under notes/ with an extension matching format",
                     additionalProperties: [
+                        .mutationID: mutationIDSchema,
                         .content: .object([
                             "type": .string("string"),
                             "description": .string("Inline UTF-8 content; required for text and structured formats")
@@ -52,19 +53,23 @@ enum FileToolDefinitions {
                             "enum": .array([.string("video_to_gif")]),
                             "description": .string("Required when creating a GIF from an external video")
                         ])
-                    ]
+                    ],
+                    additionalRequired: [.mutationID]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
                     destructiveHint: false,
-                    idempotentHint: false,
+                    idempotentHint: true,
                     openWorldHint: true
+                ),
+                outputSchema: outputSchema(
+                    required: [.path, .area, .revision, .mutationID, .replayed]
                 )
             )
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read a supported concrete file with format-specific behavior. Images may be resized or decomposed into timed GIF frames; PDFs return text plus rendered pages; HAR returns a summary unless raw=true; patches return a summary plus diff; logs default to the last 500 lines.",
+                description: "Read a supported concrete file with format-specific behavior. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Images may be resized or decomposed into timed GIF frames; PDFs return text plus rendered pages; HAR returns a summary unless raw=true; patches return a summary plus diff; logs default to the last 500 lines.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
@@ -101,17 +106,22 @@ enum FileToolDefinitions {
                     destructiveHint: false,
                     idempotentHint: true,
                     openWorldHint: false
+                ),
+                outputSchema: outputSchema(
+                    required: [.path, .area, .replayed]
                 )
             )
         case .update:
             Tool(
                 name: tool.rawValue,
-                description: "Update a supported file under notes/. Markdown supports replace, append, and exact text replacements. Canvas supports replace. Log supports append only. The update is rejected if an external editor changes the file while preparation is in progress. Git auto-commits.",
+                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. Markdown supports replace, append, and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .update),
                     formatDescription: "Concrete file format",
                     pathDescription: "Existing file under notes/",
                     additionalProperties: [
+                        .mutationID: mutationIDSchema,
+                        .expectedRevision: expectedRevisionSchema,
                         .mode: .object([
                             "type": .string("string"),
                             "enum": .array([.string("replace"), .string("append"), .string("patch")]),
@@ -133,29 +143,41 @@ enum FileToolDefinitions {
                                 "required": requiredArguments([.oldText, .newText])
                             ])
                         ])
-                    ]
+                    ],
+                    additionalRequired: [.mutationID, .expectedRevision]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
                     destructiveHint: true,
-                    idempotentHint: false,
+                    idempotentHint: true,
                     openWorldHint: false
+                ),
+                outputSchema: outputSchema(
+                    required: [.path, .area, .revision, .mutationID, .replayed]
                 )
             )
         case .delete:
             Tool(
                 name: tool.rawValue,
-                description: "Soft-delete a supported file under notes/ by moving it to .trash/. The declared format and extension must agree. References are structurally read-only. Git auto-commits the deletion.",
+                description: "Soft-delete a supported file under notes/ by moving it to .trash/. expected_revision must be the opaque revision returned by the read that authorized deletion; a conflict requires a fresh read. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. The declared format and extension must agree. References are structurally read-only. Git auto-commits the deletion.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .delete),
                     formatDescription: "Concrete file format",
-                    pathDescription: "Existing file under notes/"
+                    pathDescription: "Existing file under notes/",
+                    additionalProperties: [
+                        .mutationID: mutationIDSchema,
+                        .expectedRevision: expectedRevisionSchema,
+                    ],
+                    additionalRequired: [.mutationID, .expectedRevision]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
                     destructiveHint: true,
-                    idempotentHint: false,
+                    idempotentHint: true,
                     openWorldHint: false
+                ),
+                outputSchema: outputSchema(
+                    required: [.path, .area, .mutationID, .replayed]
                 )
             )
         }
@@ -166,7 +188,8 @@ enum FileToolDefinitions {
         formats: [FileFormat],
         formatDescription: String,
         pathDescription: String,
-        additionalProperties: [FileToolArgument: Value] = [:]
+        additionalProperties: [FileToolArgument: Value] = [:],
+        additionalRequired: [FileToolArgument] = []
     ) -> Value {
         var properties = additionalProperties
         properties[.format] = .object([
@@ -181,7 +204,54 @@ enum FileToolDefinitions {
         return .object([
             "type": .string("object"),
             "properties": argumentObject(properties),
-            "required": requiredArguments([.format, .path])
+            "required": requiredArguments([.format, .path] + additionalRequired)
+        ])
+    }
+
+    /// Schema for caller-generated identities used by durable mutation replay.
+    private static var mutationIDSchema: Value {
+        .object([
+            "type": .string("string"),
+            "format": .string("uuid"),
+            "description": .string(
+                "Required caller-generated UUID. Reuse only when retrying the exact same mutation after a timeout or lost response."
+            ),
+        ])
+    }
+
+    /// Schema for exact-byte compare-and-swap revision preconditions.
+    private static var expectedRevisionSchema: Value {
+        .object([
+            "type": .string("string"),
+            "pattern": .string("^sha256:[0-9a-f]{64}$"),
+            "description": .string(
+                "Required opaque revision returned by read_file for this note. Never guess or substitute a revision from a conflict response."
+            ),
+        ])
+    }
+
+    /// Builds the structured metadata schema returned alongside content blocks.
+    private static func outputSchema(required: [FileToolOutputField]) -> Value {
+        .object([
+            "type": .string("object"),
+            "properties": .object([
+                FileToolOutputField.path.rawValue: .object(["type": .string("string")]),
+                FileToolOutputField.area.rawValue: .object([
+                    "type": .string("string"),
+                    "enum": .array(VaultArea.allCases.map { .string($0.rawValue) }),
+                ]),
+                FileToolOutputField.revision.rawValue: .object([
+                    "type": .string("string"),
+                    "pattern": .string("^sha256:[0-9a-f]{64}$"),
+                ]),
+                FileToolOutputField.mutationID.rawValue: .object([
+                    "type": .string("string"),
+                    "format": .string("uuid"),
+                ]),
+                FileToolOutputField.replayed.rawValue: .object(["type": .string("boolean")]),
+            ]),
+            "required": .array(required.map { .string($0.rawValue) }),
+            "additionalProperties": .bool(false),
         ])
     }
 

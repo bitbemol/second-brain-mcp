@@ -4,6 +4,8 @@ import Testing
 
 @Suite("MCP file tool controller")
 struct FileToolControllerTests {
+    private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
+
     private actor FileServiceSpy: FileCRUDService {
         private var calls = 0
         private var createRequests: [CreateFileRequest] = []
@@ -177,6 +179,7 @@ struct FileToolControllerTests {
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/dispatched.md"),
+                "mutation_id": .string(mutationID),
                 "content": .string("# Dispatched"),
             ]
         ))
@@ -186,6 +189,7 @@ struct FileToolControllerTests {
         let request = await files.lastCreateRequest()
         #expect(request?.format == .markdown)
         #expect(request?.path == "notes/dispatched.md")
+        #expect(request?.mutationID.rawValue == mutationID)
         #expect(request?.content == "# Dispatched")
         #expect(await rejections.recordedRejections().isEmpty)
     }

@@ -57,6 +57,7 @@ struct VaultFileServiceTests {
         #expect(FileManager.default.fileExists(atPath: legacyCache))
         await #expect(throws: FileRoutingError.self) {
             _ = try await runtime.files.create(CreateFileRequest(
+                mutationID: MutationID(),
                 format: .markdown,
                 path: "notes/blocked.md",
                 content: "blocked",
@@ -109,7 +110,6 @@ struct VaultFileServiceTests {
             .init(format: .bmp, operations: readDeleteMedia),
             .init(format: .pdf, operations: [
                 .read: [.references],
-                .delete: notes,
             ]),
         ]))
     }
@@ -132,9 +132,10 @@ struct VaultFileServiceTests {
             let properties = try #require(schema["properties"]?.objectValue)
             #expect(properties["format"] != nil)
             #expect(properties["path"] != nil)
-            #expect(schema["required"]?.arrayValue?.compactMap(\.stringValue) == [
-                "format", "path",
-            ])
+            let required = Set(
+                schema["required"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            )
+            #expect(required.isSuperset(of: ["format", "path"]))
         }
 
         let readOnlyTools = FileToolDefinitions.build(
@@ -175,6 +176,7 @@ struct VaultFileServiceTests {
         let service = runtime.files
         let path = "notes/architecture.md"
         let create = CreateFileRequest(
+            mutationID: MutationID(),
             format: .markdown,
             path: path,
             content: "# Architecture\nInitial",
@@ -182,25 +184,34 @@ struct VaultFileServiceTests {
             tags: ["design"],
             transform: nil
         )
-        _ = try await service.create(create)
+        let createOutput = try await service.create(create)
+        let createdRevision = try #require(createOutput.metadata?.revision)
         let created = try String(contentsOfFile: root + "/" + path, encoding: .utf8)
         #expect(created.contains("tags: [\"design\"]"))
 
         let update = UpdateFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: createdRevision,
             format: .markdown,
             path: path,
             content: "Updated",
             mode: .append,
             replacements: []
         )
-        _ = try await service.update(update)
+        let updateOutput = try await service.update(update)
+        let updatedRevision = try #require(updateOutput.metadata?.revision)
         #expect(try String(contentsOfFile: root + "/" + path, encoding: .utf8).hasSuffix("Updated"))
 
         let commitCount = try runGit(["rev-list", "--count", "HEAD", "--", path], at: root)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "2")
 
-        _ = try await service.delete(DeleteFileRequest(format: .markdown, path: path))
+        _ = try await service.delete(DeleteFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: updatedRevision,
+            format: .markdown,
+            path: path
+        ))
         #expect(!FileManager.default.fileExists(atPath: root + "/" + path))
         #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
     }
@@ -210,7 +221,8 @@ struct VaultFileServiceTests {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
         let path = "notes/stable.md"
-        _ = try await service.create(CreateFileRequest(
+        let createOutput = try await service.create(CreateFileRequest(
+            mutationID: MutationID(),
             format: .markdown,
             path: path,
             content: "---\ntitle: Stable\n---\nunchanged",
@@ -220,6 +232,8 @@ struct VaultFileServiceTests {
         ))
 
         let output = try await service.update(UpdateFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: try #require(createOutput.metadata?.revision),
             format: .markdown,
             path: path,
             content: "---\ntitle: Stable\n---\nunchanged",
@@ -237,11 +251,290 @@ struct VaultFileServiceTests {
         #expect(commitCount == "1")
     }
 
+    @Test("Notes reads return the exact stored-byte revision")
+    func noteReadReturnsRevision() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let path = "notes/revision.md"
+        _ = try await runtime.files.create(CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "revision body",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+
+        let output = try await runtime.files.read(ReadFileRequest(
+            format: .markdown,
+            path: path,
+            options: .default
+        ))
+        let stored = try Data(contentsOf: URL(fileURLWithPath: root + "/" + path))
+
+        #expect(output.metadata?.path == path)
+        #expect(output.metadata?.area == .notes)
+        #expect(output.metadata?.revision == FileSnapshot(
+            data: stored,
+            modifiedDate: nil
+        ).revision)
+        #expect(output.metadata?.mutationID == nil)
+        #expect(output.metadata?.replayed == false)
+    }
+
+    @Test("A note changed while its reader runs returns no mismatched revision")
+    func noteChangedDuringReadIsRejected() async throws {
+        let root = NSTemporaryDirectory()
+            + "VaultFileServiceReadRace-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(
+            atPath: root + "/notes",
+            withIntermediateDirectories: true
+        )
+        let path = "notes/race.md"
+        try Data("before".utf8).write(to: URL(fileURLWithPath: root + "/" + path))
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let audit = AuditLogger(dataDirectory: dataDirectory)
+        let store = VaultCRUDStore(vaultPath: root)
+        let catalog = FileFormatCatalog(definitions: [
+            FileFormatDefinition(
+                format: .markdown,
+                operations: FormatOperations(
+                    create: nil,
+                    read: ReadOperationBinding(
+                        id: .markdown,
+                        allowedAreas: [.notes],
+                        execute: { _, target in
+                            try Data("after".utf8).write(
+                                to: target.url,
+                                options: .atomic
+                            )
+                            return .text("before")
+                        }
+                    ),
+                    update: nil,
+                    delete: nil
+                )
+            )
+        ])
+        let service = VaultFileService(
+            vaultPath: root,
+            catalog: catalog,
+            store: store,
+            mutations: VaultMutationExecutor(
+                git: GitRepository(repoPath: root),
+                audit: audit,
+                processMutationLock: POSIXAdvisoryFileLock(
+                    url: dataDirectory.lockDirectoryURL
+                        .appendingPathComponent("vault-mutations.lock")
+                ),
+                receipts: MutationReceiptStore(dataDirectory: dataDirectory)
+            ),
+            operations: VaultOperationCoordinator(
+                lockDirectoryURL: dataDirectory.lockDirectoryURL
+            ),
+            audit: audit
+        )
+
+        do {
+            _ = try await service.read(ReadFileRequest(
+                format: .markdown,
+                path: path,
+                options: .default
+            ))
+            Issue.record("Expected an unstable read to be rejected")
+        } catch FileRoutingError.changedDuringRead(let changedPath) {
+            #expect(changedPath == path)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("Stale update and delete revisions fail without exposing the current revision")
+    func staleMutationRevisionsFailClosed() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let path = "notes/stale.md"
+        let created = try await runtime.files.create(CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "original",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let staleRevision = try #require(created.metadata?.revision)
+        try Data("external change".utf8).write(
+            to: URL(fileURLWithPath: root + "/" + path),
+            options: .atomic
+        )
+        let currentRevision = revision("external change")
+
+        for operation in [FileCRUDOperation.update, .delete] {
+            do {
+                switch operation {
+                case .update:
+                    _ = try await runtime.files.update(UpdateFileRequest(
+                        mutationID: MutationID(),
+                        expectedRevision: staleRevision,
+                        format: .markdown,
+                        path: path,
+                        content: "overwrite",
+                        mode: .replace,
+                        replacements: []
+                    ))
+                case .delete:
+                    _ = try await runtime.files.delete(DeleteFileRequest(
+                        mutationID: MutationID(),
+                        expectedRevision: staleRevision,
+                        format: .markdown,
+                        path: path
+                    ))
+                case .create, .read:
+                    Issue.record("Unexpected test operation")
+                }
+                Issue.record("Expected a revision conflict")
+            } catch FileRoutingError.revisionConflict(let conflictPath) {
+                #expect(conflictPath == path)
+                #expect(!String(describing: FileRoutingError.revisionConflict(
+                    conflictPath
+                )).contains(currentRevision.rawValue))
+            } catch {
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+
+        #expect(try String(
+            contentsOfFile: root + "/" + path,
+            encoding: .utf8
+        ) == "external change")
+    }
+
+    @Test("Identical mutation retry replays one durable outcome")
+    func mutationRetryIsIdempotent() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let path = "notes/replayed.md"
+        let request = CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "one write",
+            source: nil,
+            tags: [],
+            transform: nil
+        )
+
+        let first = try await runtime.files.create(request)
+        let replay = try await runtime.files.create(request)
+
+        #expect(first.metadata?.replayed == false)
+        #expect(replay.metadata?.replayed == true)
+        #expect(replay.metadata?.revision == first.metadata?.revision)
+        #expect(try String(
+            contentsOfFile: root + "/" + path,
+            encoding: .utf8
+        ).hasSuffix("one write"))
+        let commitCount = try runGit(
+            ["rev-list", "--count", "HEAD", "--", path],
+            at: root
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(commitCount == "1")
+    }
+
+    @Test("Existing-file rejection does not poison its mutation ID")
+    func existingCreateCanRetryAfterValidationFailure() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let path = "notes/existing.md"
+        _ = try await runtime.files.create(CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "first",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let retryable = CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "second",
+            source: nil,
+            tags: [],
+            transform: nil
+        )
+
+        await #expect(throws: VaultCRUDStore.StoreError.self) {
+            _ = try await runtime.files.create(retryable)
+        }
+        try FileManager.default.removeItem(atPath: root + "/" + path)
+
+        let output = try await runtime.files.create(retryable)
+        #expect(output.metadata?.replayed == false)
+        #expect(try String(
+            contentsOfFile: root + "/" + path,
+            encoding: .utf8
+        ).hasSuffix("second"))
+    }
+
+    @Test("Concurrent updates from one revision admit exactly one winner")
+    func concurrentUpdatesConflict() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let path = "notes/concurrent.md"
+        let created = try await runtime.files.create(CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "base",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let baseRevision = try #require(created.metadata?.revision)
+
+        let attempts = ["agent-a", "agent-b"].map { content in
+            Task {
+                do {
+                    _ = try await runtime.files.update(UpdateFileRequest(
+                        mutationID: MutationID(),
+                        expectedRevision: baseRevision,
+                        format: .markdown,
+                        path: path,
+                        content: content,
+                        mode: .replace,
+                        replacements: []
+                    ))
+                    return true
+                } catch FileRoutingError.revisionConflict {
+                    return false
+                }
+            }
+        }
+        var outcomes: [Bool] = []
+        for attempt in attempts {
+            outcomes.append(try await attempt.value)
+        }
+
+        #expect(outcomes.filter { $0 }.count == 1)
+        let stored = try String(
+            contentsOfFile: root + "/" + path,
+            encoding: .utf8
+        )
+        #expect(stored == "agent-a" || stored == "agent-b")
+        let commitCount = try runGit(
+            ["rev-list", "--count", "HEAD", "--", path],
+            at: root
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(commitCount == "2")
+        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+    }
+
     @Test("Unsupported operation is rejected before touching disk")
     func unsupportedUpdate() async throws {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
         let request = UpdateFileRequest(
+            mutationID: MutationID(),
+            expectedRevision: revision("missing"),
             format: .har,
             path: "notes/capture.har",
             content: "{}",
@@ -261,6 +554,7 @@ struct VaultFileServiceTests {
 
         await expectAreaNotWritable("references/create.md") {
             try await service.create(CreateFileRequest(
+                mutationID: MutationID(),
                 format: .markdown,
                 path: "references/create.md",
                 content: "blocked",
@@ -271,6 +565,8 @@ struct VaultFileServiceTests {
         }
         await expectAreaNotWritable("references/update.md") {
             try await service.update(UpdateFileRequest(
+                mutationID: MutationID(),
+                expectedRevision: revision("blocked"),
                 format: .markdown,
                 path: "references/update.md",
                 content: "blocked",
@@ -280,6 +576,8 @@ struct VaultFileServiceTests {
         }
         await expectAreaNotWritable("references/delete.pdf") {
             try await service.delete(DeleteFileRequest(
+                mutationID: MutationID(),
+                expectedRevision: revision("blocked"),
                 format: .pdf,
                 path: "references/delete.pdf"
             ))
@@ -312,9 +610,8 @@ struct VaultFileServiceTests {
                 )
             )
         ])
-        let audit = AuditLogger(
-            dataDirectory: try makeTestDataDirectory(vaultPath: root)
-        )
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let audit = AuditLogger(dataDirectory: dataDirectory)
         let store = VaultCRUDStore(vaultPath: root)
         let service = VaultFileService(
             vaultPath: root,
@@ -322,13 +619,26 @@ struct VaultFileServiceTests {
             store: store,
             mutations: VaultMutationExecutor(
                 git: GitRepository(repoPath: root),
-                audit: audit
+                audit: audit,
+                processMutationLock: POSIXAdvisoryFileLock(
+                    url: dataDirectory.lockDirectoryURL
+                        .appendingPathComponent("vault-mutations.lock")
+                ),
+                receipts: MutationReceiptStore(dataDirectory: dataDirectory)
+            ),
+            operations: VaultOperationCoordinator(
+                lockDirectoryURL: dataDirectory.lockDirectoryURL
             ),
             audit: audit
         )
 
         await #expect(throws: DeleteHookError.self) {
-            try await service.delete(DeleteFileRequest(format: .markdown, path: path))
+            try await service.delete(DeleteFileRequest(
+                mutationID: MutationID(),
+                expectedRevision: revision("protected"),
+                format: .markdown,
+                path: path
+            ))
         }
         #expect(FileManager.default.fileExists(atPath: root + "/" + path))
     }
@@ -339,6 +649,10 @@ struct VaultFileServiceTests {
 
     private enum DeleteHookError: Error {
         case rejected
+    }
+
+    private func revision(_ text: String) -> FileRevision {
+        FileSnapshot(data: Data(text.utf8), modifiedDate: nil).revision
     }
 
     private func expectAreaNotWritable(

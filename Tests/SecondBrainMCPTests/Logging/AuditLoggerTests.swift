@@ -57,4 +57,45 @@ struct AuditLoggerTests {
             atPath: dataDirectory.auditLogURL.path + ".3"
         ))
     }
+
+    @Test("Independent logger actors coordinate one process-owned log")
+    func coordinatesIndependentLoggers() async throws {
+        let root = NSTemporaryDirectory() + "AuditLoggerTests-\(UUID().uuidString)"
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let first = AuditLogger(
+            dataDirectory: dataDirectory,
+            maximumBytes: 1024 * 1024,
+            coordinateAcrossProcesses: true
+        )
+        let second = AuditLogger(
+            dataDirectory: dataDirectory,
+            maximumBytes: 1024 * 1024,
+            coordinateAcrossProcesses: true
+        )
+
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<25 {
+                group.addTask {
+                    await first.log(
+                        operation: .read,
+                        path: "notes/first-\(index).md"
+                    )
+                }
+                group.addTask {
+                    await second.log(
+                        operation: .read,
+                        path: "notes/second-\(index).md"
+                    )
+                }
+            }
+        }
+
+        let contents = try String(
+            contentsOf: dataDirectory.auditLogURL,
+            encoding: .utf8
+        )
+        #expect(contents.split(separator: "\n").count == 50)
+        #expect(contents.contains("notes/first-0.md"))
+        #expect(contents.contains("notes/second-24.md"))
+    }
 }
