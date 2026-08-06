@@ -212,6 +212,84 @@ struct VaultMutationRecoveryTests {
         )
     }
 
+    @Test("Commit-only recovery revalidates persisted bytes against current security policy")
+    func recoveryRejectsLegacySecret() async throws {
+        let root = try makeVault()
+        let git = GitRepository(repoPath: root)
+        try await git.ensureRepository()
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
+        let identifier = MutationID()
+        let fingerprint = MutationRequestFingerprint(rawValue: "legacy-secret")
+        let target = try WritableFileTarget.resolve(
+            path: "notes/legacy-secret.md",
+            format: .markdown,
+            vaultPath: root
+        )
+        let data = Data(
+            ("Bearer " + String(repeating: "z", count: 32)).utf8
+        )
+        try data.write(to: target.url, options: .atomic)
+        let output = makeOutput(
+            target: target,
+            identifier: identifier,
+            data: data
+        )
+        try receipts.saveActiveTransaction(
+            identifier: identifier,
+            fingerprint: fingerprint
+        )
+        try receipts.savePostPersistenceFailure(
+            identifier: identifier,
+            fingerprint: fingerprint,
+            output: output,
+            failure: "simulated failure from an older process"
+        )
+        let probe = RecoveryAttemptProbe()
+        let executor = makeExecutor(
+            git: git,
+            dataDirectory: dataDirectory,
+            receipts: receipts
+        )
+
+        do {
+            _ = try await executor.executeIdempotent(
+                plan: VaultMutationPlan(
+                    kind: .create,
+                    target: target,
+                    handler: .markdown,
+                    mutationID: identifier
+                ),
+                fingerprint: fingerprint,
+                prepare: {
+                    await probe.recordPreparation()
+                    return PreparedVaultMutation(
+                        requiresCommit: false,
+                        perform: { .text("must not run") }
+                    )
+                }
+            )
+            Issue.record("Expected security revalidation to refuse recovery")
+        } catch VaultMutationExecutor.ExecutionError.recoveryStateChanged(
+            let path,
+            let receivedIdentifier
+        ) {
+            #expect(path == target.relativePath)
+            #expect(receivedIdentifier == identifier)
+        } catch {
+            Issue.record("Unexpected recovery error: \(error)")
+        }
+
+        #expect(await probe.preparationCount == 0)
+        #expect(try receipts.activeTransaction()?.identifier == identifier)
+        #expect(
+            try runGit(
+                ["rev-list", "--count", "HEAD", "--", target.relativePath],
+                at: root
+            ).trimmingCharacters(in: .whitespacesAndNewlines) == "0"
+        )
+    }
+
     @Test("Delete recovery refuses changed trash bytes")
     func deleteRecoveryRejectsTrashDrift() async throws {
         let root = try makeVault()

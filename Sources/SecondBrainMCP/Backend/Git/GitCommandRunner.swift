@@ -28,6 +28,37 @@ struct GitCommandRunner: Sendable {
     /// - Throws: ``GitCommandError`` or `CancellationError`.
     @discardableResult
     func run(_ arguments: [String], in workingDirectory: URL) async throws -> String {
+        let data = try await execute(
+            arguments,
+            in: workingDirectory,
+            maximumStandardOutputBytes: Self.maximumCapturedBytes
+        )
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Executes Git and returns bounded raw standard output.
+    ///
+    /// Repository policy uses this only for immutable blob contents whose
+    /// expected resource limit is already known. One extra byte can be requested
+    /// by the caller so oversized output remains distinguishable from exact-cap
+    /// output without retaining the complete stream.
+    func runData(
+        _ arguments: [String],
+        in workingDirectory: URL,
+        maximumCapturedBytes: Int
+    ) async throws -> Data {
+        try await execute(
+            arguments,
+            in: workingDirectory,
+            maximumStandardOutputBytes: maximumCapturedBytes
+        )
+    }
+
+    private func execute(
+        _ arguments: [String],
+        in workingDirectory: URL,
+        maximumStandardOutputBytes: Int
+    ) async throws -> Data {
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw GitCommandError.executableNotFound(path: executableURL.path)
         }
@@ -48,8 +79,14 @@ struct GitCommandRunner: Sendable {
         let command = arguments.joined(separator: " ")
         let execution = GitProcessExecution(process: process, command: command)
         async let exitCode = execution.run()
-        async let stdout = Self.readAll(stdoutPipe.fileHandleForReading.bytes)
-        async let stderr = Self.readAll(stderrPipe.fileHandleForReading.bytes)
+        async let stdout = Self.readAll(
+            stdoutPipe.fileHandleForReading.bytes,
+            maximumBytes: maximumStandardOutputBytes
+        )
+        async let stderr = Self.readAll(
+            stderrPipe.fileHandleForReading.bytes,
+            maximumBytes: Self.maximumCapturedBytes
+        )
 
         let (completedExitCode, completedStdout, completedStderr) = try await (
             exitCode,
@@ -64,13 +101,16 @@ struct GitCommandRunner: Sendable {
                 stderr: stderrText
             )
         }
-        return String(decoding: completedStdout, as: UTF8.self)
+        return completedStdout
     }
 
-    private static func readAll(_ bytes: FileHandle.AsyncBytes) async throws -> Data {
+    private static func readAll(
+        _ bytes: FileHandle.AsyncBytes,
+        maximumBytes: Int
+    ) async throws -> Data {
         var data = Data()
         for try await byte in bytes {
-            if data.count < maximumCapturedBytes {
+            if data.count < maximumBytes {
                 data.append(byte)
             }
         }

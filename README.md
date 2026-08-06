@@ -181,7 +181,8 @@ The matrix is generated from registered operation bindings rather than maintaine
 
 Format-specific behavior stays behind the four endpoints:
 
-- HAR input must have a valid HAR `log` structure; reads return a request/status/host/timing summary, with raw JSON only when requested.
+- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return a request/status/host/timing summary, with sanitized raw JSON only when requested.
+- Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
 - Patch input must be a unified diff; reads report affected files, hunks, additions, and deletions.
 - Logs default to the last 500 lines, support bounded line ranges, and can only be appended.
 - JSON accepts any valid top-level JSON value, preserves its original representation, and validates replacements or exact text patches before persistence.

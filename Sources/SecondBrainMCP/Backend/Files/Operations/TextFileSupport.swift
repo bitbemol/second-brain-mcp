@@ -15,9 +15,9 @@ enum TextFileSupport {
         /// A replacement used an empty search value, which cannot identify a text range.
         case emptyPatchTarget(index: Int)
         /// A replacement's old text does not occur in the current document.
-        case patchNotFound(index: Int, preview: String)
+        case patchNotFound(index: Int)
         /// A replacement's old text is not unique in the current document.
-        case ambiguousPatch(index: Int, occurrences: Int, preview: String)
+        case ambiguousPatch(index: Int, occurrences: Int)
 
         /// Human-readable text decoding or replacement failure.
         var description: String {
@@ -27,9 +27,10 @@ enum TextFileSupport {
             case .emptyPatch: return "No replacements provided"
             case .tooManyPatches(let count): return "Too many replacements: \(count). Maximum is 20."
             case .emptyPatchTarget(let index): return "Replacement \(index): old_text must not be empty"
-            case .patchNotFound(let index, let preview): return "Replacement \(index): text not found: \"\(preview)\""
-            case .ambiguousPatch(let index, let count, let preview):
-                return "Replacement \(index): found \(count) occurrences of \"\(preview)\"; provide more context"
+            case .patchNotFound(let index):
+                return "Replacement \(index): text not found; provide more context"
+            case .ambiguousPatch(let index, let count):
+                return "Replacement \(index): found \(count) occurrences; provide more context"
             }
         }
     }
@@ -96,15 +97,17 @@ enum TextFileSupport {
                 occurrences += 1
                 searchStart = range.upperBound
             }
-            let preview = String(replacement.oldText.prefix(100))
             guard occurrences > 0 else {
-                throw TextError.patchNotFound(index: offset + 1, preview: preview)
+                throw TextError.patchNotFound(index: offset + 1)
             }
             guard occurrences == 1 else {
-                throw TextError.ambiguousPatch(index: offset + 1, occurrences: occurrences, preview: preview)
+                throw TextError.ambiguousPatch(
+                    index: offset + 1,
+                    occurrences: occurrences
+                )
             }
             guard let range = result.range(of: replacement.oldText) else {
-                throw TextError.patchNotFound(index: offset + 1, preview: preview)
+                throw TextError.patchNotFound(index: offset + 1)
             }
             result.replaceSubrange(range, with: replacement.newText)
         }

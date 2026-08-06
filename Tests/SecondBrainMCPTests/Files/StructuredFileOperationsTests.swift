@@ -69,6 +69,149 @@ struct StructuredFileOperationsTests {
         }
     }
 
+    @Test("HAR creation stores sanitized bytes and reports the intervention")
+    func sanitizedHAR() throws {
+        let root = try makeVault()
+        let operations = HARFileOperations()
+        let target = try WritableFileTarget.resolve(
+            path: "notes/sensitive.har",
+            format: .har,
+            vaultPath: root
+        )
+        let secret = "Bearer " + String(repeating: "s", count: 32)
+        let content = """
+        {"log":{"version":"1.2","creator":{"name":"Test"},"entries":[
+          {"request":{"method":"GET","url":"https://example.com",
+           "headers":[{"name":"Authorization","value":"\(secret)"}]},
+           "response":{"status":200},"time":1}
+        ]}}
+        """
+
+        let prepared = try operations.prepareCreate(
+            input(content),
+            target: target
+        )
+        let stored = try #require(String(data: prepared.data, encoding: .utf8))
+        guard case .text(let output) = prepared.output.contents.first else {
+            Issue.record("Expected HAR creation summary")
+            return
+        }
+
+        #expect(!stored.contains(secret))
+        #expect(stored.contains(HARSensitiveDataSanitizer.redactionMarker))
+        #expect(output.contains("Sanitized 1 sensitive value"))
+    }
+
+    @Test("Raw reads sanitize legacy HAR bytes and reject unknown secret locations")
+    func legacyHARRawRead() throws {
+        let root = try makeVault()
+        let operations = HARFileOperations()
+        let target = try WritableFileTarget.resolve(
+            path: "notes/legacy.har",
+            format: .har,
+            vaultPath: root
+        )
+        let secret = "Bearer " + String(repeating: "l", count: 32)
+        let knownField = """
+        {"log":{"version":"1.2","creator":{"name":"Test"},"entries":[
+          {"request":{"method":"GET","url":"https://example.com",
+           "headers":[{"name":"Authorization","value":"\(secret)"}]},
+           "response":{"status":200},"time":1}
+        ]}}
+        """
+        let rawRequest = ReadFileRequest(
+            format: .har,
+            path: target.relativePath,
+            options: ReadFileOptions(
+                raw: true,
+                tailLines: nil,
+                startLine: nil,
+                maxLines: nil,
+                page: nil,
+                bookPage: nil,
+                pageRange: nil,
+                query: nil,
+                maxPages: nil
+            )
+        )
+        let output = try operations.read(
+            rawRequest,
+            target: target.readable,
+            snapshot: FileSnapshot(
+                data: Data(knownField.utf8),
+                modifiedDate: nil
+            )
+        )
+        guard case .text(let raw) = output.contents.first else {
+            Issue.record("Expected sanitized raw HAR")
+            return
+        }
+        #expect(!raw.contains(secret))
+        #expect(raw.contains(HARSensitiveDataSanitizer.redactionMarker))
+
+        let unknownField = knownField.replacingOccurrences(
+            of: "\"response\":{\"status\":200}",
+            with: "\"response\":{\"status\":200,\"content\":{\"text\":\"\(secret)\"}}"
+        )
+        #expect(throws: SensitiveContentPolicy.Violation.self) {
+            try operations.read(
+                rawRequest,
+                target: target.readable,
+                snapshot: FileSnapshot(
+                    data: Data(unknownField.utf8),
+                    modifiedDate: nil
+                )
+            )
+        }
+    }
+
+    @Test("HAR summaries reject credentials in projected legacy fields")
+    func legacyHARSummaryDoesNotDiscloseSecrets() throws {
+        let root = try makeVault()
+        let operations = HARFileOperations()
+        let target = try WritableFileTarget.resolve(
+            path: "notes/legacy-summary.har",
+            format: .har,
+            vaultPath: root
+        )
+        let secret = "Bearer " + String(repeating: "v", count: 32)
+        let archive = """
+        {"log":{"version":"1.2","creator":{"name":"\(secret)"},"entries":[
+          {"request":{"method":"GET","url":"https://example.com"},
+           "response":{"status":200},"time":1}
+        ]}}
+        """
+
+        #expect(throws: SensitiveContentPolicy.Violation.self) {
+            try operations.read(
+                ReadFileRequest(
+                    format: .har,
+                    path: target.relativePath,
+                    options: .default
+                ),
+                target: target.readable,
+                snapshot: FileSnapshot(
+                    data: Data(archive.utf8),
+                    modifiedDate: nil
+                )
+            )
+        }
+    }
+
+    @Test("Patch failures never echo caller-supplied search text")
+    func patchFailureDoesNotEchoSearchText() {
+        let secret = "Bearer " + String(repeating: "p", count: 32)
+        do {
+            _ = try TextFileSupport.apply(
+                [TextReplacement(oldText: secret, newText: "removed")],
+                to: "safe document"
+            )
+            Issue.record("Expected patch failure")
+        } catch {
+            #expect(!String(describing: error).contains(secret))
+        }
+    }
+
     @Test("Opaque text formats cannot import arbitrary external paths")
     func rejectsExternalTextSource() async throws {
         let root = try makeVault()

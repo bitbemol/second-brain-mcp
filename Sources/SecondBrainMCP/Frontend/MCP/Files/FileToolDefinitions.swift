@@ -28,7 +28,7 @@ enum FileToolDefinitions {
         case .create:
             Tool(
                 name: tool.rawValue,
-                description: "Create a supported concrete file under notes/. mutation_id is a caller-generated UUID: reuse it only to retry this exact request after a timeout. Creation is atomic and requires the destination to be absent. The declared format, destination extension, and actual content must agree. Text and structured formats require inline content. PNG imports and cleans an external image source. GIF creation accepts an external video source with transform=video_to_gif. Successful results return the stored revision and are git-committed.",
+                description: "Create a supported concrete file under notes/. mutation_id is a caller-generated UUID: reuse it only to retry this exact request after a timeout. Creation is atomic and requires the destination to be absent. The declared format, destination extension, and actual content must agree. Text and structured formats require inline content and reject high-confidence credentials before Git persistence; use explicit redaction placeholders in documentation. HAR imports redact known authorization, cookie, token, URL-userinfo, and JSON/form-body credential fields. PNG imports and cleans an external image source. GIF creation accepts an external video source with transform=video_to_gif. Successful results return the stored revision and are git-committed.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .create),
                     formatDescription: "Concrete stored file format",
@@ -41,11 +41,22 @@ enum FileToolDefinitions {
                         ]),
                         .source: .object([
                             "type": .string("string"),
+                            "maxLength": .int(
+                                FileMutationRequestLimits.maximumSourcePathBytes
+                            ),
                             "description": .string("External regular-file path; supported only for PNG image import and GIF video conversion")
                         ]),
                         .tags: .object([
                             "type": .string("array"),
-                            "items": .object(["type": .string("string")]),
+                            "maxItems": .int(
+                                FileMutationRequestLimits.maximumTagCount
+                            ),
+                            "items": .object([
+                                "type": .string("string"),
+                                "maxLength": .int(
+                                    FileMutationRequestLimits.maximumTagBytes
+                                )
+                            ]),
                             "description": .string("Markdown tags used when frontmatter is generated")
                         ]),
                         .transform: .object([
@@ -69,13 +80,13 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read a supported concrete file with format-specific behavior. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. JSON and CSV return their complete validated source text. Images may be resized or decomposed into timed GIF frames; PDFs return text plus rendered pages; HAR returns a summary unless raw=true; patches return a summary plus diff; logs default to the last 500 lines.",
+                description: "Read a supported concrete file with format-specific behavior. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. JSON and CSV return their complete validated source text. Images may be resized or decomposed into timed GIF frames; PDFs return text plus rendered pages; HAR returns a summary unless raw=true, and raw output is sanitized or rejected when unknown credential patterns remain; patches return a summary plus diff; logs default to the last 500 lines.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
                     pathDescription: "Vault-relative path under notes/ or references/",
                     additionalProperties: [
-                        .raw: .object(["type": .string("boolean"), "description": .string("Include complete raw HAR JSON (default false)")]),
+                        .raw: .object(["type": .string("boolean"), "description": .string("Include complete sanitized HAR JSON; unknown credential patterns are rejected (default false)")]),
                         .tailLines: .object([
                             "type": .string("integer"), "minimum": .int(1), "maximum": .int(5_000),
                             "description": .string("For logs, return the last N lines")
@@ -114,7 +125,7 @@ enum FileToolDefinitions {
         case .update:
             Tool(
                 name: tool.rawValue,
-                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. Markdown and CSV support replace, append, and exact text replacements. JSON supports replace and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
+                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. Text updates reject high-confidence credentials before persistence. Markdown and CSV support replace, append, and exact text replacements. JSON supports replace and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .update),
                     formatDescription: "Concrete file format",

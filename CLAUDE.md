@@ -180,6 +180,10 @@ filesystem mutation already succeeded—rather than swallowed with `try?`.
   then defend against mismatches.
 - **Reject, don't silently repair.** Bad paths, wrong formats, malformed JSON/CSV/HAR/Canvas/diffs, and
   unsupported operations are errors.
+- **Secrets stop before Git.** Every prepared textual create/update passes the shared high-confidence
+  credential policy before persistence. It reports only detector + line, never the matched value.
+  HAR is the deliberate transformation exception: known authorization/cookie/token fields are
+  replaced with `[REDACTED]`, the result reports the redaction count, and only sanitized raw JSON is readable.
 - **Prepare, then persist.** A special create/update handler returns bytes; it never writes them.
   Generic persistence and git behavior remain identical across formats.
 - **Reuse functions, not manager-shaped dependency bags.** If several formats share behavior,

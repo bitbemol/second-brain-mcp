@@ -297,6 +297,133 @@ struct GitRepositoryTests {
         #expect(try runGit(["rev-list", "--count", "HEAD"], at: root).trimmingCharacters(in: .whitespacesAndNewlines) == "2")
     }
 
+    @Test("Initial startup refuses to commit credential-bearing vault text")
+    func initialSnapshotRejectsSecrets() async throws {
+        let (root, git) = try makeRepository()
+        let secret = "Bearer " + String(repeating: "s", count: 32)
+        try secret.write(
+            toFile: root + "/notes/external.md",
+            atomically: true,
+            encoding: .utf8
+        )
+
+        await #expect(throws: GitRepository.UnsafeStartupSnapshot.self) {
+            try await git.ensureRepository()
+        }
+
+        #expect(
+            try gitExitStatus(["rev-parse", "--verify", "HEAD"], at: root) != 0
+        )
+        #expect(
+            try runGit(["status", "--porcelain"], at: root)
+                .contains("?? notes/")
+        )
+    }
+
+    @Test("Dirty startup refuses escaped JSON credentials without changing HEAD")
+    func dirtySnapshotRejectsEscapedJSONSecrets() async throws {
+        let (root, git) = try makeRepository()
+        try await git.ensureRepository()
+        let originalHead = try runGit(["rev-parse", "HEAD"], at: root)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = String(repeating: "t", count: 32)
+        let content = #"{"access\u005ftoken":""# + secret + #""}"#
+        try content.write(
+            toFile: root + "/notes/external.json",
+            atomically: true,
+            encoding: .utf8
+        )
+
+        await #expect(throws: GitRepository.UnsafeStartupSnapshot.self) {
+            try await git.ensureRepository()
+        }
+
+        #expect(
+            try runGit(["rev-parse", "HEAD"], at: root)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == originalHead
+        )
+        #expect(
+            try runGit(["status", "--porcelain"], at: root)
+                .contains("?? notes/")
+        )
+    }
+
+    @Test(
+        "Startup scans credential-bearing text outside supported extensions",
+        arguments: [".env", "settings.yaml", "instructions.txt"]
+    )
+    func startupRejectsUnknownTextFormats(_ name: String) async throws {
+        let (root, git) = try makeRepository()
+        try await git.ensureRepository()
+        let originalHead = try runGit(["rev-parse", "HEAD"], at: root)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = "Authorization: Bearer "
+            + String(repeating: "u", count: 32)
+        try secret.write(
+            toFile: root + "/" + name,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        await #expect(throws: GitRepository.UnsafeStartupSnapshot.self) {
+            try await git.ensureRepository()
+        }
+
+        #expect(
+            try runGit(["rev-parse", "HEAD"], at: root)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == originalHead
+        )
+        #expect(
+            try runGit(["status", "--porcelain", "--untracked-files=all"], at: root)
+                .contains(name)
+        )
+    }
+
+    @Test("Text-oriented unknown files cannot become binary through invalid encoding")
+    func startupRejectsInvalidTextEncoding() async throws {
+        let (root, git) = try makeRepository()
+        try await git.ensureRepository()
+        var data = Data(
+            ("Bearer " + String(repeating: "v", count: 32)).utf8
+        )
+        data.append(0xff)
+        try data.write(to: URL(fileURLWithPath: root + "/.env"))
+
+        await #expect(throws: GitRepository.UnsafeStartupSnapshot.self) {
+            try await git.ensureRepository()
+        }
+
+        #expect(
+            try runGit(["status", "--porcelain", "--untracked-files=all"], at: root)
+                .contains(".env")
+        )
+    }
+
+    @Test("Startup validates Git-normalized staged bytes")
+    func startupValidatesNormalizedStagedBlob() async throws {
+        let (root, git) = try makeRepository()
+        try await git.ensureRepository()
+        try "*.txt text eol=lf\n".write(
+            toFile: root + "/.gitattributes",
+            atomically: true,
+            encoding: .utf8
+        )
+        try Data("safe\r\ncontent\r\n".utf8).write(
+            to: URL(fileURLWithPath: root + "/notes/normalized.txt")
+        )
+
+        try await git.ensureRepository()
+
+        let committed = try runGit(
+            ["show", "HEAD:notes/normalized.txt"],
+            at: root
+        )
+        #expect(committed == "safe\ncontent\n")
+        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+    }
+
     @Test("Sanitizes commit messages")
     func sanitizesMessage() {
         let dirty = "message\n$(touch /tmp/nope); `bad` & more"

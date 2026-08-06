@@ -255,6 +255,14 @@ struct VaultMutationRecovery: Sendable {
                 guard current == expected else {
                     throw stateChanged(plan: plan, identifier: identifier)
                 }
+                // A failed transaction from an older process may predate the
+                // current security policy. Never let commit-only recovery turn
+                // those already-persisted bytes into Git history unchecked.
+                try PersistedFileSecurityPolicy.validate(
+                    data,
+                    format: plan.format,
+                    path: plan.path
+                )
             }
         } catch let error as VaultMutationExecutor.ExecutionError {
             throw error

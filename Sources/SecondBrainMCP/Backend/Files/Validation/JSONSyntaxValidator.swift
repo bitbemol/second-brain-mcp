@@ -19,16 +19,29 @@ enum JSONSyntaxValidator {
     private static let maximumNestingDepth = 512
 
     /// Validates one complete UTF-8 JSON representation without decoding values.
-    static func validate(_ data: Data) throws {
+    ///
+    /// - Parameters:
+    ///   - data: Candidate UTF-8 JSON bytes.
+    ///   - rejectingDuplicateObjectKeys: Whether an object may repeat a decoded
+    ///     member name. HAR sanitization enables this because materializing a
+    ///     duplicate-key object would otherwise silently discard one value.
+    static func validate(
+        _ data: Data,
+        rejectingDuplicateObjectKeys: Bool = false
+    ) throws {
         guard String(data: data, encoding: .utf8) != nil else {
             throw ValidationError.invalidSyntax
         }
-        var parser = Parser(bytes: Array(data))
+        var parser = Parser(
+            bytes: Array(data),
+            rejectsDuplicateObjectKeys: rejectingDuplicateObjectKeys
+        )
         try parser.parseDocument()
     }
 
     private struct Parser {
         let bytes: [UInt8]
+        let rejectsDuplicateObjectKeys: Bool
         var index = 0
 
         mutating func parseDocument() throws {
@@ -49,7 +62,7 @@ enum JSONSyntaxValidator {
             case CharacterByte.arrayStart:
                 try parseArray(depth: depth)
             case CharacterByte.quote:
-                try parseString()
+                _ = try parseString(decoding: false)
             case CharacterByte.minus,
                  CharacterByte.zero...CharacterByte.nine:
                 try parseNumber()
@@ -69,12 +82,21 @@ enum JSONSyntaxValidator {
             advance()
             skipWhitespace()
             if consume(CharacterByte.objectEnd) { return }
+            var memberNames = Set<String>()
 
             while true {
                 guard current == CharacterByte.quote else {
                     throw ValidationError.invalidSyntax
                 }
-                try parseString()
+                let memberName = try parseString(
+                    decoding: rejectsDuplicateObjectKeys
+                )
+                if rejectsDuplicateObjectKeys {
+                    guard let memberName,
+                          memberNames.insert(memberName).inserted else {
+                        throw ValidationError.invalidSyntax
+                    }
+                }
                 skipWhitespace()
                 guard consume(CharacterByte.colon) else {
                     throw ValidationError.invalidSyntax
@@ -109,7 +131,10 @@ enum JSONSyntaxValidator {
             }
         }
 
-        private mutating func parseString() throws {
+        private mutating func parseString(
+            decoding: Bool
+        ) throws -> String? {
+            let start = index
             guard consume(CharacterByte.quote) else {
                 throw ValidationError.invalidSyntax
             }
@@ -117,7 +142,15 @@ enum JSONSyntaxValidator {
                 advance()
                 switch byte {
                 case CharacterByte.quote:
-                    return
+                    guard decoding else { return nil }
+                    let representation = Data(bytes[start..<index])
+                    guard let decoded = try? JSONDecoder().decode(
+                        String.self,
+                        from: representation
+                    ) else {
+                        throw ValidationError.invalidSyntax
+                    }
+                    return decoded
                 case CharacterByte.escape:
                     try parseEscape()
                 case 0x00...0x1f:

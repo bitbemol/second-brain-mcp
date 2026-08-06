@@ -253,6 +253,55 @@ struct VaultFileServiceTests {
         #expect(commitCount == "1")
     }
 
+    @Test("Sensitive text is rejected before create or update persistence")
+    func sensitiveWritesFailClosed() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let rejectedPath = "notes/rejected.md"
+        let secret = "Bearer " + String(repeating: "q", count: 32)
+
+        await #expect(throws: SensitiveContentPolicy.Violation.self) {
+            _ = try await runtime.files.create(CreateFileRequest(
+                mutationID: MutationID(),
+                format: .markdown,
+                path: rejectedPath,
+                content: secret,
+                source: nil,
+                tags: [],
+                transform: nil
+            ))
+        }
+        #expect(!FileManager.default.fileExists(
+            atPath: root + "/" + rejectedPath
+        ))
+
+        let safePath = "notes/safe.md"
+        let created = try await runtime.files.create(CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: safePath,
+            content: "safe content",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        await #expect(throws: SensitiveContentPolicy.Violation.self) {
+            _ = try await runtime.files.update(UpdateFileRequest(
+                mutationID: MutationID(),
+                expectedRevision: try #require(created.metadata?.revision),
+                format: .markdown,
+                path: safePath,
+                content: secret,
+                mode: .replace,
+                replacements: []
+            ))
+        }
+        #expect(try String(
+            contentsOfFile: root + "/" + safePath,
+            encoding: .utf8
+        ).hasSuffix("safe content"))
+        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+    }
+
     @Test("Notes reads return the exact stored-byte revision")
     func noteReadReturnsRevision() async throws {
         let (root, runtime) = try await makeRuntime()

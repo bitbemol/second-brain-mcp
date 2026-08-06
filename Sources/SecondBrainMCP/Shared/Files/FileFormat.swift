@@ -66,6 +66,16 @@ enum FileFormat: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Whether the stored representation is strict UTF-8 text.
+    var isTextual: Bool {
+        switch self {
+        case .markdown, .canvas, .har, .patch, .log, .json, .csv:
+            true
+        case .png, .jpeg, .gif, .webp, .heic, .tiff, .bmp, .pdf:
+            false
+        }
+    }
+
     /// Resolves an image encoder's format identifier to its concrete file format.
     ///
     /// The lookup derives from ``extensions`` so aliases such as `jpg`, `heif`,

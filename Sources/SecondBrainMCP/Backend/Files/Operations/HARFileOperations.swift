@@ -2,9 +2,9 @@ import Foundation
 
 /// Validates HTTP Archive files and produces compact traffic summaries.
 ///
-/// The original HAR bytes are persisted unchanged after validation. Reads return
-/// summary data by default and include the potentially large JSON only when the
-/// caller explicitly requests raw output.
+/// Credential-bearing fields are sanitized before persistence. Reads return
+/// summary data by default and include only the sanitized JSON when the caller
+/// explicitly requests raw output.
 struct HARFileOperations: Sendable {
     /// Validates a centrally loaded HAR payload before generic persistence.
     ///
@@ -18,9 +18,28 @@ struct HARFileOperations: Sendable {
         _ input: TextFileCreateInput,
         target: WritableFileTarget
     ) throws -> PreparedFileWrite {
-        let inspection = try HARInspector.inspect(data: input.data)
+        let sanitized: HARSensitiveDataSanitizer.Result
+        do {
+            sanitized = try HARSensitiveDataSanitizer.sanitize(input.data)
+        } catch is HARSensitiveDataSanitizer.InvalidJSON {
+            throw HARInspector.InspectionError.invalidJSON
+        }
+        try FileResourcePolicy.validate(
+            bytes: sanitized.data.count,
+            format: .har,
+            path: target.relativePath
+        )
+        let inspection = try HARInspector.inspect(data: sanitized.data)
         let summary = Self.summary(inspection: inspection, path: target.relativePath)
-        return PreparedFileWrite(data: input.data, output: .text("Created \(target.relativePath)\n\(summary)"))
+        let sanitization = sanitized.redactionCount == 0
+            ? ""
+            : "\nSanitized \(sanitized.redactionCount) sensitive value(s) before storage."
+        return PreparedFileWrite(
+            data: sanitized.data,
+            output: .text(
+                "Created \(target.relativePath)\n\(summary)\(sanitization)"
+            )
+        )
     }
 
     /// Summarizes a HAR snapshot, optionally including its complete JSON payload.
@@ -29,10 +48,32 @@ struct HARFileOperations: Sendable {
         target: ReadableFileTarget,
         snapshot: FileSnapshot
     ) throws -> FileOperationOutput {
-        let inspection = try HARInspector.inspect(data: snapshot.data)
+        let sanitized: HARSensitiveDataSanitizer.Result
+        do {
+            sanitized = try HARSensitiveDataSanitizer.sanitize(snapshot.data)
+        } catch is HARSensitiveDataSanitizer.InvalidJSON {
+            throw HARInspector.InspectionError.invalidJSON
+        }
+        let inspection = try HARInspector.inspect(data: sanitized.data)
         let summary = Self.summary(inspection: inspection, path: target.relativePath)
+        // Legacy archives may carry credentials in descriptive fields such as
+        // creator name, version, or method. Validate the projection as well as
+        // raw JSON so summary-only reads cannot disclose those values.
+        try SensitiveContentPolicy.validate(
+            Data(summary.utf8),
+            format: .har,
+            path: target.relativePath
+        )
         if request.options.raw {
-            return .text(summary + "\n\n" + (try TextFileSupport.string(from: snapshot.data)))
+            try SensitiveContentPolicy.validate(
+                sanitized.data,
+                format: .har,
+                path: target.relativePath
+            )
+            return .text(
+                summary + "\n\n"
+                    + (try TextFileSupport.string(from: sanitized.data))
+            )
         }
         return .text(summary + "\n\nPass raw=true to include the complete HAR JSON.")
     }

@@ -1,7 +1,28 @@
+import CryptoKit
 import Foundation
 
 /// Serializes the Git mutations required by generic file CRUD.
 actor GitRepository {
+    private struct StartupSnapshotValidation: Sendable {
+        struct File: Sendable {
+            let expectedBlobID: String
+            let format: FileFormat?
+            let maximumBytes: Int
+        }
+
+        let paths: Set<String>
+        let files: [String: File]
+    }
+
+    /// Existing external changes failed the same policy used by managed writes.
+    struct UnsafeStartupSnapshot: Error, CustomStringConvertible, Sendable {
+        let path: String
+
+        var description: String {
+            "Startup snapshot refused because \(path) did not pass the vault security policy"
+        }
+    }
+
     private let repoPath: String
     private let commandRunner: GitCommandRunner
 
@@ -94,7 +115,8 @@ actor GitRepository {
         try await run(["init"])
         try await installManagedExclusions()
         try await ensureCommitIdentity()
-        try await run(["--literal-pathspecs", "add", "."])
+        let validation = try await validateStartupSnapshot()
+        try await stageAndValidateStartupSnapshot(validation)
         try await run([
             "commit", "--allow-empty", "-m",
             "[SecondBrainMCP] Initial commit of existing vault"
@@ -103,13 +125,202 @@ actor GitRepository {
 
     private func snapshotIfDirty() async throws {
         guard try await isDirty() else { return }
-        try await run(["--literal-pathspecs", "add", "."])
+        let validation = try await validateStartupSnapshot()
+        try await stageAndValidateStartupSnapshot(validation)
         try await run(["commit", "-m", "[SecondBrainMCP] Snapshot of uncommitted changes on startup"])
     }
 
     private func isDirty() async throws -> Bool {
         let output = try await run(["status", "--porcelain"])
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Broadly stages the snapshot, verifies its exact blob identities, and
+    /// restores the prior index tree if post-stage verification refuses it.
+    private func stageAndValidateStartupSnapshot(
+        _ validation: StartupSnapshotValidation
+    ) async throws {
+        let originalIndexTree = try await run(["write-tree"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try await run(["--literal-pathspecs", "add", "."])
+            try await validateStagedStartupSnapshot(validation)
+        } catch {
+            // Restore only the index. The user's working files are never changed.
+            _ = try? await run(["read-tree", originalIndexTree])
+            throw error
+        }
+    }
+
+    /// Scans changed and untracked files before broad startup adds.
+    ///
+    /// Normal CRUD commits are path-scoped and validate prepared bytes. Startup
+    /// intentionally snapshots external edits with `git add .`, so it must first
+    /// recover that security boundary for every file Git is about to include.
+    private func validateStartupSnapshot() async throws -> StartupSnapshotValidation {
+        let paths = try await startupCandidatePaths(includeWorktree: true)
+        var files: [String: StartupSnapshotValidation.File] = [:]
+
+        for path in paths.sorted() {
+            do {
+                guard !PathValidator.containsSymbolicLinkComponent(
+                    relativePath: path,
+                    root: repoPath
+                ) else {
+                    continue
+                }
+                let resolved = try PathValidator.resolve(
+                    relativePath: path,
+                    root: repoPath
+                )
+                let url = URL(fileURLWithPath: resolved)
+                guard FileManager.default.fileExists(atPath: resolved) else {
+                    continue
+                }
+                let metadata = try RegularFileInspector.inspect(url)
+                let format = FileFormat.allCases.first { $0.accepts(path: path) }
+                // Broad startup snapshots can encounter formats outside the
+                // public API. Bound those and binary candidates to the largest
+                // Git-tracked text tier instead of allowing opaque huge blobs.
+                let startupLimit = min(
+                    format?.maximumFileBytes ?? FileFormat.log.maximumFileBytes,
+                    FileFormat.log.maximumFileBytes
+                )
+                guard metadata.byteCount <= startupLimit else {
+                    throw UnsafeStartupSnapshot(path: path)
+                }
+                let data = try BoundedFileReader.read(
+                    from: url,
+                    maximumBytes: startupLimit,
+                    path: path
+                )
+                try Self.validateStartupData(data, format: format, path: path)
+                files[path] = StartupSnapshotValidation.File(
+                    expectedBlobID: Self.gitBlobID(for: data),
+                    format: format,
+                    maximumBytes: startupLimit
+                )
+            } catch {
+                throw UnsafeStartupSnapshot(path: path)
+            }
+        }
+        return StartupSnapshotValidation(
+            paths: paths,
+            files: files
+        )
+    }
+
+    /// Confirms broad staging contains only candidates seen by preflight and
+    /// that every scanned file's staged Git blob is byte-identical to it.
+    private func validateStagedStartupSnapshot(
+        _ validation: StartupSnapshotValidation
+    ) async throws {
+        let stagedPaths = try await startupCandidatePaths(includeWorktree: false)
+        guard stagedPaths.isSubset(of: validation.paths) else {
+            throw UnsafeStartupSnapshot(path: "files changed during startup")
+        }
+        for (path, file) in validation.files {
+            guard stagedPaths.contains(path) else { continue }
+            let output = try await run([
+                "--literal-pathspecs", "ls-files", "-s", "--", path,
+            ])
+            let fields = output.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count >= 3, fields[2] == "0" else {
+                throw UnsafeStartupSnapshot(path: path)
+            }
+            let stagedBlobID = String(fields[1])
+            guard stagedBlobID != file.expectedBlobID else { continue }
+
+            // Git attributes may deliberately normalize the staged bytes. Read
+            // and validate that immutable blob instead of either rejecting safe
+            // transformations or trusting bytes that were never inspected.
+            let staged = try await commandRunner.runData(
+                ["cat-file", "blob", stagedBlobID],
+                in: URL(fileURLWithPath: repoPath, isDirectory: true),
+                maximumCapturedBytes: file.maximumBytes + 1
+            )
+            guard staged.count <= file.maximumBytes else {
+                throw UnsafeStartupSnapshot(path: path)
+            }
+            do {
+                try Self.validateStartupData(
+                    staged,
+                    format: file.format,
+                    path: path
+                )
+            } catch {
+                throw UnsafeStartupSnapshot(path: path)
+            }
+        }
+    }
+
+    private func startupCandidatePaths(
+        includeWorktree: Bool
+    ) async throws -> Set<String> {
+        let commands = [
+            ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
+        ] + (includeWorktree ? [
+            ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB"],
+            ["ls-files", "--others", "--exclude-standard", "-z"],
+        ] : [])
+        var paths = Set<String>()
+        for command in commands {
+            let output = try await run(command)
+            // GitCommandRunner deliberately caps captured output. Refuse a broad
+            // add when the candidate list may have been truncated.
+            guard output.utf8.count < GitCommandRunner.maximumCapturedBytes else {
+                throw UnsafeStartupSnapshot(path: "changed file list")
+            }
+            paths.formUnion(output.split(separator: "\0").map(String.init))
+        }
+        return paths
+    }
+
+    private static func gitBlobID(for data: Data) -> String {
+        var object = Data("blob \(data.count)\0".utf8)
+        object.append(data)
+        return Insecure.SHA1.hash(data: object)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func validateStartupData(
+        _ data: Data,
+        format: FileFormat?,
+        path: String
+    ) throws {
+        if let format, format.isTextual {
+            try PersistedFileSecurityPolicy.validate(
+                data,
+                format: format,
+                path: path
+            )
+        } else if String(data: data, encoding: .utf8) != nil {
+            // Unknown extensions and extensionless files may still be ordinary
+            // text such as .env, YAML, shell, or configuration.
+            try SensitiveContentPolicy.validate(
+                data,
+                format: .log,
+                path: path
+            )
+        } else if isTextOrientedUnknownPath(path) {
+            // A stray invalid byte or UTF-16 encoding must not let an obvious
+            // text/configuration file silently switch to the binary exemption.
+            throw TextFileSupport.TextError.invalidUTF8
+        }
+    }
+
+    private static func isTextOrientedUnknownPath(_ path: String) -> Bool {
+        let filename = (path as NSString).lastPathComponent.lowercased()
+        let fileExtension = (filename as NSString).pathExtension
+        if fileExtension.isEmpty || filename.hasPrefix(".env") {
+            return true
+        }
+        return [
+            "bash", "conf", "config", "env", "fish", "ini", "js", "jsonl",
+            "properties", "py", "rb", "sh", "toml", "ts", "txt", "xml",
+            "yaml", "yml", "zsh",
+        ].contains(fileExtension)
     }
 
     /// Supplies a repository-local automation identity only when none is configured.

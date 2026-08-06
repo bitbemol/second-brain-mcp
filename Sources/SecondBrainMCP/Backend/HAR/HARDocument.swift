@@ -2,8 +2,8 @@
 ///
 /// Fields decode independently so ``HARInspector`` can report structural
 /// validation failures instead of collapsing every type mismatch into invalid JSON.
-/// The original archive bytes remain the persistence source and are never
-/// re-encoded from this projection.
+/// The inspector never re-encodes from this lossy projection. Persistence uses
+/// the sanitizer's complete JSON object, which retains unknown extension fields.
 struct HARDocument: Decodable {
     /// Decoded top-level archive log, or `nil` when missing or malformed.
     let log: Log?

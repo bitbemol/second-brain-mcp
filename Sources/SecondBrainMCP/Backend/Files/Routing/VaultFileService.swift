@@ -51,6 +51,7 @@ actor VaultFileService: FileCRUDService {
             path: request.path,
             format: request.format
         )
+        try FileMutationResourcePreflight.validate(request)
         let binding = try catalog.createBinding(for: request.format, in: target.area)
         let store = self.store
         let mutations = self.mutations
@@ -71,6 +72,11 @@ actor VaultFileService: FileCRUDService {
                 prepare: {
                     try await store.requireAbsent(target)
                     let prepared = try await binding.execute(request, target)
+                    try SensitiveContentPolicy.validate(
+                        prepared.data,
+                        format: target.format,
+                        path: target.relativePath
+                    )
                     // Preparation may invoke native media work. Repeat the
                     // absence check before the executor records durable intent.
                     try await store.requireAbsent(target)
@@ -169,6 +175,7 @@ actor VaultFileService: FileCRUDService {
             path: request.path,
             format: request.format
         )
+        try FileMutationResourcePreflight.validate(request)
         let binding = try catalog.updateBinding(for: request.format, in: target.area)
         let store = self.store
         let mutations = self.mutations
@@ -192,6 +199,11 @@ actor VaultFileService: FileCRUDService {
                         throw FileRoutingError.revisionConflict(target.relativePath)
                     }
                     let prepared = try await binding.execute(request, target, snapshot)
+                    try SensitiveContentPolicy.validate(
+                        prepared.data,
+                        format: target.format,
+                        path: target.relativePath
+                    )
                     let noChanges = prepared.data == snapshot.data
                     let revision = noChanges
                         ? snapshot.revision
