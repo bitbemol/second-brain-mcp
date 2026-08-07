@@ -1,5 +1,5 @@
 /// Stable wire names accepted by `search_vault`.
-enum SearchToolArgument: String, Sendable {
+enum SearchToolArgument: String, CaseIterable, Sendable {
     case query
     case strategy
     case fields

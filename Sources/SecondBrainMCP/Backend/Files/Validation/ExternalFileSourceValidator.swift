@@ -120,30 +120,13 @@ struct ExternalFileSourceValidator: Sendable {
     /// Descriptor metadata and streamed byte counts are checked again after path
     /// validation. Media frameworks then reopen only the immutable private copy,
     /// preventing later source replacement from changing inspected or decoded data.
-    func snapshot(path: String, maximumBytes: Int) throws -> ExternalFileSnapshot {
+    func snapshot(
+        path: String,
+        maximumBytes: Int,
+        sourceDidValidate: (() throws -> Void)? = nil
+    ) throws -> ExternalFileSnapshot {
         let source = try validate(path: path, maximumBytes: maximumBytes)
-        let descriptor = Darwin.open(source.url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            throw ValidationError.sourceNotAFile(path)
-        }
-        let input = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        defer { try? input.close() }
-
-        var metadata = stat()
-        guard Darwin.fstat(descriptor, &metadata) == 0,
-              metadata.st_mode & S_IFMT == S_IFREG else {
-            throw ValidationError.sourceNotAFile(path)
-        }
-        guard metadata.st_size >= 0,
-              metadata.st_size <= maximumBytes else {
-            let observed = metadata.st_size > Int.max
-                ? Int.max
-                : max(Int(metadata.st_size), 0)
-            throw ValidationError.sourceTooLarge(
-                bytes: observed,
-                limit: maximumBytes
-            )
-        }
+        try sourceDidValidate?()
 
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("SecondBrainMCP-source-\(UUID().uuidString)")
@@ -166,21 +149,54 @@ struct ExternalFileSourceValidator: Sendable {
             let output = try FileHandle(forWritingTo: snapshotURL)
             defer { try? output.close() }
 
-            var copiedBytes = 0
-            while let chunk = try input.read(upToCount: 1024 * 1024),
-                  !chunk.isEmpty {
-                copiedBytes += chunk.count
-                guard copiedBytes <= maximumBytes else {
-                    throw ValidationError.sourceTooLarge(
-                        bytes: copiedBytes,
-                        limit: maximumBytes
-                    )
+            let copied: (value: Int, metadata: RegularFileMetadata)
+            do {
+                copied = try BoundedFileReader.withStableFileDescriptor(
+                    fromCanonical: source.url,
+                    maximumBytes: maximumBytes,
+                    path: path
+                ) { descriptor, _ in
+                    var copiedBytes = 0
+                    var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+                    while true {
+                        try Task.checkCancellation()
+                        let remaining = maximumBytes - copiedBytes
+                        let requested = min(buffer.count, max(remaining, 1))
+                        let count = buffer.withUnsafeMutableBytes { bytes in
+                            Darwin.read(descriptor, bytes.baseAddress, requested)
+                        }
+                        if count == 0 { break }
+                        if count < 0 {
+                            if errno == EINTR { continue }
+                            throw POSIXError(
+                                POSIXErrorCode(rawValue: errno) ?? .EIO
+                            )
+                        }
+                        copiedBytes += count
+                        guard copiedBytes <= maximumBytes else {
+                            throw ValidationError.sourceTooLarge(
+                                bytes: copiedBytes,
+                                limit: maximumBytes
+                            )
+                        }
+                        try output.write(contentsOf: Data(buffer.prefix(count)))
+                    }
+                    return copiedBytes
                 }
-                try output.write(contentsOf: chunk)
+            } catch let violation as FileResourcePolicy.Violation {
+                throw ValidationError.sourceTooLarge(
+                    bytes: violation.bytes,
+                    limit: violation.limit
+                )
+            } catch is BoundedFileReader.ReadError {
+                throw ValidationError.sourceNotAFile(path)
+            }
+            guard copied.value == copied.metadata.byteCount else {
+                throw ValidationError.sourceNotAFile(path)
             }
             return ExternalFileSnapshot(
                 url: snapshotURL,
-                byteCount: copiedBytes,
+                byteCount: copied.value,
                 directoryURL: directoryURL
             )
         } catch {

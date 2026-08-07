@@ -22,6 +22,12 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
 
 /// Bounded search results plus coverage facts for the caller.
 struct VaultSearchResponse: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case strategy, results, searchedFileCount, skippedFileCount
+        case skippedSensitiveFileCount, resourceLimitedFileCount
+        case moreResultsAvailable, coverageIncomplete, truncated
+    }
+
     /// Effective matching strategy.
     let strategy: SearchStrategy
     /// At most one best result per file, in stable rank order for the examined corpus.
@@ -32,6 +38,86 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
     let skippedFileCount: Int
     /// Number of files omitted by the sensitive-content boundary.
     let skippedSensitiveFileCount: Int
-    /// Whether traversal, work, candidate, or result limits omitted possible hits.
+    /// Known files wholly or partially omitted by search resource ceilings.
+    ///
+    /// When directory traversal itself is cut short, this remains a lower bound
+    /// because undiscovered entries cannot be counted safely.
+    let resourceLimitedFileCount: Int
+    /// Whether known matching results were omitted from the returned page.
+    let moreResultsAvailable: Bool
+    /// Whether any in-scope content could not be fully evaluated.
+    let coverageIncomplete: Bool
+    /// Backward-compatible union of result and coverage truncation.
     let truncated: Bool
+
+    /// Creates one response while keeping legacy `truncated` semantics derived.
+    init(
+        strategy: SearchStrategy,
+        results: [VaultSearchResult],
+        searchedFileCount: Int,
+        skippedFileCount: Int,
+        skippedSensitiveFileCount: Int,
+        resourceLimitedFileCount: Int,
+        moreResultsAvailable: Bool,
+        coverageIncomplete: Bool
+    ) {
+        self.strategy = strategy
+        self.results = results
+        self.searchedFileCount = searchedFileCount
+        self.skippedFileCount = skippedFileCount
+        self.skippedSensitiveFileCount = skippedSensitiveFileCount
+        self.resourceLimitedFileCount = resourceLimitedFileCount
+        self.moreResultsAvailable = moreResultsAvailable
+        self.coverageIncomplete = coverageIncomplete
+        self.truncated = moreResultsAvailable || coverageIncomplete
+    }
+
+    /// Decodes only responses whose legacy union agrees with its source facts.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let encodedTruncated = try values.decode(Bool.self, forKey: .truncated)
+        self.init(
+            strategy: try values.decode(SearchStrategy.self, forKey: .strategy),
+            results: try values.decode([VaultSearchResult].self, forKey: .results),
+            searchedFileCount: try values.decode(Int.self, forKey: .searchedFileCount),
+            skippedFileCount: try values.decode(Int.self, forKey: .skippedFileCount),
+            skippedSensitiveFileCount: try values.decode(
+                Int.self,
+                forKey: .skippedSensitiveFileCount
+            ),
+            resourceLimitedFileCount: try values.decode(
+                Int.self,
+                forKey: .resourceLimitedFileCount
+            ),
+            moreResultsAvailable: try values.decode(
+                Bool.self,
+                forKey: .moreResultsAvailable
+            ),
+            coverageIncomplete: try values.decode(
+                Bool.self,
+                forKey: .coverageIncomplete
+            )
+        )
+        guard encodedTruncated == truncated else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .truncated,
+                in: values,
+                debugDescription: "truncated must equal moreResultsAvailable OR coverageIncomplete"
+            )
+        }
+    }
+
+    /// Encodes the response including its derived compatibility field.
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(strategy, forKey: .strategy)
+        try values.encode(results, forKey: .results)
+        try values.encode(searchedFileCount, forKey: .searchedFileCount)
+        try values.encode(skippedFileCount, forKey: .skippedFileCount)
+        try values.encode(skippedSensitiveFileCount, forKey: .skippedSensitiveFileCount)
+        try values.encode(resourceLimitedFileCount, forKey: .resourceLimitedFileCount)
+        try values.encode(moreResultsAvailable, forKey: .moreResultsAvailable)
+        try values.encode(coverageIncomplete, forKey: .coverageIncomplete)
+        try values.encode(truncated, forKey: .truncated)
+    }
 }

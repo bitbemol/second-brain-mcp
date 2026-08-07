@@ -44,11 +44,23 @@ enum CanvasDocumentValidator {
     /// - Returns: Validated node presentation data and the edge count.
     /// - Throws: ``ValidationError`` on a schema or cross-reference violation.
     static func inspect(jsonData: Data) throws -> CanvasInspection {
+        do {
+            try JSONSyntaxValidator.validate(
+                jsonData,
+                rejectingDuplicateObjectKeys: true
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ValidationError.malformed(error.localizedDescription)
+        }
         let document: CanvasDocument
         do {
             document = try JSONDecoder().decode(CanvasDocument.self, from: jsonData)
         } catch let error as DecodingError {
             throw ValidationError.malformed(CanvasDecodingErrorFormatter.describe(error))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw ValidationError.malformed(error.localizedDescription)
         }

@@ -85,6 +85,8 @@ struct JSONFileOperations: Sendable {
         )
         do {
             try JSONSyntaxValidator.validate(data)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw InvalidJSON()
         }

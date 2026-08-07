@@ -92,6 +92,28 @@ struct AsyncExclusiveGateTests {
         #expect(followerValue == 42)
         #expect(!canceledOperationStarted)
     }
+
+    @Test("A bounded queue refuses to retain another suspended operation")
+    func boundedQueue() async throws {
+        let gate = AsyncExclusiveGate(maximumWaiters: 1)
+        let hold = GateHold()
+        let holder = Task {
+            try await gate.withPermit { await hold.enterAndWait() }
+        }
+        await hold.waitUntilEntered()
+        let queued = Task { try await gate.withPermit { 1 } }
+        while await gate.waitingCount != 1 { await Task.yield() }
+
+        await #expect(throws: AsyncExclusiveGate.CapacityExceeded.self) {
+            _ = try await gate.withPermit { 2 }
+        }
+        #expect(await gate.waitingCount == 1)
+
+        queued.cancel()
+        _ = try? await queued.value
+        await hold.release()
+        try await holder.value
+    }
 }
 
 private actor CriticalSectionProbe {

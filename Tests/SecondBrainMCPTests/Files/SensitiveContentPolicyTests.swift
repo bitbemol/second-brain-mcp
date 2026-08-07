@@ -20,6 +20,10 @@ struct SensitiveContentPolicyTests {
             "AKIA" + String(repeating: "G", count: 16),
             "-----BEGIN PRIVATE KEY-----",
             "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+            "https://alice:supersecretpassword@example.com/private",
+            "https://example.com/login?password=supersecretpassword",
+            "https://example.com/login?pass%77ord=supersecretpassword",
+            "https://example.com/login?access%5Ftoken=abcdefghijklmnop1234",
         ]
 
         for credential in credentials {

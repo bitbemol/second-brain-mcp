@@ -123,4 +123,62 @@ struct ExternalFileSourceValidatorTests {
         snapshot.remove()
         #expect(!FileManager.default.fileExists(atPath: snapshotPath))
     }
+
+    @Test("Snapshots preserve legitimate external symbolic-link imports")
+    func snapshotsResolvedSymbolicLink() throws {
+        let root = try makeVault()
+        let target = externalPath("snapshot-target.bin")
+        let link = externalPath("snapshot-link.bin")
+        try Data("linked content".utf8).write(to: URL(fileURLWithPath: target))
+        try FileManager.default.createSymbolicLink(
+            atPath: link,
+            withDestinationPath: target
+        )
+
+        let snapshot = try ExternalFileSourceValidator(vaultPath: root).snapshot(
+            path: link,
+            maximumBytes: 1_000
+        )
+        defer { snapshot.remove() }
+        #expect(try String(contentsOf: snapshot.url, encoding: .utf8) == "linked content")
+    }
+
+    @Test("A parent replaced after validation cannot redirect the source open")
+    func snapshotRejectsRacedParentSymlink() throws {
+        let root = try makeVault()
+        let sourceDirectory = URL(fileURLWithPath: externalPath("parent"))
+        let movedDirectory = sourceDirectory.appendingPathExtension("moved")
+        try FileManager.default.createDirectory(
+            at: sourceDirectory,
+            withIntermediateDirectories: true
+        )
+        let source = sourceDirectory.appendingPathComponent("marker.bin")
+        try Data("external marker".utf8).write(to: source)
+        let vaultMarker = URL(fileURLWithPath: root)
+            .appendingPathComponent("notes/marker.bin")
+        try Data("vault marker".utf8).write(to: vaultMarker)
+        defer {
+            try? FileManager.default.removeItem(at: sourceDirectory)
+            try? FileManager.default.removeItem(at: movedDirectory)
+            try? FileManager.default.removeItem(atPath: root)
+        }
+
+        #expect(throws: ExternalFileSourceValidator.ValidationError.self) {
+            _ = try ExternalFileSourceValidator(vaultPath: root).snapshot(
+                path: source.path,
+                maximumBytes: 1_000,
+                sourceDidValidate: {
+                    try FileManager.default.moveItem(
+                        at: sourceDirectory,
+                        to: movedDirectory
+                    )
+                    try FileManager.default.createSymbolicLink(
+                        at: sourceDirectory,
+                        withDestinationURL: vaultMarker.deletingLastPathComponent()
+                    )
+                }
+            )
+        }
+        #expect(try String(contentsOf: vaultMarker, encoding: .utf8) == "vault marker")
+    }
 }

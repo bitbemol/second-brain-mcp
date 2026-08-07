@@ -13,11 +13,15 @@ enum DurableMutationRecordIO {
         displayPath: String
     ) throws -> Data? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try BoundedFileReader.read(
-            from: url,
+        return try BoundedFileReader.snapshot(
+            fromCanonical: url.standardized,
             maximumBytes: maximumBytes,
-            path: displayPath
-        )
+            path: displayPath,
+            // Durable receipt finalization is deliberately past the mutation's
+            // point of no return. Caller cancellation must not strand a vault
+            // change after persistence and Git have already completed.
+            cancellationCheck: {}
+        ).data
     }
 
     /// Atomically replaces one record and fsyncs its containing directory.

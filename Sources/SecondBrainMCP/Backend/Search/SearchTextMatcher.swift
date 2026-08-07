@@ -17,6 +17,13 @@ struct SearchMatch: Sendable {
 
 /// Literal, lexical, and bounded typo-tolerant matching primitives.
 enum SearchTextMatcher {
+    private struct FuzzyOption {
+        let sourceIndex: Int
+        let distance: Int
+        let maximumDistance: Int
+        let range: Range<String.Index>
+    }
+
     static func match(
         text: String,
         query: String,
@@ -156,6 +163,7 @@ enum SearchTextMatcher {
             guard requiredSet.contains(token.normalized) else { continue }
             if firstRangeByTerm[token.normalized] == nil {
                 firstRangeByTerm[token.normalized] = token.range
+                if firstRangeByTerm.count == required.count { break }
             }
         }
         guard !firstRangeByTerm.isEmpty else { return nil }
@@ -180,37 +188,44 @@ enum SearchTextMatcher {
         let source = sourceTokens.filter {
             $0.normalized.unicodeScalars.count <= limits.maximumTokenScalars
         }
-        let exactLookup = Dictionary(grouping: source.indices, by: {
-            source[$0].normalized
-        })
-        var consumedIndices = Set<Int>()
-        var ranges: [Range<String.Index>] = []
-        var exactCount = 0
+        var optionsByTerm: [[FuzzyOption]] = []
+        optionsByTerm.reserveCapacity(required.count)
+        let maximumOptionsPerTerm = max(required.count, 1)
 
         for term in required {
             try Task.checkCancellation()
-            if let exactIndex = exactLookup[term]?.first(where: {
-                !consumedIndices.contains($0)
-            }) {
-                let exact = source[exactIndex]
-                consumedIndices.insert(exactIndex)
-                exactCount += 1
-                ranges.append(exact.range)
-                continue
-            }
-
             let length = term.unicodeScalars.count
-            guard length >= 3 else { return nil }
-            let maximumDistance = length <= 7 ? 1 : 2
-            var best: (distance: Int, index: Int, range: Range<String.Index>)?
+            let maximumDistance = length < 3 ? 0 : (length <= 7 ? 1 : 2)
+            var optionsByDistance = Array(
+                repeating: [FuzzyOption](),
+                count: maximumDistance + 1
+            )
+
+            func retain(_ option: FuzzyOption) {
+                // At most `required.count` terms need distinct source tokens.
+                // Retaining that many earliest candidates per cost tier
+                // preserves full-match feasibility while bounding the graph.
+                guard optionsByDistance[option.distance].count
+                        < maximumOptionsPerTerm else { return }
+                optionsByDistance[option.distance].append(option)
+            }
 
             for (index, candidate) in source.enumerated() {
                 if index.isMultiple(of: 1_024) { try Task.checkCancellation() }
                 guard !budget.exhausted else { return nil }
-                guard !consumedIndices.contains(index) else { continue }
                 guard try consumeComparison(&budget, limits: limits) else {
                     return nil
                 }
+                if candidate.normalized == term {
+                    retain(FuzzyOption(
+                        sourceIndex: index,
+                        distance: 0,
+                        maximumDistance: maximumDistance,
+                        range: candidate.range
+                    ))
+                    continue
+                }
+                guard maximumDistance > 0 else { continue }
                 let candidateLength = candidate.normalized.unicodeScalars.count
                 guard abs(candidateLength - length) <= maximumDistance else {
                     continue
@@ -226,21 +241,139 @@ enum SearchTextMatcher {
                     maximum: maximumDistance,
                     budget: &budget,
                     limits: limits
-                ), best == nil || distance < best!.distance {
-                    best = (distance, index, candidate.range)
-                    if distance == 0 { break }
+                ) {
+                    retain(FuzzyOption(
+                        sourceIndex: index,
+                        distance: distance,
+                        maximumDistance: maximumDistance,
+                        range: candidate.range
+                    ))
                 }
+                guard !budget.exhausted else { return nil }
             }
-            guard let best else { return nil }
-            consumedIndices.insert(best.index)
-            ranges.append(best.range)
+            let options = Array(
+                optionsByDistance.joined().prefix(maximumOptionsPerTerm)
+            )
+            guard !options.isEmpty else { return nil }
+            optionsByTerm.append(options)
         }
 
+        guard let chosen = try minimumCostAssignment(
+            optionsByTerm,
+            budget: &budget,
+            limits: limits
+        ) else { return nil }
+        let exactCount = chosen.count { $0.distance == 0 }
+        let totalDistance = chosen.map(\.distance).reduce(0, +)
+        let totalAllowance = chosen.map(\.maximumDistance).reduce(0, +)
         let exactFraction = Double(exactCount) / Double(required.count)
+        let closeness = totalAllowance == 0
+            ? 1.0
+            : 1.0 - (Double(totalDistance) / Double(totalAllowance))
         return SearchMatch(
-            quality: 48 + (12 * exactFraction),
-            range: earliestRange(ranges, in: text)
+            quality: 48 + (10 * exactFraction) + (6 * max(closeness, 0)),
+            range: earliestRange(chosen.map(\.range), in: text)
         )
+    }
+
+    /// Finds the highest-quality full distinct-token assignment.
+    ///
+    /// This is the rectangular Hungarian algorithm over a graph already
+    /// bounded to at most queryTermCount² source positions. Missing term/token
+    /// edges remain unavailable. Every matrix visit consumes the shared work
+    /// budget, which also provides periodic cancellation checks.
+    private static func minimumCostAssignment(
+        _ optionsByTerm: [[FuzzyOption]],
+        budget: inout SearchWorkBudget,
+        limits: SearchResourceLimits
+    ) throws -> [FuzzyOption]? {
+        let rowCount = optionsByTerm.count
+        guard rowCount > 0 else { return [] }
+        let sourceIndices = Set(
+            optionsByTerm.flatMap { $0.map(\.sourceIndex) }
+        ).sorted()
+        guard sourceIndices.count >= rowCount else { return nil }
+
+        let totalAllowance = optionsByTerm.compactMap {
+            $0.first?.maximumDistance
+        }.reduce(0, +)
+        let optionMaps = optionsByTerm.map { options in
+            Dictionary(uniqueKeysWithValues: options.map {
+                ($0.sourceIndex, $0)
+            })
+        }
+        func cost(_ option: FuzzyOption) -> Int {
+            let nonExact = option.distance == 0 ? 0 : 1
+            return (10 * totalAllowance * nonExact)
+                + (6 * option.distance * rowCount)
+        }
+
+        let columnCount = sourceIndices.count
+        let infinity = Int.max / 4
+        var rowPotential = Array(repeating: 0, count: rowCount + 1)
+        var columnPotential = Array(repeating: 0, count: columnCount + 1)
+        var columnOwner = Array(repeating: 0, count: columnCount + 1)
+        var predecessor = Array(repeating: 0, count: columnCount + 1)
+
+        for row in 1...rowCount {
+            columnOwner[0] = row
+            var minimum = Array(repeating: infinity, count: columnCount + 1)
+            var used = Array(repeating: false, count: columnCount + 1)
+            var column = 0
+
+            repeat {
+                used[column] = true
+                let activeRow = columnOwner[column]
+                var delta = infinity
+                var nextColumn = 0
+
+                for candidateColumn in 1...columnCount where !used[candidateColumn] {
+                    guard try consumeComparison(&budget, limits: limits) else {
+                        return nil
+                    }
+                    let sourceIndex = sourceIndices[candidateColumn - 1]
+                    if let option = optionMaps[activeRow - 1][sourceIndex] {
+                        let reduced = cost(option)
+                            - rowPotential[activeRow]
+                            - columnPotential[candidateColumn]
+                        if reduced < minimum[candidateColumn] {
+                            minimum[candidateColumn] = reduced
+                            predecessor[candidateColumn] = column
+                        }
+                    }
+                    if minimum[candidateColumn] < delta {
+                        delta = minimum[candidateColumn]
+                        nextColumn = candidateColumn
+                    }
+                }
+                guard nextColumn != 0, delta < infinity else { return nil }
+
+                for candidateColumn in 0...columnCount {
+                    if used[candidateColumn] {
+                        rowPotential[columnOwner[candidateColumn]] += delta
+                        columnPotential[candidateColumn] -= delta
+                    } else if candidateColumn > 0,
+                              minimum[candidateColumn] < infinity {
+                        minimum[candidateColumn] -= delta
+                    }
+                }
+                column = nextColumn
+            } while columnOwner[column] != 0
+
+            repeat {
+                let previousColumn = predecessor[column]
+                columnOwner[column] = columnOwner[previousColumn]
+                column = previousColumn
+            } while column != 0
+        }
+
+        var selected = Array<FuzzyOption?>(repeating: nil, count: rowCount)
+        for column in 1...columnCount where columnOwner[column] > 0 {
+            let row = columnOwner[column] - 1
+            selected[row] = optionMaps[row][sourceIndices[column - 1]]
+        }
+        let result = selected.compactMap { $0 }
+        return result.count == rowCount ? result : nil
     }
 
     private static func consumeComparison(
@@ -269,6 +402,7 @@ enum SearchTextMatcher {
         let right = rhs.unicodeScalars.map(\.value)
         guard abs(left.count - right.count) <= maximum else { return nil }
 
+        var twoRowsBack: [Int]?
         var previous = Array(0...right.count)
         for leftIndex in left.indices {
             var current = Array(repeating: 0, count: right.count + 1)
@@ -287,9 +421,20 @@ enum SearchTextMatcher {
                     current[rightIndex] + 1,
                     substitution
                 )
+                if leftIndex > 0,
+                   rightIndex > 0,
+                   left[leftIndex] == right[rightIndex - 1],
+                   left[leftIndex - 1] == right[rightIndex],
+                   let twoRowsBack {
+                    current[rightIndex + 1] = min(
+                        current[rightIndex + 1],
+                        twoRowsBack[rightIndex - 1] + 1
+                    )
+                }
                 rowMinimum = min(rowMinimum, current[rightIndex + 1])
             }
             guard rowMinimum <= maximum else { return nil }
+            twoRowsBack = previous
             previous = current
         }
         let distance = previous[right.count]
@@ -326,7 +471,10 @@ enum SearchSnippetBuilder {
             return ""
         }
         let center = range?.lowerBound ?? text.startIndex
-        let before = maximumCharacters / 3
+        // Reserve room for both omission markers before slicing so final
+        // truncation never needs to cut a feasible match out of the excerpt.
+        let contentCharacters = max(maximumCharacters - 2, 1)
+        let before = contentCharacters / 3
         let start = text.index(
             center,
             offsetBy: -before,
@@ -334,23 +482,26 @@ enum SearchSnippetBuilder {
         ) ?? text.startIndex
         let end = text.index(
             start,
-            offsetBy: maximumCharacters,
+            offsetBy: contentCharacters,
             limitedBy: text.endIndex
         ) ?? text.endIndex
         var excerpt = String(text[start..<end])
         excerpt = excerpt.unicodeScalars.map { scalar in
-            if scalar == "\n" || scalar == "\r" { return " / " }
+            if scalar == "\n" || scalar == "\r" { return " " }
             if scalar == "\t" { return " " }
             if CharacterSet.controlCharacters.contains(scalar)
                 || CharacterSet.illegalCharacters.contains(scalar) {
-                return ""
+                // Keep a separator so cleaning cannot concatenate two safe
+                // source fragments into a credential-shaped projection.
+                return " "
             }
             return String(scalar)
         }.joined()
         excerpt = excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
         if start > text.startIndex { excerpt = "…" + excerpt }
         if end < text.endIndex { excerpt += "…" }
-        while excerpt.utf8.count > maximumBytes, !excerpt.isEmpty {
+        while (excerpt.count > maximumCharacters || excerpt.utf8.count > maximumBytes),
+              !excerpt.isEmpty {
             excerpt.removeLast()
         }
         return excerpt

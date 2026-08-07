@@ -19,6 +19,9 @@ enum HARSensitiveDataSanitizer {
     /// Input is not one strict, unambiguous JSON object that can represent a HAR.
     struct InvalidJSON: Error, Sendable {}
 
+    /// A search-specific structured-value ceiling was exhausted.
+    struct ResourceLimit: Error, Sendable {}
+
     /// Public marker used in sanitized archives and tests.
     static let redactionMarker = "[REDACTED]"
 
@@ -56,21 +59,37 @@ enum HARSensitiveDataSanitizer {
     /// Arbitrary valid JSON number spellings are temporarily represented by
     /// unique strings and restored after sanitization, preserving unknown HAR
     /// extensions such as values outside `Double`'s range.
-    static func sanitize(_ data: Data) throws -> Result {
+    static func sanitize(
+        _ data: Data,
+        maximumValueCount: Int? = nil
+    ) throws -> Result {
+        let outerValueCount: Int
         do {
-            try JSONSyntaxValidator.validate(
+            outerValueCount = try JSONSyntaxValidator.validate(
                 data,
-                rejectingDuplicateObjectKeys: true
+                rejectingDuplicateObjectKeys: true,
+                maximumValueCount: maximumValueCount
             )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch JSONSyntaxValidator.ValidationError.excessiveValueCount {
+            throw ResourceLimit()
+        } catch JSONSyntaxValidator.ValidationError.excessiveNesting
+            where maximumValueCount != nil {
+            throw ResourceLimit()
         } catch {
             throw InvalidJSON()
         }
+        try Task.checkCancellation()
 
         let preserved: PreservedNumbers
         let object: Any
         do {
             preserved = preserveNumbers(in: data)
+            try Task.checkCancellation()
             object = try JSONSerialization.jsonObject(with: preserved.data)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw InvalidJSON()
         }
@@ -79,9 +98,13 @@ enum HARSensitiveDataSanitizer {
         }
 
         var redactions = 0
+        var remainingNestedValues = maximumValueCount.map {
+            max($0 - outerValueCount, 0)
+        }
         if var log = root["log"] as? [String: Any],
            let rawEntries = log["entries"] as? [Any] {
             log["entries"] = try rawEntries.map { rawEntry in
+                try Task.checkCancellation()
                 guard var entry = rawEntry as? [String: Any] else {
                     return rawEntry
                 }
@@ -91,13 +114,19 @@ enum HARSensitiveDataSanitizer {
                         named: "queryString",
                         in: &request
                     )
-                    redactions += sanitizeRequestURL(&request)
+                    redactions += try sanitizeRequestURL(
+                        &request,
+                        remainingValueCount: &remainingNestedValues
+                    )
                     if var postData = request["postData"] as? [String: Any] {
                         redactions += sanitizeParameters(
                             named: "params",
                             in: &postData
                         )
-                        redactions += try sanitizePostDataText(&postData)
+                        redactions += try sanitizePostDataText(
+                            &postData,
+                            remainingValueCount: &remainingNestedValues
+                        )
                         request["postData"] = postData
                     }
                     entry["request"] = request
@@ -114,7 +143,9 @@ enum HARSensitiveDataSanitizer {
         // Browser extensions sometimes store header or parameter arrays outside
         // the standard HAR locations. Recognize every name/value tuple while
         // retaining its enclosing extension structure.
+        try Task.checkCancellation()
         let nested = sanitizeNamedValuePairs(root)
+        try Task.checkCancellation()
         guard let sanitizedRoot = nested.value as? [String: Any] else {
             throw InvalidJSON()
         }
@@ -128,9 +159,14 @@ enum HARSensitiveDataSanitizer {
             let sanitized = try preserved.restoringNumbers(in: encoded)
             try JSONSyntaxValidator.validate(
                 sanitized,
-                rejectingDuplicateObjectKeys: true
+                rejectingDuplicateObjectKeys: true,
+                maximumValueCount: maximumValueCount
             )
             return Result(data: sanitized, redactionCount: redactions)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch JSONSyntaxValidator.ValidationError.excessiveValueCount {
+            throw ResourceLimit()
         } catch {
             throw InvalidJSON()
         }
@@ -182,8 +218,9 @@ enum HARSensitiveDataSanitizer {
     }
 
     private static func sanitizeRequestURL(
-        _ request: inout [String: Any]
-    ) -> Int {
+        _ request: inout [String: Any],
+        remainingValueCount: inout Int?
+    ) throws -> Int {
         guard let rawURL = request["url"] as? String,
               var components = URLComponents(string: rawURL) else { return 0 }
 
@@ -196,14 +233,13 @@ enum HARSensitiveDataSanitizer {
             components.password = nil
             redactions += 1
         }
-        if let queryItems = components.queryItems {
-            components.queryItems = queryItems.map { item in
-                guard isSensitiveParameter(item.name),
-                      item.value != nil,
-                      item.value != redactionMarker else { return item }
-                redactions += 1
-                return URLQueryItem(name: item.name, value: redactionMarker)
-            }
+        if let query = components.percentEncodedQuery {
+            let sanitized = try sanitizePercentEncodedQuery(
+                query,
+                remainingValueCount: &remainingValueCount
+            )
+            components.percentEncodedQuery = sanitized.text
+            redactions += sanitized.redactions
         }
         if redactions > 0, let sanitizedURL = components.string {
             request["url"] = sanitizedURL
@@ -213,7 +249,8 @@ enum HARSensitiveDataSanitizer {
 
     /// Sanitizes credential fields carried in common textual request bodies.
     private static func sanitizePostDataText(
-        _ postData: inout [String: Any]
+        _ postData: inout [String: Any],
+        remainingValueCount: inout Int?
     ) throws -> Int {
         guard let text = postData["text"] as? String,
               let rawMIMEType = postData["mimeType"] as? String else { return 0 }
@@ -226,10 +263,17 @@ enum HARSensitiveDataSanitizer {
         if mimeType == "application/json" || mimeType.hasSuffix("+json") {
             let source = Data(text.utf8)
             do {
-                try JSONSyntaxValidator.validate(
+                let embeddedValueCount = try JSONSyntaxValidator.validate(
                     source,
-                    rejectingDuplicateObjectKeys: true
+                    rejectingDuplicateObjectKeys: true,
+                    maximumValueCount: remainingValueCount
                 )
+                if remainingValueCount != nil {
+                    remainingValueCount = max(
+                        (remainingValueCount ?? 0) - embeddedValueCount,
+                        0
+                    )
+                }
                 let preserved = preserveNumbers(in: source)
                 let object = try JSONSerialization.jsonObject(
                     with: preserved.data,
@@ -254,29 +298,73 @@ enum HARSensitiveDataSanitizer {
                 }
                 postData["text"] = sanitizedText
                 return keyed.redactions + named.redactions
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch JSONSyntaxValidator.ValidationError.excessiveValueCount {
+                throw ResourceLimit()
+            } catch JSONSyntaxValidator.ValidationError.excessiveNesting
+                where remainingValueCount != nil {
+                throw ResourceLimit()
             } catch {
                 throw InvalidJSON()
             }
         }
 
         if mimeType == "application/x-www-form-urlencoded" {
-            var components = URLComponents()
-            components.percentEncodedQuery = text
-            guard let items = components.queryItems else { return 0 }
-            var redactions = 0
-            components.queryItems = items.map { item in
-                guard isSensitiveParameter(item.name),
-                      item.value != nil,
-                      item.value != redactionMarker else { return item }
-                redactions += 1
-                return URLQueryItem(name: item.name, value: redactionMarker)
+            let sanitized = try sanitizePercentEncodedQuery(
+                text,
+                remainingValueCount: &remainingValueCount
+            )
+            if sanitized.redactions > 0 {
+                postData["text"] = sanitized.text
             }
-            if redactions > 0, let sanitized = components.percentEncodedQuery {
-                postData["text"] = sanitized
-            }
-            return redactions
+            return sanitized.redactions
         }
         return 0
+    }
+
+    /// Redacts one query representation incrementally and charges every pair to
+    /// the caller's remaining structured-value budget before materialization.
+    private static func sanitizePercentEncodedQuery(
+        _ query: String,
+        remainingValueCount: inout Int?
+    ) throws -> (text: String, redactions: Int) {
+        guard !query.isEmpty else { return ("", 0) }
+        var output = ""
+        output.reserveCapacity(query.utf8.count)
+        var redactions = 0
+        var start = query.startIndex
+        var index = 0
+
+        while start <= query.endIndex {
+            if index.isMultiple(of: 1_024) { try Task.checkCancellation() }
+            index += 1
+            if let remaining = remainingValueCount {
+                guard remaining > 0 else { throw ResourceLimit() }
+                remainingValueCount = remaining - 1
+            }
+            let separator = query[start...].firstIndex(of: "&") ?? query.endIndex
+            let component = query[start..<separator]
+            let equals = component.firstIndex(of: "=")
+            let rawName = equals.map { component[..<$0] } ?? component[...]
+            let rawValue = equals.map { component[component.index(after: $0)...] }
+            let decodedName = String(rawName).removingPercentEncoding
+                ?? String(rawName)
+
+            if index > 1 { output.append("&") }
+            if isSensitiveParameter(decodedName), let rawValue {
+                let decodedValue = String(rawValue).removingPercentEncoding
+                    ?? String(rawValue)
+                output.append(contentsOf: rawName)
+                output.append("=%5BREDACTED%5D")
+                if decodedValue != redactionMarker { redactions += 1 }
+            } else {
+                output.append(contentsOf: component)
+            }
+            guard separator < query.endIndex else { break }
+            start = query.index(after: separator)
+        }
+        return (output, redactions)
     }
 
     private static func sanitizeSensitiveObjectKeys(

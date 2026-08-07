@@ -39,4 +39,23 @@ enum VaultFileInspector {
             throw InspectionError.notARegularFile(target.relativePath)
         }
     }
+
+    /// Opens and snapshots a contained target through one stable descriptor.
+    static func snapshot(
+        _ target: ReadableFileTarget,
+        maximumBytes: Int
+    ) throws -> BoundedFileReader.Snapshot {
+        try target.revalidate()
+        do {
+            return try BoundedFileReader.snapshot(
+                fromCanonical: target.url,
+                maximumBytes: maximumBytes,
+                path: target.relativePath
+            )
+        } catch BoundedFileReader.ReadError.notFound {
+            throw InspectionError.notFound(target.relativePath)
+        } catch BoundedFileReader.ReadError.notARegularFile {
+            throw InspectionError.notARegularFile(target.relativePath)
+        }
+    }
 }

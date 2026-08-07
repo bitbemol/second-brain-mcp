@@ -165,7 +165,7 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 ### Search
 
-Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and omitted `fields` or `formats` mean every value advertised by the tool schema. `path_prefix` can narrow traversal to a directory under `notes/`.
+Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and omitted `fields` or `formats` mean every value advertised by the tool schema. `path_prefix` can narrow traversal to a canonical, non-hidden, non-package directory under `notes/`.
 
 | Strategy | Behavior |
 |----------|----------|
@@ -173,11 +173,13 @@ Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20
 | `exact` | Case/diacritic-insensitive literal substring; punctuation remains significant |
 | `phrase` | Adjacent ordered terms across punctuation and whitespace |
 | `lexical` | Word coverage ranked by field importance |
-| `fuzzy` | Bounded edit-distance matching; one- and two-character terms remain exact-only |
+| `fuzzy` | Bounded typo matching, including adjacent transpositions; one- and two-character terms remain exact-only |
 
-Search covers textual formats readable under `notes/`: Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include the node ID, kind, and field. One best section or structured node is returned per file for breadth. Ranking and tie-breaking are stable for the examined corpus; if traversal or another work ceiling omits files, `truncated` reports that coverage is incomplete.
+Search covers textual formats readable under `notes/`: Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include the node ID, kind, and field. One best section or structured node is returned per file for breadth. Ranking and tie-breaking are stable for the examined corpus. A file that cannot fit the remaining aggregate byte budget is counted and skipped without preventing later fitting notes from being searched.
 
-Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. Broad PDF-library search is not performed live because opening every PDF would make latency and memory unpredictable; use `read_file(format: pdf, query: ...)` after identifying a PDF. HAR is sanitized before matching, and other legacy text containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share one cancellation-aware permit, so concurrent agents cannot multiply the process memory ceiling; canceled queued calls leave the line immediately.
+Coverage is explicit in every response. `more_results_available` means matching results were omitted by a result or encoded-output limit. `coverage_incomplete` means some requested searchable content could not be fully evaluated. `resource_limited_file_count` is the number of known files wholly or partially omitted by a resource ceiling; it is necessarily a lower bound if directory traversal itself ends before every entry is discovered. A partially evaluated file can appear in both `searched_file_count` and `resource_limited_file_count`, so the counters are facts rather than a partition to sum. `skipped_file_count` covers eligible-file safe-read, availability, containment, or parse failures, while `skipped_sensitive_file_count` remains separate. The legacy `truncated` field is the union of `more_results_available` and `coverage_incomplete`.
+
+Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. Broad PDF-library search is not performed live because opening every PDF would make latency and memory unpredictable; use `read_file(format: pdf, query: ...)` after identifying a PDF. HAR is shape-bounded and sanitized before matching, and other legacy text containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share a bounded in-process queue and one cancellation-aware vault-scoped cross-process permit, so concurrent agents or MCP processes cannot multiply the corpus memory ceiling; canceled queued calls leave the line immediately. The complete MCP result—including compatibility JSON text and structured content—is byte-bounded.
 
 ### Formats and operations
 

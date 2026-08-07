@@ -3,16 +3,21 @@ import Foundation
 /// Result of format validation and projection into searchable sections.
 struct ExtractedSearchDocument: Sendable {
     let document: SearchDocument
-    let truncated: Bool
+    let truncatedFields: Set<SearchField>
+
+    /// Whether any searchable field was narrowed by an extraction ceiling.
+    var truncated: Bool { !truncatedFields.isEmpty }
 }
 
 /// Validates stored text, applies confidentiality policy, and extracts search fields.
 enum SearchDocumentExtractor {
+    struct ResourceLimit: Error, Sendable {}
+
     private struct MarkdownMetadata {
         let title: String?
         let tags: [String]
         let lastLineIndex: Int?
-        let truncated: Bool
+        let truncatedFields: Set<SearchField>
     }
 
     private struct BoundedText {
@@ -20,27 +25,10 @@ enum SearchDocumentExtractor {
         let truncated: Bool
     }
 
-    private struct CanvasSearchDocument: Decodable {
-        let nodes: [CanvasSearchNode]
-
-        private enum CodingKeys: String, CodingKey { case nodes }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            nodes = try container.decodeIfPresent(
-                [CanvasSearchNode].self,
-                forKey: .nodes
-            ) ?? []
-        }
-    }
-
-    private struct CanvasSearchNode: Decodable {
-        let id: String
-        let type: String
-        let text: String?
-        let file: String?
-        let url: String?
-        let label: String?
+    private struct MarkdownFence: Equatable {
+        let marker: Character
+        let length: Int
+        let remainderIsWhitespace: Bool
     }
 
     static func extract(
@@ -55,22 +43,61 @@ enum SearchDocumentExtractor {
             .maximumAggregateTagBytes,
         maximumMetadataCharacters: Int = SearchResourceLimits.default
             .maximumMetadataCharacters,
-        maximumMetadataBytes: Int = SearchResourceLimits.default.maximumMetadataBytes
+        maximumMetadataBytes: Int = SearchResourceLimits.default.maximumMetadataBytes,
+        maximumStructuredValues: Int = SearchResourceLimits.default
+            .maximumStructuredValuesPerFile
     ) throws -> ExtractedSearchDocument {
+        if format == .canvas {
+            do {
+                try JSONSyntaxValidator.validate(
+                    originalData,
+                    rejectingDuplicateObjectKeys: true,
+                    maximumValueCount: maximumStructuredValues
+                )
+            } catch JSONSyntaxValidator.ValidationError.excessiveValueCount {
+                throw ResourceLimit()
+            } catch JSONSyntaxValidator.ValidationError.excessiveNesting {
+                throw ResourceLimit()
+            }
+        }
+        try Task.checkCancellation()
         let data: Data
         if format == .har {
-            data = try HARSensitiveDataSanitizer.sanitize(originalData).data
+            do {
+                data = try HARSensitiveDataSanitizer.sanitize(
+                    originalData,
+                    maximumValueCount: maximumStructuredValues
+                ).data
+            } catch is HARSensitiveDataSanitizer.ResourceLimit {
+                throw ResourceLimit()
+            }
         } else {
             data = originalData
         }
 
+        try Task.checkCancellation()
         try SensitiveContentPolicy.validate(data, format: format, path: path)
+        try Task.checkCancellation()
+        if format == .canvas {
+            let inspection = try CanvasDocumentValidator.inspect(jsonData: data)
+            try Task.checkCancellation()
+            return try canvasDocument(
+                inspection: inspection,
+                path: path,
+                maximumSections: maximumSections,
+                maximumMetadataCharacters: maximumMetadataCharacters,
+                maximumMetadataBytes: maximumMetadataBytes
+            )
+        }
         try validateFormat(data: data, path: path, format: format)
+        try Task.checkCancellation()
         let text = try TextFileSupport.stringPreservingByteOrderMark(from: data)
 
         if format == .markdown {
+            let markdownText = text.first == "\u{FEFF}"
+                ? String(text.dropFirst()) : text
             return try markdownDocument(
-                text: text,
+                text: markdownText,
                 path: path,
                 maximumSections: maximumSections,
                 maximumLines: maximumMarkdownLines,
@@ -81,16 +108,6 @@ enum SearchDocumentExtractor {
                 maximumMetadataBytes: maximumMetadataBytes
             )
         }
-        if format == .canvas {
-            return try canvasDocument(
-                data: data,
-                path: path,
-                maximumSections: maximumSections,
-                maximumMetadataCharacters: maximumMetadataCharacters,
-                maximumMetadataBytes: maximumMetadataBytes
-            )
-        }
-
         let title = boundedMetadata(
             MarkdownSupport.titleFromFilename((path as NSString).lastPathComponent),
             maximumCharacters: maximumMetadataCharacters,
@@ -111,47 +128,40 @@ enum SearchDocumentExtractor {
                 tags: [],
                 sections: [section]
             ),
-            truncated: title.truncated
+            truncatedFields: title.truncated ? [.title] : []
         )
     }
 
     private static func canvasDocument(
-        data: Data,
+        inspection: CanvasInspection,
         path: String,
         maximumSections: Int,
         maximumMetadataCharacters: Int,
         maximumMetadataBytes: Int
     ) throws -> ExtractedSearchDocument {
-        let canvas = try JSONDecoder().decode(CanvasSearchDocument.self, from: data)
         var sections: [SearchSection] = []
-        sections.reserveCapacity(min(canvas.nodes.count, maximumSections))
-        var truncated = canvas.nodes.count > maximumSections
+        sections.reserveCapacity(min(inspection.nodes.count, maximumSections))
+        let truncatedFields: Set<SearchField> = inspection.nodes.count > maximumSections
+            ? [.content] : []
 
-        for node in canvas.nodes.prefix(max(maximumSections, 0)) {
+        for node in inspection.nodes.prefix(max(maximumSections, 0)) {
             try Task.checkCancellation()
-            let projection: (field: String, value: String?)
-            switch node.type {
-            case "text": projection = ("text", node.text)
-            case "file": projection = ("file", node.file)
-            case "link": projection = ("url", node.url)
-            case "group": projection = ("label", node.label)
-            default: continue // The validator rejects unknown node kinds first.
+            let field: String
+            switch node.kind {
+            case .text: field = "text"
+            case .file: field = "file"
+            case .link: field = "url"
+            case .group: field = "label"
             }
-            guard let value = projection.value, !value.isEmpty else { continue }
-            let nodeID = boundedMetadata(
-                node.id,
-                maximumCharacters: maximumMetadataCharacters,
-                maximumBytes: maximumMetadataBytes
-            )
-            truncated = truncated || nodeID.truncated
+            guard !node.searchText.isEmpty else { continue }
             sections.append(SearchSection(
                 heading: nil,
                 location: VaultSearchLocation(
-                    nodeID: nodeID.value,
-                    nodeType: node.type,
-                    field: projection.field
+                    nodeID: node.id,
+                    nodeType: node.kind.rawValue,
+                    field: field
                 ),
-                content: value,
+                content: node.searchText,
                 lineStart: 1,
                 lineEnd: 1
             ))
@@ -179,7 +189,8 @@ enum SearchDocumentExtractor {
                 tags: [],
                 sections: sections
             ),
-            truncated: truncated || title.truncated
+            truncatedFields: title.truncated
+                ? truncatedFields.union([.title]) : truncatedFields
         )
     }
 
@@ -190,13 +201,17 @@ enum SearchDocumentExtractor {
     ) throws {
         switch format {
         case .canvas:
-            try CanvasDocumentValidator.validate(jsonData: data)
+            preconditionFailure("Canvas projection is validated before this switch")
         case .har:
             _ = try HARInspector.inspect(data: data)
         case .patch:
             _ = try PatchFileOperations.inspect(data: data, path: path)
         case .json:
-            try JSONSyntaxValidator.validate(data)
+            do {
+                try JSONSyntaxValidator.validate(data)
+            } catch JSONSyntaxValidator.ValidationError.excessiveNesting {
+                throw ResourceLimit()
+            }
         case .csv:
             _ = try CSVDocumentInspector.inspect(
                 TextFileSupport.stringPreservingByteOrderMark(from: data)
@@ -234,14 +249,32 @@ enum SearchDocumentExtractor {
         var currentHeading: String?
         var currentStart = min(bodyStart + 1, max(lines.count, 1))
         var currentContent: [String] = []
-        var fence: Character?
+        var fence: MarkdownFence?
         var firstLevelOneHeading: String?
-        var truncated = lineProjection.truncated || metadata.truncated
+        var truncatedFields = metadata.truncatedFields
+        if lineProjection.truncated {
+            truncatedFields.formUnion([.heading, .content])
+            if lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+               metadata.lastLineIndex == nil {
+                // The global line ceiling, rather than the front-matter
+                // ceiling, may have hidden later title/tags and the closing
+                // delimiter.
+                truncatedFields.formUnion([.title, .tags])
+            }
+        }
+
+        func markUnseenBodyFields() {
+            truncatedFields.formUnion([.heading, .content])
+            if metadata.title?.isEmpty != false,
+               firstLevelOneHeading == nil {
+                truncatedFields.insert(.title)
+            }
+        }
 
         func flush(endingAt lineEnd: Int) {
             guard currentHeading != nil || !currentContent.isEmpty else { return }
             guard sections.count < maximumSections else {
-                truncated = true
+                markUnseenBodyFields()
                 return
             }
             sections.append(SearchSection(
@@ -260,7 +293,9 @@ enum SearchDocumentExtractor {
                 if let marker = fenceMarker(in: line) {
                     if fence == nil {
                         fence = marker
-                    } else if fence == marker {
+                    } else if fence?.marker == marker.marker,
+                              marker.length >= fence!.length,
+                              marker.remainderIsWhitespace {
                         fence = nil
                     }
                     currentContent.append(line)
@@ -269,7 +304,7 @@ enum SearchDocumentExtractor {
                 if fence == nil, let parsedHeading = heading(in: line) {
                     flush(endingAt: index)
                     guard sections.count < maximumSections else {
-                        truncated = true
+                        markUnseenBodyFields()
                         break
                     }
                     let bounded = boundedMetadata(
@@ -277,7 +312,14 @@ enum SearchDocumentExtractor {
                         maximumCharacters: maximumMetadataCharacters,
                         maximumBytes: maximumMetadataBytes
                     )
-                    truncated = truncated || bounded.truncated
+                    if bounded.truncated {
+                        truncatedFields.insert(.heading)
+                        if parsedHeading.level == 1,
+                           metadata.title?.isEmpty != false,
+                           firstLevelOneHeading == nil {
+                            truncatedFields.insert(.title)
+                        }
+                    }
                     currentHeading = bounded.value
                     if parsedHeading.level == 1, firstLevelOneHeading == nil {
                         firstLevelOneHeading = bounded.value
@@ -290,6 +332,11 @@ enum SearchDocumentExtractor {
             }
         }
         flush(endingAt: max(lines.count, currentStart))
+        if lineProjection.truncated,
+           metadata.title?.isEmpty != false,
+           firstLevelOneHeading == nil {
+            truncatedFields.insert(.title)
+        }
 
         if sections.isEmpty {
             sections = [SearchSection(
@@ -312,7 +359,7 @@ enum SearchDocumentExtractor {
             maximumCharacters: maximumMetadataCharacters,
             maximumBytes: maximumMetadataBytes
         )
-        truncated = truncated || title.truncated
+        if title.truncated { truncatedFields.insert(.title) }
 
         return ExtractedSearchDocument(
             document: SearchDocument(
@@ -322,7 +369,7 @@ enum SearchDocumentExtractor {
                 tags: metadata.tags,
                 sections: sections
             ),
-            truncated: truncated
+            truncatedFields: truncatedFields
         )
     }
 
@@ -375,7 +422,7 @@ enum SearchDocumentExtractor {
                 title: nil,
                 tags: [],
                 lastLineIndex: nil,
-                truncated: false
+                truncatedFields: []
             )
         }
         let searchable = lines.indices.dropFirst().prefix(max(maximumLines, 0))
@@ -386,7 +433,8 @@ enum SearchDocumentExtractor {
                 title: nil,
                 tags: [],
                 lastLineIndex: nil,
-                truncated: lines.count > maximumLines + 1
+                truncatedFields: lines.count > maximumLines + 1
+                    ? [.title, .heading, .tags, .content] : []
             )
         }
 
@@ -394,15 +442,15 @@ enum SearchDocumentExtractor {
         var tags: [String] = []
         var aggregateTagBytes = 0
         var readingBlockTags = false
-        var truncated = false
+        var truncatedFields = Set<SearchField>()
 
         func appendTag(_ raw: String) {
             guard tags.count < maximumTags else {
-                truncated = true
+                truncatedFields.insert(.tags)
                 return
             }
             let rawBound = utf8Prefix(raw, maximumBytes: maximumMetadataBytes)
-            truncated = truncated || rawBound.truncated
+            if rawBound.truncated { truncatedFields.insert(.tags) }
             let cleaned = cleanYAMLScalar(rawBound.value)
             let remaining = max(maximumAggregateTagBytes - aggregateTagBytes, 0)
             let bounded = boundedMetadata(
@@ -410,9 +458,9 @@ enum SearchDocumentExtractor {
                 maximumCharacters: maximumMetadataCharacters,
                 maximumBytes: min(maximumMetadataBytes, remaining)
             )
-            truncated = truncated || bounded.truncated
+            if bounded.truncated { truncatedFields.insert(.tags) }
             guard !bounded.value.isEmpty, remaining > 0 else {
-                if !cleaned.isEmpty { truncated = true }
+                if !cleaned.isEmpty { truncatedFields.insert(.tags) }
                 return
             }
             tags.append(bounded.value)
@@ -422,7 +470,9 @@ enum SearchDocumentExtractor {
         for index in lines.indices where index > 0 && index < closing {
             let rawLine = lines[index]
             let lineBound = utf8Prefix(rawLine, maximumBytes: maximumMetadataBytes)
-            truncated = truncated || lineBound.truncated
+            if lineBound.truncated {
+                truncatedFields.formUnion([.title, .tags])
+            }
             let trimmed = lineBound.value.trimmingCharacters(in: .whitespaces)
 
             if readingBlockTags {
@@ -442,7 +492,7 @@ enum SearchDocumentExtractor {
                     maximumBytes: maximumMetadataBytes
                 )
                 title = bounded.value
-                truncated = truncated || bounded.truncated
+                if bounded.truncated { truncatedFields.insert(.title) }
             } else if trimmed.lowercased().hasPrefix("tags:") {
                 let raw = String(trimmed.dropFirst("tags:".count))
                     .trimmingCharacters(in: .whitespaces)
@@ -450,7 +500,7 @@ enum SearchDocumentExtractor {
                     readingBlockTags = true
                 } else {
                     let parsed = inlineTagScalars(raw)
-                    truncated = truncated || parsed.truncated
+                    if parsed.truncated { truncatedFields.insert(.tags) }
                     for scalar in parsed.values { appendTag(scalar) }
                 }
             }
@@ -459,7 +509,7 @@ enum SearchDocumentExtractor {
             title: title,
             tags: tags,
             lastLineIndex: closing,
-            truncated: truncated
+            truncatedFields: truncatedFields
         )
     }
 
@@ -522,17 +572,42 @@ enum SearchDocumentExtractor {
         return value
     }
 
-    private static func fenceMarker(in line: String) -> Character? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("```") { return "`" }
-        if trimmed.hasPrefix("~~~") { return "~" }
-        return nil
+    private static func fenceMarker(in line: String) -> MarkdownFence? {
+        var index = line.startIndex
+        var indentation = 0
+        while index < line.endIndex, line[index] == " " {
+            indentation += 1
+            guard indentation <= 3 else { return nil }
+            index = line.index(after: index)
+        }
+        guard index < line.endIndex,
+              line[index] == "`" || line[index] == "~" else { return nil }
+        let marker = line[index]
+        var length = 0
+        while index < line.endIndex, line[index] == marker {
+            length += 1
+            index = line.index(after: index)
+        }
+        guard length >= 3 else { return nil }
+        return MarkdownFence(
+            marker: marker,
+            length: length,
+            remainderIsWhitespace: line[index...].allSatisfy(\.isWhitespace)
+        )
     }
 
     private static func heading(
         in line: String
     ) -> (level: Int, text: String)? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        var start = line.startIndex
+        var indentation = 0
+        while start < line.endIndex, line[start] == " " {
+            indentation += 1
+            guard indentation <= 3 else { return nil }
+            start = line.index(after: start)
+        }
+        guard start < line.endIndex, line[start] != "\t" else { return nil }
+        let trimmed = line[start...].trimmingCharacters(in: .whitespaces)
         var count = 0
         for character in trimmed {
             guard character == "#" else { break }
@@ -543,9 +618,18 @@ enum SearchDocumentExtractor {
         guard trimmed[boundary].isWhitespace else { return nil }
         var heading = String(trimmed[boundary...])
             .trimmingCharacters(in: .whitespaces)
-        while heading.last == "#" {
-            heading.removeLast()
-            heading = heading.trimmingCharacters(in: .whitespaces)
+        if heading.last == "#" {
+            var markerStart = heading.endIndex
+            while markerStart > heading.startIndex {
+                let previous = heading.index(before: markerStart)
+                guard heading[previous] == "#" else { break }
+                markerStart = previous
+            }
+            if markerStart == heading.startIndex
+                || heading[heading.index(before: markerStart)].isWhitespace {
+                heading = String(heading[..<markerStart])
+                    .trimmingCharacters(in: .whitespaces)
+            }
         }
         return heading.isEmpty ? nil : (count, heading)
     }

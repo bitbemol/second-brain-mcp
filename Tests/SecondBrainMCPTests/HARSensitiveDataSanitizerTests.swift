@@ -206,4 +206,18 @@ struct HARSensitiveDataSanitizerTests {
         #expect(text.contains("1e400"))
         #expect(try HARInspector.inspect(data: result.data).entryCount == 2)
     }
+
+    @Test("Cancellation is never converted into an invalid-JSON diagnosis")
+    func cancellationPropagates() async {
+        let archive = Data(
+            #"{"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[]}}"#.utf8
+        )
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try HARSensitiveDataSanitizer.sanitize(archive)
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+    }
 }

@@ -4,6 +4,21 @@ import Testing
 
 @Suite("JSON file operations")
 struct JSONFileOperationsTests {
+    @Test("Cancellation is not misreported as malformed JSON")
+    func cancellationPropagates() async throws {
+        let target = try makeTarget()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try JSONFileOperations().prepareCreate(
+                TextFileCreateInput(data: Data("{}".utf8), tags: []),
+                target: target
+            )
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+    }
+
     @Test("Creation and reading preserve valid JSON bytes")
     func losslessCreateAndRead() throws {
         let target = try makeTarget()

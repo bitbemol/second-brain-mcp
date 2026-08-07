@@ -48,11 +48,34 @@ struct SearchToolContractTests {
         let outputProperties = try #require(
             tool.outputSchema?.objectValue?["properties"]?.objectValue
         )
+        #expect(outputProperties["resource_limited_file_count"] != nil)
+        #expect(outputProperties["more_results_available"] != nil)
+        #expect(outputProperties["coverage_incomplete"] != nil)
+        for name in [
+            "searched_file_count", "skipped_file_count",
+            "skipped_sensitive_file_count", "resource_limited_file_count",
+        ] {
+            #expect(outputProperties[name]?.objectValue?["minimum"]?.intValue == 0)
+            #expect(outputProperties[name]?.objectValue?["description"]?.stringValue != nil)
+        }
         let resultProperties = try #require(
             outputProperties["results"]?.objectValue?["items"]?
                 .objectValue?["properties"]?.objectValue
         )
         #expect(resultProperties["location"] != nil)
+        #expect(outputProperties["results"]?.objectValue?["maxItems"]?.intValue
+            == SearchRequestLimits.maximumResults)
+        #expect(resultProperties["format"]?.objectValue?["enum"]?.arrayValue?
+            .compactMap(\.stringValue) == ["har", "json", "markdown"])
+        #expect(resultProperties["line_start"]?.objectValue?["minimum"]?.intValue == 1)
+        #expect(resultProperties["matched_fields"]?.objectValue?["uniqueItems"]?.boolValue == true)
+
+        let outputRequired = try #require(
+            tool.outputSchema?.objectValue?["required"]?.arrayValue
+        ).compactMap(\.stringValue)
+        #expect(outputRequired.contains("resource_limited_file_count"))
+        #expect(outputRequired.contains("more_results_available"))
+        #expect(outputRequired.contains("coverage_incomplete"))
     }
 
     @Test("Decoder applies defaults and rejects malformed arrays")
@@ -80,9 +103,46 @@ struct SearchToolContractTests {
                 name: "search_vault",
                 arguments: [
                     "query": .string("actors"),
+                    "unexpected": .bool(true),
+                ]
+            ))
+        }
+        #expect(throws: SearchToolRequestDecoder.DecodingError.self) {
+            _ = try SearchToolRequestDecoder.decode(.init(
+                name: "search_vault",
+                arguments: [
+                    "query": .string("actors"),
+                    "fields": .array(Array(
+                        repeating: .string("title"),
+                        count: SearchField.allCases.count + 1
+                    )),
+                ]
+            ))
+        }
+        #expect(throws: SearchToolRequestDecoder.DecodingError.self) {
+            _ = try SearchToolRequestDecoder.decode(.init(
+                name: "search_vault",
+                arguments: [
+                    "query": .string("actors"),
                     "strategy": .string("regex"),
                 ]
             ))
+        }
+    }
+
+    @Test("Response decoding enforces the legacy truncation invariant")
+    func responseInvariant() throws {
+        let inconsistent = """
+        {"strategy":"smart","results":[],"searchedFileCount":0,
+        "skippedFileCount":0,"skippedSensitiveFileCount":0,
+        "resourceLimitedFileCount":0,"moreResultsAvailable":false,
+        "coverageIncomplete":true,"truncated":false}
+        """
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                VaultSearchResponse.self,
+                from: Data(inconsistent.utf8)
+            )
         }
     }
 }
@@ -110,7 +170,9 @@ struct SearchToolControllerTests {
                 searchedFileCount: 1,
                 skippedFileCount: 0,
                 skippedSensitiveFileCount: 0,
-                truncated: false
+                resourceLimitedFileCount: 0,
+                moreResultsAvailable: false,
+                coverageIncomplete: false
             )
         }
 
@@ -179,7 +241,9 @@ struct SearchToolControllerTests {
             searchedFileCount: 1,
             skippedFileCount: 0,
             skippedSensitiveFileCount: 0,
-            truncated: false
+            resourceLimitedFileCount: 0,
+            moreResultsAvailable: false,
+            coverageIncomplete: false
         )
         let mapped = try SearchToolResultMapper.success(response)
         let structured = try #require(mapped.structuredContent?.objectValue)
@@ -187,6 +251,10 @@ struct SearchToolControllerTests {
         #expect(results.count == 1)
         #expect(results[0].objectValue?["path"]?.stringValue == "notes/real.md")
         #expect(results[0].objectValue?["snippet"]?.stringValue == injection)
+        #expect(structured["resource_limited_file_count"]?.intValue == 0)
+        #expect(structured["more_results_available"]?.boolValue == false)
+        #expect(structured["coverage_incomplete"]?.boolValue == false)
+        #expect(structured["truncated"]?.boolValue == false)
 
         guard case .text(let text, _, _) = mapped.content.first else {
             Issue.record("Expected one JSON text block")
@@ -199,6 +267,10 @@ struct SearchToolControllerTests {
         #expect(jsonResults.count == 1)
         #expect(jsonResults[0]["path"] as? String == "notes/real.md")
         #expect(jsonResults[0]["snippet"] as? String == injection)
+        #expect(json["resource_limited_file_count"] as? Int == 0)
+        #expect(json["more_results_available"] as? Bool == false)
+        #expect(json["coverage_incomplete"] as? Bool == false)
+        #expect(json["truncated"] as? Bool == false)
     }
 
     @Test("Canvas locators preserve their structured output shape")
@@ -223,7 +295,9 @@ struct SearchToolControllerTests {
             searchedFileCount: 1,
             skippedFileCount: 0,
             skippedSensitiveFileCount: 0,
-            truncated: false
+            resourceLimitedFileCount: 0,
+            moreResultsAvailable: false,
+            coverageIncomplete: false
         )
         let mapped = try SearchToolResultMapper.success(response)
         let location = try #require(
@@ -233,5 +307,48 @@ struct SearchToolControllerTests {
         #expect(location["node_id"]?.stringValue == "node-a")
         #expect(location["node_type"]?.stringValue == "text")
         #expect(location["field"]?.stringValue == "text")
+    }
+
+    @Test("The complete MCP result stays bounded without breaking JSON text clients")
+    func wireResponseLimit() throws {
+        let results = (0..<100).map { index in
+            VaultSearchResult(
+                path: "notes/\(index).md",
+                format: .markdown,
+                title: "Result \(index)",
+                heading: nil,
+                location: nil,
+                snippet: String(repeating: "bounded content ", count: 100),
+                lineStart: 1,
+                lineEnd: 1,
+                matchedFields: [.content]
+            )
+        }
+        let mapped = try SearchToolResultMapper.success(VaultSearchResponse(
+            strategy: .exact,
+            results: results,
+            searchedFileCount: 100,
+            skippedFileCount: 0,
+            skippedSensitiveFileCount: 0,
+            resourceLimitedFileCount: 0,
+            moreResultsAvailable: false,
+            coverageIncomplete: false
+        ))
+
+        #expect(try JSONEncoder().encode(mapped).count
+            <= SearchRequestLimits.maximumWireResponseBytes)
+        let structured = try #require(mapped.structuredContent?.objectValue)
+        let boundedResults = try #require(structured["results"]?.arrayValue)
+        #expect(boundedResults.count < results.count)
+        #expect(structured["more_results_available"]?.boolValue == true)
+        guard case .text(let text, _, _) = mapped.content.first else {
+            Issue.record("Expected one compatibility JSON text block")
+            return
+        }
+        let decoded = try #require(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        )
+        #expect((decoded["results"] as? [Any])?.count == boundedResults.count)
+        #expect(decoded["more_results_available"] as? Bool == true)
     }
 }

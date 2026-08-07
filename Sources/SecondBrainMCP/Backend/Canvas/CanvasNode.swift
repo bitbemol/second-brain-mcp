@@ -64,6 +64,7 @@ struct CanvasNode: Decodable {
                 id: id,
                 kind: .text,
                 label: label,
+                searchText: text,
                 filePath: nil
             )
         case "file":
@@ -77,6 +78,7 @@ struct CanvasNode: Decodable {
                 id: id,
                 kind: .file,
                 label: file,
+                searchText: file,
                 filePath: file
             )
         case "link":
@@ -85,6 +87,7 @@ struct CanvasNode: Decodable {
                 id: id,
                 kind: .link,
                 label: url,
+                searchText: url,
                 filePath: nil
             )
         case "group":
@@ -99,6 +102,7 @@ struct CanvasNode: Decodable {
                 id: id,
                 kind: .group,
                 label: label,
+                searchText: label,
                 filePath: nil
             )
         default:

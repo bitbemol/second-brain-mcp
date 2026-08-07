@@ -52,6 +52,18 @@ enum SensitiveContentPolicy {
             requiresBearerCredentialShape: false
         ),
         Detector(
+            label: "URL user information",
+            pattern: #"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:([^\s/@]{12,})@"#,
+            permitsPlaceholder: true,
+            requiresBearerCredentialShape: false
+        ),
+        Detector(
+            label: "URL password parameter",
+            pattern: #"(?i)[?&](?:password|passwd)=([A-Za-z0-9._~%+/-]{12,})"#,
+            permitsPlaceholder: true,
+            requiresBearerCredentialShape: false
+        ),
+        Detector(
             label: "JSON web token",
             pattern: #"\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})\b"#,
             permitsPlaceholder: false,
@@ -74,6 +86,11 @@ enum SensitiveContentPolicy {
     private static let cookieAttributes: Set<String> = [
         "domain", "expires", "httponly", "max-age", "partitioned", "path",
         "samesite", "secure",
+    ]
+
+    private static let normalizedSensitiveURLParameterNames: Set<String> = [
+        "accesstoken", "authtoken", "apikey", "clientsecret", "idtoken",
+        "passwd", "password", "refreshtoken", "sessiontoken", "token",
     ]
 
     /// Validates prepared bytes for every Git-tracked textual format.
@@ -112,8 +129,111 @@ enum SensitiveContentPolicy {
         }
 
         for representation in representations {
+            try Task.checkCancellation()
             try validateDetectors(in: representation, path: path)
+            try Task.checkCancellation()
+            try validateURLCredentials(in: representation, path: path)
+            try Task.checkCancellation()
             try validateCookieHeaders(in: representation, path: path)
+        }
+    }
+
+    /// Decodes URL components so percent-encoded sensitive parameter names
+    /// cannot bypass the raw high-confidence regular expressions.
+    private static func validateURLCredentials(
+        in text: String,
+        path: String
+    ) throws {
+        let expression = try NSRegularExpression(
+            pattern: #"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\"']+"#
+        )
+        try forEachMatch(of: expression, in: text) { match in
+            guard let matchRange = Range(match.range, in: text),
+                  let components = URLComponents(
+                      string: String(text[matchRange])
+                  ) else { return }
+            if let password = components.password,
+               password.count >= 12,
+               !isPlaceholder(password) {
+                throw Violation(
+                    path: path,
+                    detector: "URL user information",
+                    line: lineNumber(in: text, before: matchRange.lowerBound)
+                )
+            }
+            if let query = components.percentEncodedQuery {
+                try validateURLQuery(
+                    query,
+                    in: text,
+                    at: matchRange.lowerBound,
+                    path: path
+                )
+            }
+        }
+    }
+
+    /// Scans one percent-encoded query incrementally without materializing a
+    /// caller-sized `[URLQueryItem]` object graph.
+    private static func validateURLQuery(
+        _ query: String,
+        in text: String,
+        at location: String.Index,
+        path: String
+    ) throws {
+        var start = query.startIndex
+        var visited = 0
+        while start <= query.endIndex {
+            if visited.isMultiple(of: 1_024) { try Task.checkCancellation() }
+            visited += 1
+            let separator = query[start...].firstIndex(of: "&") ?? query.endIndex
+            let component = query[start..<separator]
+            let equals = component.firstIndex(of: "=")
+            let rawName = equals.map { component[..<$0] } ?? component[...]
+            let rawValue = equals.map { component[component.index(after: $0)...] }
+            let name = (String(rawName).removingPercentEncoding ?? String(rawName))
+                .lowercased()
+                .filter { $0.isLetter || $0.isNumber }
+            if normalizedSensitiveURLParameterNames.contains(name),
+               let rawValue {
+                let value = String(rawValue).removingPercentEncoding
+                    ?? String(rawValue)
+                let minimumLength = name == "password" || name == "passwd"
+                    ? 12 : 16
+                if value.count >= minimumLength, !isPlaceholder(value) {
+                    throw Violation(
+                        path: path,
+                        detector: name == "password" || name == "passwd"
+                            ? "URL password parameter" : "token assignment",
+                        line: lineNumber(in: text, before: location)
+                    )
+                }
+            }
+            guard separator < query.endIndex else { break }
+            start = query.index(after: separator)
+        }
+    }
+
+    /// Iterates matches one at a time so dense input cannot allocate an array of
+    /// every `NSTextCheckingResult` before cancellation is observed.
+    private static func forEachMatch(
+        of expression: NSRegularExpression,
+        in text: String,
+        _ body: (NSTextCheckingResult) throws -> Void
+    ) throws {
+        let completeRange = NSRange(text.startIndex..., in: text)
+        var location = completeRange.location
+        let end = completeRange.location + completeRange.length
+        while location < end {
+            try Task.checkCancellation()
+            let range = NSRange(location: location, length: end - location)
+            guard let match = expression.firstMatch(in: text, range: range) else {
+                break
+            }
+            try body(match)
+            location = min(
+                match.range.location + max(match.range.length, 1),
+                end
+            )
         }
     }
 
@@ -122,6 +242,7 @@ enum SensitiveContentPolicy {
         path: String
     ) throws {
         for detector in detectors {
+            try Task.checkCancellation()
             let expression = try NSRegularExpression(pattern: detector.pattern)
             let completeRange = NSRange(text.startIndex..., in: text)
             var searchLocation = completeRange.location
@@ -177,10 +298,9 @@ enum SensitiveContentPolicy {
         let expression = try NSRegularExpression(
             pattern: #"(?i)\b(?:cookie|set-cookie)\b\s*[:=]\s*([^\r\n]+)"#
         )
-        let completeRange = NSRange(text.startIndex..., in: text)
-        for match in expression.matches(in: text, range: completeRange) {
+        try forEachMatch(of: expression, in: text) { match in
             guard let headerRange = Range(match.range(at: 1), in: text) else {
-                continue
+                return
             }
             try validateCookieValue(
                 text[headerRange],
@@ -196,9 +316,9 @@ enum SensitiveContentPolicy {
         let jsonExpression = try NSRegularExpression(
             pattern: #"(?i)\"(?:cookie|set-cookie)\"\s*:\s*\"((?:\\.|[^\"\\])*)\""#
         )
-        for match in jsonExpression.matches(in: text, range: completeRange) {
+        try forEachMatch(of: jsonExpression, in: text) { match in
             guard let valueRange = Range(match.range(at: 1), in: text) else {
-                continue
+                return
             }
             try validateCookieValue(
                 text[valueRange],
@@ -256,7 +376,7 @@ enum SensitiveContentPolicy {
             return false
         }
         let permittedSuffixes: Set<String> = [
-            "api", "credential", "key", "secret", "session", "token", "value",
+            "api", "credential", "key", "password", "secret", "session", "token", "value",
         ]
         return words.dropFirst().allSatisfy {
             permittedSuffixes.contains(String($0))

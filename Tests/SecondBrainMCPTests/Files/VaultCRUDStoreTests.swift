@@ -135,6 +135,26 @@ struct VaultCRUDStoreTests {
         #expect(try String(contentsOf: target.url, encoding: .utf8) == "original")
     }
 
+    @Test("Snapshot honors a stricter caller byte ceiling")
+    func boundedSnapshot() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let store = VaultCRUDStore(vaultPath: root)
+        let target = try WritableFileTarget.resolve(
+            path: "notes/deep/bounded.log",
+            format: .log,
+            vaultPath: root
+        )
+        try await store.create(
+            target: target,
+            data: Data(String(repeating: "x", count: 257).utf8)
+        )
+
+        await #expect(throws: FileResourcePolicy.Violation.self) {
+            _ = try await store.snapshot(target.readable, maximumBytes: 256)
+        }
+    }
+
     @Test("Soft-delete paths cannot collide for equal basenames")
     func uniqueTrashPaths() async throws {
         let root = try makeVault()

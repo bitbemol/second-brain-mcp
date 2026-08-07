@@ -7,6 +7,8 @@ import Foundation
 /// requested behavior through one exhaustive strategy switch in
 /// ``SearchTextMatcher``.
 struct VaultSearchEngine: VaultSearchService, Sendable {
+    enum EngineError: Error, Sendable { case responseLimitTooSmall }
+
     private struct RankedResult: Sendable {
         let result: VaultSearchResult
         let score: Double
@@ -23,6 +25,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     private let corpusBuilder: SearchCorpusBuilder
     private let limits: SearchResourceLimits
     private let admissionGate: AsyncExclusiveGate
+    private let processSearchLock: POSIXAdvisoryFileLock?
 
     init(
         vaultPath: String,
@@ -30,12 +33,16 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         store: VaultCRUDStore,
         operations: VaultOperationCoordinator,
         limits: SearchResourceLimits = .default,
-        admissionGate: AsyncExclusiveGate = AsyncExclusiveGate()
+        admissionGate: AsyncExclusiveGate? = nil,
+        processSearchLock: POSIXAdvisoryFileLock? = nil
     ) {
         self.vaultPath = vaultPath
         self.capabilities = capabilities
         self.limits = limits
-        self.admissionGate = admissionGate
+        self.admissionGate = admissionGate ?? AsyncExclusiveGate(
+            maximumWaiters: limits.maximumQueuedRequests
+        )
+        self.processSearchLock = processSearchLock
         self.corpusBuilder = SearchCorpusBuilder(
             vaultPath: vaultPath,
             store: store,
@@ -52,8 +59,17 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             vaultPath: vaultPath,
             limits: limits
         )
-        return try await admissionGate.withPermit {
-            try await execute(validated)
+        do {
+            return try await admissionGate.withPermit {
+                if let processSearchLock {
+                    return try await processSearchLock.withLock(.exclusive) {
+                        try await execute(validated)
+                    }
+                }
+                return try await execute(validated)
+            }
+        } catch is AsyncExclusiveGate.CapacityExceeded {
+            throw VaultSearchRequestError.searchBusy
         }
     }
 
@@ -63,67 +79,126 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         let corpus = try await corpusBuilder.build(for: validated)
         var work = SearchWorkBudget()
         var ranked: [RankedResult] = []
-        var truncated = corpus.truncated
+        var moreResultsAvailable = false
+        var coverageIncomplete = corpus.coverageIncomplete
+        var resourceLimitedFiles = corpus.resourceLimitedFileCount
+        var limitedPaths = corpus.partiallyLimitedPaths
+        var searchedFiles = 0
         var skippedSensitive = corpus.skippedSensitiveFileCount
 
-        for document in corpus.documents {
+        for (index, document) in corpus.documents.enumerated() {
             try Task.checkCancellation()
-            guard !work.exhausted else {
-                truncated = true
-                break
-            }
-            guard let candidate = try bestResult(
+            work.truncated = false
+            let candidate = try bestResult(
                 in: document,
                 request: validated,
                 work: &work
-            ) else { continue }
+            )
+            if work.truncated || work.exhausted {
+                coverageIncomplete = true
+                if limitedPaths.insert(document.path).inserted {
+                    resourceLimitedFiles += 1
+                }
+            }
+            // This document was evaluated even if defense-in-depth later
+            // refuses one result projection derived from it.
+            searchedFiles += 1
 
-            do {
-                try validateProjection(candidate.result)
-            } catch is SensitiveContentPolicy.Violation {
-                skippedSensitive += 1
-                continue
+            if let candidate {
+                do {
+                    try validateProjection(candidate.result)
+                } catch is SensitiveContentPolicy.Violation {
+                    skippedSensitive += 1
+                    coverageIncomplete = true
+                    if work.exhausted {
+                        markRemainingDocuments(
+                            after: index,
+                            in: corpus.documents,
+                            limitedPaths: &limitedPaths,
+                            resourceLimitedFiles: &resourceLimitedFiles
+                        )
+                        break
+                    }
+                    continue
+                }
+
+                if ranked.count < limits.maximumCandidates {
+                    ranked.append(candidate)
+                } else {
+                    moreResultsAvailable = true
+                    var worst = ranked.startIndex
+                    for index in ranked.indices.dropFirst()
+                    where isBetter(ranked[worst], than: ranked[index]) {
+                        worst = index
+                    }
+                    if isBetter(candidate, than: ranked[worst]) {
+                        ranked[worst] = candidate
+                    }
+                }
             }
 
-            if ranked.count < limits.maximumCandidates {
-                ranked.append(candidate)
-            } else {
-                truncated = true
-                ranked.sort { isBetter($0, than: $1) }
-                if let worst = ranked.indices.last,
-                   isBetter(candidate, than: ranked[worst]) {
-                    ranked[worst] = candidate
-                }
+            if work.exhausted {
+                coverageIncomplete = true
+                markRemainingDocuments(
+                    after: index,
+                    in: corpus.documents,
+                    limitedPaths: &limitedPaths,
+                    resourceLimitedFiles: &resourceLimitedFiles
+                )
+                break
             }
         }
 
         ranked.sort { isBetter($0, than: $1) }
-        if ranked.count > validated.request.limit { truncated = true }
+        if ranked.count > validated.request.limit { moreResultsAvailable = true }
         var results: [VaultSearchResult] = []
         for candidate in ranked.prefix(validated.request.limit) {
             let tentative = VaultSearchResponse(
                 strategy: validated.request.strategy,
                 results: results + [candidate.result],
-                searchedFileCount: corpus.searchedFileCount,
+                searchedFileCount: searchedFiles,
                 skippedFileCount: corpus.skippedFileCount,
                 skippedSensitiveFileCount: skippedSensitive,
-                truncated: truncated || work.exhausted || work.truncated
+                resourceLimitedFileCount: resourceLimitedFiles,
+                moreResultsAvailable: moreResultsAvailable,
+                coverageIncomplete: coverageIncomplete
             )
             guard try encodedResponseByteCount(tentative)
                     <= limits.maximumResponseBytes else {
-                truncated = true
+                moreResultsAvailable = true
                 break
             }
             results.append(candidate.result)
         }
-        return VaultSearchResponse(
+        let response = VaultSearchResponse(
             strategy: validated.request.strategy,
             results: results,
-            searchedFileCount: corpus.searchedFileCount,
+            searchedFileCount: searchedFiles,
             skippedFileCount: corpus.skippedFileCount,
             skippedSensitiveFileCount: skippedSensitive,
-            truncated: truncated || work.exhausted || work.truncated
+            resourceLimitedFileCount: resourceLimitedFiles,
+            moreResultsAvailable: moreResultsAvailable,
+            coverageIncomplete: coverageIncomplete
         )
+        guard try encodedResponseByteCount(response)
+            <= limits.maximumResponseBytes else {
+            throw EngineError.responseLimitTooSmall
+        }
+        return response
+    }
+
+    private func markRemainingDocuments(
+        after index: Int,
+        in documents: [SearchDocument],
+        limitedPaths: inout Set<String>,
+        resourceLimitedFiles: inout Int
+    ) {
+        guard index + 1 < documents.count else { return }
+        for document in documents[(index + 1)...] {
+            if limitedPaths.insert(document.path).inserted {
+                resourceLimitedFiles += 1
+            }
+        }
     }
 
     private func encodedResponseByteCount(
@@ -155,9 +230,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             request: request,
             work: &work
         )
-        if let preferred = metadataMatches.max(by: {
-            fieldWeight($0.field) < fieldWeight($1.field)
-        }) {
+        if let preferred = strongestMatch(in: metadataMatches) {
             best = rankedResult(
                 document: document,
                 matches: metadataMatches,
@@ -182,24 +255,34 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             )
             guard !localMatches.isEmpty else { continue }
             let matches = metadataMatches + localMatches
-            let contentMatch = localMatches.first { $0.field == .content }
-            let presentation = contentMatch
-                ?? localMatches.first { $0.field == .heading }!
+            let presentation = strongestMatch(in: matches)!
+            let presentsSection = presentation.field == .heading
+                || presentation.field == .content
             let candidate = rankedResult(
                 document: document,
                 matches: matches,
                 source: presentation.text,
                 range: presentation.match.range,
-                heading: section.heading,
-                location: section.location,
-                lineStart: section.lineStart,
-                lineEnd: contentMatch == nil ? section.lineStart : section.lineEnd
+                heading: presentsSection ? section.heading : nil,
+                location: presentation.field == .content ? section.location : nil,
+                lineStart: presentsSection ? section.lineStart : 1,
+                lineEnd: presentation.field == .content ? section.lineEnd
+                    : (presentsSection ? section.lineStart : 1)
             )
             if best == nil || isBetter(candidate, than: best!) {
                 best = candidate
             }
         }
         return best
+    }
+
+    private func strongestMatch(in matches: [FieldMatch]) -> FieldMatch? {
+        matches.max { lhs, rhs in
+            let lhsStrength = (lhs.match.quality * 100) + fieldWeight(lhs.field)
+            let rhsStrength = (rhs.match.quality * 100) + fieldWeight(rhs.field)
+            if lhsStrength != rhsStrength { return lhsStrength < rhsStrength }
+            return lhs.field.rawValue > rhs.field.rawValue
+        }
     }
 
     private func matchingFields(
@@ -278,7 +361,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     }
 
     private func validateProjection(_ result: VaultSearchResult) throws {
-        let projection = [
+        let fields = [
             result.path,
             result.title,
             result.heading ?? "",
@@ -286,11 +369,13 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             result.location?.nodeType ?? "",
             result.location?.field ?? "",
             result.snippet,
-        ].joined(separator: "\n")
-        try SensitiveContentPolicy.validate(
-            Data(projection.utf8),
-            format: .markdown,
-            path: result.path
-        )
+        ]
+        for field in fields where !field.isEmpty {
+            try SensitiveContentPolicy.validate(
+                Data(field.utf8),
+                format: .markdown,
+                path: result.path
+            )
+        }
     }
 }

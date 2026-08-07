@@ -53,6 +53,16 @@ struct CanvasDocumentValidatorTests {
         }
     }
 
+    @Test("Duplicate JSON object keys are rejected before semantic decoding")
+    func duplicateJSONKeys() {
+        #expect(throws: CanvasDocumentValidator.ValidationError.self) {
+            try validate(#"{"nodes":[],"n\u006fdes":[]}"#)
+        }
+        #expect(throws: CanvasDocumentValidator.ValidationError.self) {
+            try validate(#"{"nodes":[{"id":"a","i\u0064":"b","type":"text","x":0,"y":0,"width":1,"height":1,"text":"x"}]}"#)
+        }
+    }
+
     @Test("Duplicate node id is rejected")
     func duplicateID() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {

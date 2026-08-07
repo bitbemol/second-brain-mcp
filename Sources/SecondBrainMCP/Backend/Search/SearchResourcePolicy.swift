@@ -24,6 +24,8 @@ struct SearchResourceLimits: Sendable {
     let maximumTokenComparisons: Int
     let maximumFuzzyComparisons: Int
     let maximumEditDistanceCells: Int
+    let maximumQueuedRequests: Int
+    let maximumStructuredValuesPerFile: Int
 
     /// Production limits keep memory, output, and typo correction bounded.
     static let `default` = SearchResourceLimits(
@@ -48,7 +50,9 @@ struct SearchResourceLimits: Sendable {
         maximumSourceTokensPerField: 50_000,
         maximumTokenComparisons: 2_000_000,
         maximumFuzzyComparisons: 250_000,
-        maximumEditDistanceCells: 8_000_000
+        maximumEditDistanceCells: 8_000_000,
+        maximumQueuedRequests: 32,
+        maximumStructuredValuesPerFile: 250_000
     )
 }
 
@@ -120,13 +124,41 @@ enum SearchResourcePolicy {
             formats = supported
         }
 
-        var prefix = request.pathPrefix ?? "notes/"
-        if !prefix.hasSuffix("/") { prefix += "/" }
-        guard prefix.utf8.count <= SearchRequestLimits.maximumPathPrefixBytes,
-              prefix.hasPrefix("notes/"),
-              !prefix.contains("\\"),
-              !prefix.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              (try? PathValidator.resolve(relativePath: prefix, root: vaultPath)) != nil else {
+        let rawPrefix = request.pathPrefix ?? "notes/"
+        guard rawPrefix.utf8.count <= SearchRequestLimits.maximumPathPrefixBytes,
+              !rawPrefix.hasPrefix("/"),
+              !rawPrefix.contains("\\"),
+              !rawPrefix.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0)
+              }) else {
+            throw VaultSearchRequestError.invalidPathPrefix
+        }
+        let components = rawPrefix
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+            .filter { $0 != "." }
+        guard components.first == "notes",
+              components.allSatisfy({ $0 != ".." && !$0.hasPrefix(".") }) else {
+            throw VaultSearchRequestError.invalidPathPrefix
+        }
+        let prefix = components.joined(separator: "/") + "/"
+        guard !PathValidator.containsSymbolicLinkComponent(
+            relativePath: prefix,
+            root: vaultPath
+        ),
+              !containsHiddenComponent(
+                  relativeComponents: Array(components.dropFirst()),
+                  vaultPath: vaultPath
+              ),
+              let resolved = try? PathValidator.resolve(
+                  relativePath: prefix,
+                  root: vaultPath
+              ) else {
+            throw VaultSearchRequestError.invalidPathPrefix
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory),
+           !isDirectory.boolValue {
             throw VaultSearchRequestError.invalidPathPrefix
         }
 
@@ -137,5 +169,29 @@ enum SearchResourcePolicy {
             pathPrefix: prefix,
             queryTokens: queryTokens
         )
+    }
+
+    private static func containsHiddenComponent(
+        relativeComponents: [String],
+        vaultPath: String
+    ) -> Bool {
+        var url = URL(fileURLWithPath: vaultPath)
+            .appendingPathComponent("notes", isDirectory: true)
+        for component in relativeComponents {
+            url.appendPathComponent(component, isDirectory: true)
+            do {
+                let values = try url.resourceValues(forKeys: [
+                    .isHiddenKey, .isPackageKey,
+                ])
+                if values.isHidden == true || values.isPackage == true {
+                    return true
+                }
+            } catch {
+                // A nonexistent prefix is a valid, complete-empty scope. Other
+                // access failures are handled conservatively during traversal.
+                break
+            }
+        }
+        return false
     }
 }

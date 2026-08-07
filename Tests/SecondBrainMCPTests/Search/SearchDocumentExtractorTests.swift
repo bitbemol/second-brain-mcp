@@ -167,4 +167,74 @@ struct SearchDocumentExtractorTests {
         ))
         #expect(!extracted.document.sections.contains { $0.content.contains("9999") })
     }
+
+    @Test("ATX headings preserve literal hashes and honor fence lengths")
+    func markdownStructureEdges() throws {
+        let markdown = """
+        # C#
+        body
+        ````
+        ```
+        # Still Code
+        ````
+        # Real Heading ###
+        final
+        """
+        let extracted = try SearchDocumentExtractor.extract(
+            data: Data(markdown.utf8),
+            path: "notes/structure.md",
+            format: .markdown,
+            maximumSections: 20
+        )
+
+        #expect(extracted.document.title == "C#")
+        #expect(extracted.document.sections.compactMap(\.heading) == [
+            "C#", "Real Heading",
+        ])
+        #expect(extracted.document.sections.contains {
+            $0.content.contains("# Still Code")
+        })
+    }
+
+    @Test("A UTF-8 BOM does not hide Markdown metadata")
+    func markdownByteOrderMark() throws {
+        var data = Data([0xEF, 0xBB, 0xBF])
+        data.append(Data("""
+        ---
+        title: BOM Title
+        tags: [bom-tag]
+        ---
+        # Heading
+        body
+        """.utf8))
+        let extracted = try SearchDocumentExtractor.extract(
+            data: data,
+            path: "notes/bom.md",
+            format: .markdown,
+            maximumSections: 20
+        )
+
+        #expect(extracted.document.title == "BOM Title")
+        #expect(extracted.document.tags == ["bom-tag"])
+        #expect(extracted.document.sections.compactMap(\.heading) == ["Heading"])
+    }
+
+    @Test("Canvas locators preserve the complete stable node identifier")
+    func canvasLocatorIsNotTruncated() throws {
+        let identifier = String(repeating: "node-", count: 150)
+        let canvas = """
+        {"nodes":[{"id":"\(identifier)","type":"text","x":0,"y":0,
+        "width":1,"height":1,"text":"needle"}],"edges":[]}
+        """
+        let extracted = try SearchDocumentExtractor.extract(
+            data: Data(canvas.utf8),
+            path: "notes/locator.canvas",
+            format: .canvas,
+            maximumSections: 10,
+            maximumMetadataCharacters: 32,
+            maximumMetadataBytes: 64
+        )
+
+        #expect(extracted.document.sections.first?.location?.nodeID == identifier)
+    }
 }

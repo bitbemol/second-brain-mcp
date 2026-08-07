@@ -14,6 +14,10 @@ enum SearchToolRequestDecoder {
 
     static func decode(_ params: CallTool.Parameters) throws -> VaultSearchRequest {
         let values = params.arguments ?? [:]
+        let allowed = Set(SearchToolArgument.allCases.map(\.rawValue))
+        guard values.keys.allSatisfy(allowed.contains) else {
+            throw DecodingError.invalid("Search request contains an unknown parameter")
+        }
         let query = try requiredString(.query, in: values)
 
         let strategy: SearchStrategy
@@ -29,8 +33,18 @@ enum SearchToolRequestDecoder {
         return VaultSearchRequest(
             query: query,
             strategy: strategy,
-            fields: try enumArray(.fields, in: values, as: SearchField.self),
-            formats: try enumArray(.formats, in: values, as: FileFormat.self),
+            fields: try enumArray(
+                .fields,
+                in: values,
+                as: SearchField.self,
+                maximumCount: SearchField.allCases.count
+            ),
+            formats: try enumArray(
+                .formats,
+                in: values,
+                as: FileFormat.self,
+                maximumCount: FileFormat.allCases.count
+            ),
             pathPrefix: try string(.pathPrefix, in: values),
             limit: try integer(.limit, in: values)
                 ?? SearchRequestLimits.defaultResults
@@ -83,12 +97,18 @@ enum SearchToolRequestDecoder {
     private static func enumArray<Element: RawRepresentable>(
         _ argument: SearchToolArgument,
         in values: [String: Value],
-        as type: Element.Type
+        as type: Element.Type,
+        maximumCount: Int
     ) throws -> [Element]? where Element.RawValue == String {
         guard let value = values[argument] else { return nil }
         guard let array = value.arrayValue else {
             throw DecodingError.invalid(
                 "Invalid parameter '\(argument.rawValue)': expected array of strings"
+            )
+        }
+        guard array.count <= maximumCount else {
+            throw DecodingError.invalid(
+                "Parameter '\(argument.rawValue)' contains too many values"
             )
         }
         var decoded: [Element] = []

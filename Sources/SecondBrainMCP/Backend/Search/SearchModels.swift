@@ -21,10 +21,11 @@ struct SearchSection: Sendable {
 /// Corpus construction facts that remain independent from ranking strategy.
 struct SearchCorpus: Sendable {
     let documents: [SearchDocument]
-    let searchedFileCount: Int
     let skippedFileCount: Int
     let skippedSensitiveFileCount: Int
-    let truncated: Bool
+    let resourceLimitedFileCount: Int
+    let partiallyLimitedPaths: Set<String>
+    let coverageIncomplete: Bool
 }
 
 /// A query or corpus token whose range always belongs to its original string.

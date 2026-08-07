@@ -8,6 +8,8 @@ enum SearchRequestLimits {
     static let defaultResults = 20
     /// Maximum number of different files returned.
     static let maximumResults = 50
+    /// Maximum encoded MCP tool-result bytes returned by one search call.
+    static let maximumWireResponseBytes = 64 * 1_024
 }
 
 /// Safe request-validation failures that may cross the backend/frontend boundary.
@@ -21,6 +23,7 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
     case emptySelection(String)
     case invalidSelection(String)
     case invalidPathPrefix
+    case searchBusy
 
     var description: String {
         switch self {
@@ -42,6 +45,8 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
             "Search \(name) contains duplicates or too many values"
         case .invalidPathPrefix:
             "path_prefix must be a safe directory under notes/"
+        case .searchBusy:
+            "Search is at capacity; retry after an active search finishes"
         }
     }
 }

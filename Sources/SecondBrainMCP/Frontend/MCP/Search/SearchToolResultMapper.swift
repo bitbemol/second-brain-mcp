@@ -3,15 +3,42 @@ import MCP
 
 /// Maps transport-neutral search results into escaped MCP values.
 enum SearchToolResultMapper {
+    enum MappingError: Error { case responseTooLarge }
+
     static func success(_ response: VaultSearchResponse) throws -> CallTool.Result {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let json = try String(decoding: encoder.encode(response), as: UTF8.self)
-        return try CallTool.Result(
-            content: [.text(text: json, annotations: nil, _meta: nil)],
-            structuredContent: structuredContent(response)
-        )
+        var bounded = response
+        while true {
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            encoder.outputFormatting = [
+                .prettyPrinted, .sortedKeys, .withoutEscapingSlashes,
+            ]
+            let json = String(
+                decoding: try encoder.encode(bounded),
+                as: UTF8.self
+            )
+            let result = try CallTool.Result(
+                content: [.text(text: json, annotations: nil, _meta: nil)],
+                structuredContent: structuredContent(bounded)
+            )
+            if try JSONEncoder().encode(result).count
+                <= SearchRequestLimits.maximumWireResponseBytes {
+                return result
+            }
+            guard !bounded.results.isEmpty else {
+                throw MappingError.responseTooLarge
+            }
+            bounded = VaultSearchResponse(
+                strategy: bounded.strategy,
+                results: Array(bounded.results.dropLast()),
+                searchedFileCount: bounded.searchedFileCount,
+                skippedFileCount: bounded.skippedFileCount,
+                skippedSensitiveFileCount: bounded.skippedSensitiveFileCount,
+                resourceLimitedFileCount: bounded.resourceLimitedFileCount,
+                moreResultsAvailable: true,
+                coverageIncomplete: bounded.coverageIncomplete
+            )
+        }
     }
 
     static func failure(_ message: String) -> CallTool.Result {
@@ -28,6 +55,9 @@ enum SearchToolResultMapper {
             "searched_file_count": .int(response.searchedFileCount),
             "skipped_file_count": .int(response.skippedFileCount),
             "skipped_sensitive_file_count": .int(response.skippedSensitiveFileCount),
+            "resource_limited_file_count": .int(response.resourceLimitedFileCount),
+            "more_results_available": .bool(response.moreResultsAvailable),
+            "coverage_incomplete": .bool(response.coverageIncomplete),
             "truncated": .bool(response.truncated),
         ])
     }

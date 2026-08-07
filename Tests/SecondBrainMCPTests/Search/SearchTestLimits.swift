@@ -18,7 +18,9 @@ func searchTestLimits(
     maximumSourceTokensPerField: Int? = nil,
     maximumTokenComparisons: Int? = nil,
     maximumFuzzyComparisons: Int? = nil,
-    maximumEditDistanceCells: Int? = nil
+    maximumEditDistanceCells: Int? = nil,
+    maximumQueuedRequests: Int? = nil,
+    maximumStructuredValuesPerFile: Int? = nil
 ) -> SearchResourceLimits {
     let base = SearchResourceLimits.default
     return SearchResourceLimits(
@@ -56,6 +58,10 @@ func searchTestLimits(
         maximumFuzzyComparisons: maximumFuzzyComparisons
             ?? base.maximumFuzzyComparisons,
         maximumEditDistanceCells: maximumEditDistanceCells
-            ?? base.maximumEditDistanceCells
+            ?? base.maximumEditDistanceCells,
+        maximumQueuedRequests: maximumQueuedRequests
+            ?? base.maximumQueuedRequests,
+        maximumStructuredValuesPerFile: maximumStructuredValuesPerFile
+            ?? base.maximumStructuredValuesPerFile
     )
 }

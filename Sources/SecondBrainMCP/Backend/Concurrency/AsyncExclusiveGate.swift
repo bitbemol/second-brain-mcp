@@ -2,6 +2,10 @@ import Foundation
 
 /// FIFO asynchronous single-permit gate with cancellation-aware waiters.
 actor AsyncExclusiveGate {
+    /// The configured queue is full, so retaining another suspended operation
+    /// would violate the caller's aggregate resource policy.
+    struct CapacityExceeded: Error, Sendable {}
+
     private struct Waiter {
         let id: UUID
         let continuation: CheckedContinuation<Bool, Never>
@@ -9,6 +13,14 @@ actor AsyncExclusiveGate {
 
     private var locked = false
     private var waiters: [Waiter] = []
+    private let maximumWaiters: Int?
+
+    /// Creates a gate with an optional bound on suspended callers.
+    ///
+    /// A bounded queue also keeps the array-backed FIFO's removal work bounded.
+    init(maximumWaiters: Int? = nil) {
+        self.maximumWaiters = maximumWaiters.map { max($0, 0) }
+    }
 
     /// Number of tasks currently suspended behind the active permit.
     var waitingCount: Int { waiters.count }
@@ -37,6 +49,9 @@ actor AsyncExclusiveGate {
         guard locked else {
             locked = true
             return
+        }
+        if let maximumWaiters, waiters.count >= maximumWaiters {
+            throw CapacityExceeded()
         }
 
         let id = UUID()

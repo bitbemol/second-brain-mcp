@@ -23,6 +23,8 @@ struct CanvasInspection: Equatable, Sendable {
         let kind: Kind
         /// Short text, path, URL, or group label displayed in summaries.
         let label: String
+        /// Complete validated value used by bounded live search.
+        let searchText: String
         /// Referenced vault path for file nodes; `nil` for every other kind.
         let filePath: String?
     }

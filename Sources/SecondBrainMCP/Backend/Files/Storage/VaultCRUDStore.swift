@@ -44,20 +44,33 @@ actor VaultCRUDStore {
     /// - Throws: ``VaultFileInspector/InspectionError``,
     ///   ``FileResourcePolicy/Violation``, or a filesystem read error.
     func snapshot(_ target: ReadableFileTarget) throws -> FileSnapshot {
-        let metadata = try VaultFileInspector.inspect(target)
-        try FileResourcePolicy.validate(
-            bytes: metadata.byteCount,
-            format: target.format,
-            path: target.relativePath
-        )
-        let data = try BoundedFileReader.read(
-            from: target.url,
-            maximumBytes: target.format.maximumFileBytes,
-            path: target.relativePath
+        try snapshot(target, maximumBytes: target.format.maximumFileBytes)
+    }
+
+    /// Reads a snapshot through a caller-supplied stricter byte ceiling.
+    ///
+    /// The effective limit can only narrow the format policy. Search uses this
+    /// to ensure a file that grows after metadata inspection cannot allocate
+    /// beyond the remaining whole-request corpus budget.
+    ///
+    /// - Parameters:
+    ///   - target: Validated readable target.
+    ///   - maximumBytes: Additional nonnegative ceiling for this one read.
+    /// - Returns: Complete bytes and modification metadata within both limits.
+    /// - Throws: ``VaultFileInspector/InspectionError``,
+    ///   ``FileResourcePolicy/Violation``, or a filesystem read error.
+    func snapshot(
+        _ target: ReadableFileTarget,
+        maximumBytes: Int
+    ) throws -> FileSnapshot {
+        let effectiveLimit = min(target.format.maximumFileBytes, maximumBytes)
+        let opened = try VaultFileInspector.snapshot(
+            target,
+            maximumBytes: effectiveLimit,
         )
         return FileSnapshot(
-            data: data,
-            modifiedDate: metadata.modificationDate
+            data: opened.data,
+            modifiedDate: opened.metadata.modificationDate
         )
     }
 

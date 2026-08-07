@@ -14,6 +14,8 @@ enum JSONSyntaxValidator {
         case invalidSyntax
         /// Container nesting exceeds the parser's defensive ceiling.
         case excessiveNesting
+        /// The representation contains more values than the caller permits.
+        case excessiveValueCount
     }
 
     private static let maximumNestingDepth = 512
@@ -25,34 +27,48 @@ enum JSONSyntaxValidator {
     ///   - rejectingDuplicateObjectKeys: Whether an object may repeat a decoded
     ///     member name. HAR sanitization enables this because materializing a
     ///     duplicate-key object would otherwise silently discard one value.
+    @discardableResult
     static func validate(
         _ data: Data,
-        rejectingDuplicateObjectKeys: Bool = false
-    ) throws {
+        rejectingDuplicateObjectKeys: Bool = false,
+        maximumValueCount: Int? = nil
+    ) throws -> Int {
+        try Task.checkCancellation()
         guard String(data: data, encoding: .utf8) != nil else {
             throw ValidationError.invalidSyntax
         }
         var parser = Parser(
             bytes: Array(data),
-            rejectsDuplicateObjectKeys: rejectingDuplicateObjectKeys
+            rejectsDuplicateObjectKeys: rejectingDuplicateObjectKeys,
+            maximumValueCount: maximumValueCount
         )
-        try parser.parseDocument()
+        return try parser.parseDocument()
     }
 
     private struct Parser {
         let bytes: [UInt8]
         let rejectsDuplicateObjectKeys: Bool
+        let maximumValueCount: Int?
         var index = 0
+        var valueCount = 0
 
-        mutating func parseDocument() throws {
+        mutating func parseDocument() throws -> Int {
             consumeByteOrderMark()
             skipWhitespace()
             try parseValue(depth: 0)
             skipWhitespace()
             guard isAtEnd else { throw ValidationError.invalidSyntax }
+            return valueCount
         }
 
         private mutating func parseValue(depth: Int) throws {
+            valueCount += 1
+            if let maximumValueCount, valueCount > maximumValueCount {
+                throw ValidationError.excessiveValueCount
+            }
+            if valueCount.isMultiple(of: 1_024) {
+                try Task.checkCancellation()
+            }
             guard let byte = current else {
                 throw ValidationError.invalidSyntax
             }

@@ -107,7 +107,11 @@ struct VaultRuntime: Sendable {
             vaultPath: vaultPath,
             capabilities: searchCapabilities,
             store: store,
-            operations: operations
+            operations: operations,
+            processSearchLock: POSIXAdvisoryFileLock(
+                url: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("vault-search.lock")
+            )
         )
         return VaultRuntime(
             files: files,
