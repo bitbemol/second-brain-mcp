@@ -3,7 +3,7 @@
 A local MCP server in Swift that gives MCP clients format-aware access to a knowledge vault.
 Files under `notes/` are writable, `references/` is structurally read-only, and every successful
 changed-byte mutation is auto-committed to git. File CRUD is exposed through four generic tools
-with an explicit concrete `format` argument.
+with an explicit concrete `format` argument; `search_vault` is a separate bounded read-only port.
 
 The codebase favors **clear boundaries and structural safety over cleverness**: security is
 enforced by architecture (not runtime flags), there are zero third-party dependencies beyond the
@@ -54,7 +54,8 @@ Sources/SecondBrainMCP/
 │   ├── Configuration/                # CLI argument parsing
 │   └── MCP/
 │       ├── MCPServerSetup.swift       # Transport lifecycle and handler registration
-│       └── Files/                     # Generic CRUD adapters + capability resource
+│       ├── Files/                     # Generic CRUD adapters + capability resource
+│       └── Search/                    # Ranked search schema, decoder, and mapper
 ├── Backend/                          # Internal application behavior
 │   ├── Files/
 │   │   ├── Ingress/                  # Request-to-bytes policy for stored text
@@ -65,11 +66,32 @@ Sources/SecondBrainMCP/
 │   │   ├── Transactions/             # Mutation, Git, and audit sequencing
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
+│   ├── Search/                       # Safe corpus snapshots, extraction, and ranking
 │   └── …                             # Canvas, references, Git, logging, infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
     ├── Files/                        # Concrete formats, CRUD contracts, capabilities, output
+    ├── Search/                       # Search request/result/service contracts
     └── Logging/                      # Process-level stderr logger
 ```
+
+Search stays outside CRUD:
+
+```
+search_vault
+  → SearchToolController decodes a Shared search request
+  → VaultSearchEngine validates limits, acquires one shared scan permit, and builds safe snapshots
+  → SearchDocumentExtractor validates/sanitizes bytes and projects sections
+  → SearchTextMatcher applies one exhaustive strategy switch and stable field ranking
+```
+
+There is deliberately no strategy factory, persistent index, or PDF-wide live scan. Searchable
+formats derive from textual formats with a notes-area read binding. Search holds a shared path
+lease only while capturing each immutable snapshot, then releases it before matching. Results are
+consistent per file, not a fictional whole-vault transaction, and never carry a mutation revision.
+The cancellation-aware scan permit prevents concurrent agents from multiplying corpus memory.
+Markdown line/front-matter/tag projections, source tokens, comparisons, snippets, and the complete
+encoded response all have explicit ceilings. Canvas search uses node values and returns a structured
+node locator rather than matching coordinates or schema keys in raw JSON.
 
 The generic file pipeline is:
 
@@ -111,7 +133,8 @@ by the narrowest layer that needs them.
   plain Swift output, and throws domain errors. Never `import MCP` in `Backend/` or `Shared/`.
 - **The frontend is split by responsibility.** Startup/dispatch stays in
   `Frontend/MCP/MCPServerSetup.swift`; generic file schemas and adapters live in
-  `Frontend/MCP/Files/`; CLI parsing lives in `Frontend/Configuration/`.
+  `Frontend/MCP/Files/`; search schemas and adapters live in `Frontend/MCP/Search/`; CLI parsing
+  lives in `Frontend/Configuration/`.
 - **Shared is deliberately small.** Put code there only when both sides consume the same stable
   value or utility. Shared must not contain MCP schemas, filesystem orchestration, managers, or
   feature policy; it is not a miscellaneous helper directory.
@@ -215,6 +238,8 @@ filesystem mutation already succeeded—rather than swallowed with `try?`.
 
 Do not edit four MCP schemas when adding a format. Tool format enums and
 `secondbrain://file-capabilities` derive from the catalog automatically.
+Any textual format with a notes-area read binding also enters the `search_vault` format enum;
+add focused extraction tests if it needs behavior beyond generic validated text.
 
 ## Where data lives
 

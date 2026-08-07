@@ -6,8 +6,12 @@
 struct VaultRuntime: Sendable {
     /// Routed generic file service.
     let files: any FileCRUDService
+    /// Bounded read-only search service.
+    let search: any VaultSearchService
     /// Immutable capability projection shared with MCP discovery.
     let capabilities: FileCapabilities
+    /// Searchable formats derived from the file capability projection.
+    let searchCapabilities: SearchCapabilities
     /// Boundary used by the frontend to report requests rejected before routing.
     let rejections: any FileRequestRejectionReporting
 
@@ -95,9 +99,21 @@ struct VaultRuntime: Sendable {
             audit: audit,
             readOnly: readOnly
         )
+        let capabilities = catalog.capabilities()
+        let searchCapabilities = SearchCapabilities(
+            fileCapabilities: capabilities
+        )
+        let search = VaultSearchEngine(
+            vaultPath: vaultPath,
+            capabilities: searchCapabilities,
+            store: store,
+            operations: operations
+        )
         return VaultRuntime(
             files: files,
-            capabilities: catalog.capabilities(),
+            search: search,
+            capabilities: capabilities,
+            searchCapabilities: searchCapabilities,
             rejections: rejections
         )
     }

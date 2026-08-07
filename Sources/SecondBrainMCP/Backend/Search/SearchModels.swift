@@ -1,0 +1,149 @@
+import Foundation
+
+/// One immutable file projection consumed by the search engine.
+struct SearchDocument: Sendable {
+    let path: String
+    let format: FileFormat
+    let title: String
+    let tags: [String]
+    let sections: [SearchSection]
+}
+
+/// One format-aware section with stable source-line coordinates.
+struct SearchSection: Sendable {
+    let heading: String?
+    let location: VaultSearchLocation?
+    let content: String
+    let lineStart: Int
+    let lineEnd: Int
+}
+
+/// Corpus construction facts that remain independent from ranking strategy.
+struct SearchCorpus: Sendable {
+    let documents: [SearchDocument]
+    let searchedFileCount: Int
+    let skippedFileCount: Int
+    let skippedSensitiveFileCount: Int
+    let truncated: Bool
+}
+
+/// A query or corpus token whose range always belongs to its original string.
+struct SearchToken: Sendable {
+    let normalized: String
+    let range: Range<String.Index>
+}
+
+/// A bounded token projection and whether later source text was omitted.
+struct SearchTokenization: Sendable {
+    let tokens: [SearchToken]
+    let truncated: Bool
+}
+
+/// Tokenization that never reuses indices from folded text against source text.
+enum SearchTokenizer {
+    private static let tokenScalars = CharacterSet.letters
+        .union(.decimalDigits)
+        .union(.nonBaseCharacters)
+
+    static func tokens(in text: String) -> [SearchToken] {
+        var tokens: [SearchToken] = []
+        var start: String.Index?
+        var index = text.startIndex
+
+        func finish(at end: String.Index) {
+            guard let tokenStart = start else { return }
+            let source = String(text[tokenStart..<end])
+            tokens.append(SearchToken(
+                normalized: normalize(source),
+                range: tokenStart..<end
+            ))
+            start = nil
+        }
+
+        while index < text.endIndex {
+            let character = text[index]
+            let isToken = character.unicodeScalars.allSatisfy {
+                tokenScalars.contains($0)
+            }
+            if isToken {
+                if start == nil { start = index }
+            } else {
+                finish(at: index)
+            }
+            index = text.index(after: index)
+        }
+        finish(at: text.endIndex)
+        return tokens.filter { !$0.normalized.isEmpty }
+    }
+
+    /// Tokenizes caller-independent corpus text without unbounded object growth.
+    static func boundedTokens(
+        in text: String,
+        maximumTokens: Int,
+        maximumTokenScalars: Int
+    ) throws -> SearchTokenization {
+        guard maximumTokens > 0, maximumTokenScalars > 0 else {
+            return SearchTokenization(tokens: [], truncated: !text.isEmpty)
+        }
+
+        var tokens: [SearchToken] = []
+        tokens.reserveCapacity(min(maximumTokens, 1_024))
+        var start: String.Index?
+        var scalarCount = 0
+        var oversized = false
+        var omitted = false
+        var index = text.startIndex
+        var visited = 0
+
+        func finish(at end: String.Index) -> Bool {
+            guard let tokenStart = start else { return true }
+            defer {
+                start = nil
+                scalarCount = 0
+                oversized = false
+            }
+            guard !oversized else {
+                omitted = true
+                return true
+            }
+            guard tokens.count < maximumTokens else { return false }
+            let source = String(text[tokenStart..<end])
+            let normalized = normalize(source)
+            if !normalized.isEmpty {
+                tokens.append(SearchToken(
+                    normalized: normalized,
+                    range: tokenStart..<end
+                ))
+            }
+            return true
+        }
+
+        while index < text.endIndex {
+            if visited.isMultiple(of: 1_024) { try Task.checkCancellation() }
+            visited += 1
+            let character = text[index]
+            let isToken = character.unicodeScalars.allSatisfy {
+                tokenScalars.contains($0)
+            }
+            if isToken {
+                if start == nil { start = index }
+                scalarCount += character.unicodeScalars.count
+                if scalarCount > maximumTokenScalars { oversized = true }
+            } else if !finish(at: index) {
+                return SearchTokenization(tokens: tokens, truncated: true)
+            }
+            index = text.index(after: index)
+        }
+        guard finish(at: text.endIndex) else {
+            return SearchTokenization(tokens: tokens, truncated: true)
+        }
+        return SearchTokenization(tokens: tokens, truncated: omitted)
+    }
+
+    static func normalize(_ text: String) -> String {
+        text.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+    }
+}

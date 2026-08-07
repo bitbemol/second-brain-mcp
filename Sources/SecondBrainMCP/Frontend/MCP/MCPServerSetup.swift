@@ -8,13 +8,17 @@ struct MCPServerSetup {
     /// - Parameters:
     ///   - config: Validated runtime configuration.
     ///   - files: Shared file CRUD service boundary.
+    ///   - search: Shared read-only vault search boundary.
     ///   - capabilities: Immutable format capability manifest.
+    ///   - searchCapabilities: Searchable formats derived from the manifest.
     ///   - rejections: Boundary-level rejection reporter.
     /// - Throws: Transport or handler-registration errors.
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
+        search: any VaultSearchService,
         capabilities: FileCapabilities,
+        searchCapabilities: SearchCapabilities,
         rejections: any FileRequestRejectionReporting
     ) async throws {
         let fileTools = FileToolController(
@@ -22,15 +26,17 @@ struct MCPServerSetup {
             rejections: rejections,
             files: files
         )
+        let searchTool = SearchToolController(search: search)
         let customInstructions = CustomInstructionsLoader.load(
             vaultPath: config.vaultPath
         )
         let server = Server(
             name: "SecondBrainMCP",
-            version: "2.0.0",
+            version: "2.1.0",
             instructions: """
             This is a personal knowledge vault with format-aware file access. \
-            Use create_file, read_file, update_file, and delete_file with an explicit \
+            Use search_vault to discover notes, then create_file, read_file, update_file, \
+            and delete_file with an explicit \
             concrete format. Read secondbrain://file-capabilities before operating when \
             format support is uncertain. Every file mutation that changes vault bytes is \
             automatically committed to git. Every mutation requires a fresh caller-generated mutation_id UUID; \
@@ -47,14 +53,22 @@ struct MCPServerSetup {
         )
 
         await server.withMethodHandler(ListTools.self) { _ in
-            ListTools.Result(tools: FileToolDefinitions.build(
+            let fileDefinitions = FileToolDefinitions.build(
                 capabilities: capabilities,
                 readOnly: config.readOnly
-            ))
+            )
+            return ListTools.Result(
+                tools: fileDefinitions + [SearchToolDefinition.build(
+                    capabilities: searchCapabilities
+                )]
+            )
         }
 
         await server.withMethodHandler(CallTool.self) { params in
-            try await fileTools.call(params)
+            if params.name == SearchToolDefinition.name {
+                return try await searchTool.call(params)
+            }
+            return try await fileTools.call(params)
         }
 
         await server.withMethodHandler(ListResources.self) { _ in

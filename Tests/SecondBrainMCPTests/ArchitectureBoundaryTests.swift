@@ -168,6 +168,29 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Format handlers duplicated storage limits: \(occurrences)")
     }
 
+    @Test("Search execution policy remains backend-owned")
+    func searchPolicyStaysInBackend() throws {
+        let frontend = sourceRoot.appendingPathComponent(
+            "Frontend",
+            isDirectory: true
+        )
+        let forbidden = [
+            "SearchResourceLimits",
+            "SearchResourcePolicy",
+            "SearchCorpusBuilder",
+            "VaultSearchEngine",
+        ]
+        var occurrences: [String] = []
+        for fileURL in try swiftFiles(under: frontend) {
+            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            for token in forbidden where source.contains(token) {
+                occurrences.append("\(fileURL.lastPathComponent): \(token)")
+            }
+        }
+
+        #expect(occurrences.isEmpty, "Backend search policy leaked into Frontend: \(occurrences)")
+    }
+
     @Test("Backend composition has one root")
     func backendCompositionIsCentralized() throws {
         var occurrences: [String] = []

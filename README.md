@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients a compact, format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every successful changed-byte mutation is committed to git; a post-persistence Git failure is surfaced explicitly and blocks later mutations until recovery.
+A local MCP server in Swift that gives MCP clients compact, ranked search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every successful changed-byte mutation is committed to git; a post-persistence Git failure is surfaced explicitly and blocks later mutations until recovery.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -12,6 +12,7 @@ stdio-capable MCP client ──> SecondBrainMCP
 ## Features
 
 - **Four generic file CRUD tools** — `create_file`, `read_file`, `update_file`, and `delete_file`; every request declares a concrete format
+- **Ranked vault search** — `search_vault` supports smart, exact, phrase, lexical, and conservative fuzzy matching across safe snapshots of text notes
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
@@ -146,20 +147,37 @@ Only `notes/` and `references/` need to exist. Writable startup prepares Git met
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vault <path>` | *(required)* | Path to your vault directory |
-| `--read-only` | `false` | Expose only `read_file` |
+| `--read-only` | `false` | Expose only `read_file` and `search_vault` |
 
 ## File API
 
-File CRUD has exactly four MCP tools. The caller must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. This is deliberate: clients can see the allowed enum before sending data instead of guessing what the server might accept.
+The public API has four generic CRUD tools plus one read-only search tool. CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. This is deliberate: clients can see the allowed enum before sending data instead of guessing what the server might accept.
 
 Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse that UUID only when retrying the exact same request after a timeout or lost response. Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions.
 
 | Tool | Purpose |
 |------|---------|
+| `search_vault` | Rank matching text notes by title, heading, tags, path, or content without returning a mutation revision |
 | `create_file` | Validate/transform input, atomically create under `notes/`, and git-commit |
 | `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
 | `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then git-commit |
+
+### Search
+
+Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and omitted `fields` or `formats` mean every value advertised by the tool schema. `path_prefix` can narrow traversal to a directory under `notes/`.
+
+| Strategy | Behavior |
+|----------|----------|
+| `smart` | Prefers literal and ordered matches, ranks lexical coverage, then repairs conservative likely typos |
+| `exact` | Case/diacritic-insensitive literal substring; punctuation remains significant |
+| `phrase` | Adjacent ordered terms across punctuation and whitespace |
+| `lexical` | Word coverage ranked by field importance |
+| `fuzzy` | Bounded edit-distance matching; one- and two-character terms remain exact-only |
+
+Search covers textual formats readable under `notes/`: Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include the node ID, kind, and field. One best section or structured node is returned per file for breadth. Ranking and tie-breaking are stable for the examined corpus; if traversal or another work ceiling omits files, `truncated` reports that coverage is incomplete.
+
+Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. Broad PDF-library search is not performed live because opening every PDF would make latency and memory unpredictable; use `read_file(format: pdf, query: ...)` after identifying a PDF. HAR is sanitized before matching, and other legacy text containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share one cancellation-aware permit, so concurrent agents cannot multiply the process memory ceiling; canceled queued calls leave the line immediately.
 
 ### Formats and operations
 
@@ -179,7 +197,7 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 The matrix is generated from registered operation bindings rather than maintained separately at runtime. Read `secondbrain://file-capabilities` for the server's effective capabilities and allowed vault areas for each operation. Internal handler identities stay private, so they can be refactored without changing the API. In `--read-only` mode, mutating operations disappear from both tool discovery and this resource.
 
-Format-specific behavior stays behind the four endpoints:
+Format-specific CRUD behavior stays behind the four endpoints:
 
 - HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return a request/status/host/timing summary, with sanitized raw JSON only when requested.
 - Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
@@ -228,7 +246,8 @@ Sources/SecondBrainMCP/
 │   ├── Application/main.swift
 │   ├── Configuration/                  # Argument parsing
 │   └── MCP/
-│       └── Files/                      # Four generic CRUD tools + capabilities
+│       ├── Files/                      # Four generic CRUD tools + capabilities
+│       └── Search/                     # One ranked read-only search tool
 ├── Backend/                            # Internal behavior; never imports MCP
 │   ├── Concurrency/                    # Reusable cancellation-aware async gates
 │   ├── Files/
@@ -240,9 +259,11 @@ Sources/SecondBrainMCP/
 │   │   ├── Transactions/               # Mutation, Git, and audit sequencing
 │   │   └── Validation/                 # Vault and external-source security
 │   ├── Media/                          # Image and video processing
+│   ├── Search/                         # Bounded corpus extraction and ranking
 │   └── …                               # Canvas, references, Git, logging, infrastructure
 └── Shared/                             # Cross-boundary values and small utilities
     ├── Files/                          # Formats, requests, capabilities, and outputs
+    ├── Search/                         # Search request/result/service contracts
     └── Logging/                        # Shared stderr logger
 ```
 
