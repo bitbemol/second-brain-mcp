@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import SecondBrainMCP
@@ -86,6 +87,47 @@ struct BoundedFileReaderTests {
                 from: link.appendingPathComponent("marker.md"),
                 maximumBytes: 1_000,
                 path: "notes/parent-link/marker.md"
+            )
+        }
+    }
+
+    @Test("Search-mode descriptor walks reject hidden descendants")
+    func rejectsHiddenDescriptorComponents() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("BoundedFileReader-hidden-\(UUID().uuidString)")
+        let hiddenParent = root.appendingPathComponent("parent")
+        let hiddenFile = root.appendingPathComponent("hidden.md")
+        let nestedFile = hiddenParent.appendingPathComponent("nested.md")
+        defer {
+            _ = Darwin.chflags(hiddenFile.path, 0)
+            _ = Darwin.chflags(hiddenParent.path, 0)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(
+            at: hiddenParent,
+            withIntermediateDirectories: true
+        )
+        try Data("hidden file".utf8).write(to: hiddenFile)
+        try Data("hidden parent".utf8).write(to: nestedFile)
+
+        #expect(Darwin.chflags(hiddenFile.path, UInt32(UF_HIDDEN)) == 0)
+        #expect(throws: BoundedFileReader.ReadError.self) {
+            _ = try BoundedFileReader.snapshot(
+                fromCanonical: hiddenFile,
+                maximumBytes: 1_000,
+                path: "notes/hidden.md",
+                rejectHiddenDescendantsOf: root
+            )
+        }
+        _ = Darwin.chflags(hiddenFile.path, 0)
+
+        #expect(Darwin.chflags(hiddenParent.path, UInt32(UF_HIDDEN)) == 0)
+        #expect(throws: BoundedFileReader.ReadError.self) {
+            _ = try BoundedFileReader.snapshot(
+                fromCanonical: nestedFile,
+                maximumBytes: 1_000,
+                path: "notes/parent/nested.md",
+                rejectHiddenDescendantsOf: root
             )
         }
     }

@@ -42,17 +42,36 @@ struct SearchToolContractTests {
             properties["formats"]?.objectValue?["items"]?
                 .objectValue?["enum"]?.arrayValue
         ).compactMap(\.stringValue)
-        #expect(formats == ["har", "json", "markdown"])
-        #expect(!formats.contains("pdf"))
+        #expect(formats == ["har", "json", "markdown", "pdf"])
         #expect(!formats.contains("png"))
+        let areas = try #require(
+            properties["areas"]?.objectValue?["items"]?
+                .objectValue?["enum"]?.arrayValue
+        ).compactMap(\.stringValue)
+        #expect(areas == ["notes", "references"])
         let outputProperties = try #require(
             tool.outputSchema?.objectValue?["properties"]?.objectValue
         )
         #expect(outputProperties["resource_limited_file_count"] != nil)
         #expect(outputProperties["more_results_available"] != nil)
         #expect(outputProperties["coverage_incomplete"] != nil)
+        #expect(outputProperties["next_cursor"] != nil)
+        #expect(outputProperties["omitted_result_count_lower_bound"]?
+            .objectValue?["minimum"]?.intValue == 0)
+        #expect(outputProperties["pdf_summary"] != nil)
+        let pdfSummarySchema = try #require(
+            outputProperties["pdf_summary"]?.objectValue
+        )
+        #expect(pdfSummarySchema["properties"]?
+            .objectValue?["metadata_only_file_count"] != nil)
+        #expect(pdfSummarySchema["required"]?.arrayValue?
+            .compactMap(\.stringValue).contains("metadata_only_file_count") == true)
         #expect(properties["minimum_relevance"]?.objectValue?["default"]?
             .doubleValue == SearchRequestLimits.defaultMinimumRelevance)
+        #expect(properties["max_hits_per_file"]?.objectValue?["maximum"]?
+            .intValue == SearchRequestLimits.maximumHitsPerFile)
+        #expect(properties["cursor"]?.objectValue?["maxLength"]?.intValue
+            == SearchRequestLimits.maximumCursorBytes)
         #expect(outputProperties["minimum_relevance"] != nil)
         #expect(outputProperties["resource_limit_samples"]?.objectValue?["maxItems"]?
             .intValue == SearchRequestLimits.maximumResourceLimitSamples)
@@ -78,7 +97,13 @@ struct SearchToolContractTests {
         #expect(outputProperties["results"]?.objectValue?["maxItems"]?.intValue
             == SearchRequestLimits.maximumResults)
         #expect(resultProperties["format"]?.objectValue?["enum"]?.arrayValue?
-            .compactMap(\.stringValue) == ["har", "json", "markdown"])
+            .compactMap(\.stringValue) == ["har", "json", "markdown", "pdf"])
+        #expect(resultProperties["area"] != nil)
+        #expect(resultProperties["physical_page"] != nil)
+        #expect(resultProperties["pdf_text_extraction_status"] != nil)
+        #expect(resultProperties["pdf_text_extraction_status"]?
+            .objectValue?["enum"]?.arrayValue?.compactMap(\.stringValue)
+            == PDFTextExtractionStatus.allCases.map(\.rawValue))
         #expect(resultProperties["line_start"]?.objectValue?["minimum"]?.intValue == 1)
         #expect(resultProperties["matched_fields"]?.objectValue?["uniqueItems"]?.boolValue == true)
         #expect(resultProperties["matched_fields"]?.objectValue?["description"]?
@@ -95,6 +120,8 @@ struct SearchToolContractTests {
         #expect(outputRequired.contains("coverage_incomplete"))
         #expect(outputRequired.contains("minimum_relevance"))
         #expect(outputRequired.contains("resource_limit_samples"))
+        #expect(outputRequired.contains("omitted_result_count_lower_bound"))
+        #expect(outputRequired.contains("pdf_summary"))
     }
 
     @Test("Decoder applies defaults and rejects malformed arrays")
@@ -107,7 +134,10 @@ struct SearchToolContractTests {
         #expect(defaults.limit == 20)
         #expect(defaults.fields == nil)
         #expect(defaults.formats == nil)
+        #expect(defaults.areas == nil)
         #expect(defaults.minimumRelevance == SearchRequestLimits.defaultMinimumRelevance)
+        #expect(defaults.maxHitsPerFile == 1)
+        #expect(defaults.cursor == nil)
 
         let explicitFloor = try SearchToolRequestDecoder.decode(.init(
             name: "search_vault",
@@ -125,6 +155,17 @@ struct SearchToolContractTests {
             ]
         ))
         #expect(integerFloor.minimumRelevance == 0)
+
+        let pagination = try SearchToolRequestDecoder.decode(.init(
+            name: "search_vault",
+            arguments: [
+                "query": .string("actors"),
+                "max_hits_per_file": .int(3),
+                "cursor": .string("opaque-cursor"),
+            ]
+        ))
+        #expect(pagination.maxHitsPerFile == 3)
+        #expect(pagination.cursor == "opaque-cursor")
 
         #expect(throws: SearchToolRequestDecoder.DecodingError.self) {
             _ = try SearchToolRequestDecoder.decode(.init(
@@ -263,6 +304,7 @@ struct SearchToolControllerTests {
                 "strategy": .string("phrase"),
                 "fields": .array([.string("heading"), .string("content")]),
                 "formats": .array([.string("markdown")]),
+                "areas": .array([.string("notes")]),
                 "path_prefix": .string("notes/work/"),
                 "limit": .int(7),
             ]
@@ -274,6 +316,7 @@ struct SearchToolControllerTests {
         #expect(request?.strategy == .phrase)
         #expect(request?.fields == [.heading, .content])
         #expect(request?.formats == [.markdown])
+        #expect(request?.areas == [.notes])
         #expect(request?.pathPrefix == "notes/work/")
         #expect(request?.limit == 7)
         #expect(request?.minimumRelevance == SearchRequestLimits.defaultMinimumRelevance)
@@ -391,6 +434,55 @@ struct SearchToolControllerTests {
         #expect(location["field"]?.stringValue == "text")
     }
 
+    @Test("Pagination and PDF facts agree in JSON and structured output")
+    func paginationAndPDFWireParity() throws {
+        let summary = VaultSearchPDFSummary(
+            examinedFileCount: 3,
+            metadataOnlyFileCount: 1,
+            extractedFileCount: 1,
+            partialFileCount: 0,
+            noExtractableTextFileCount: 1,
+            unavailableFileCount: 0,
+            ocrPerformed: false
+        )
+        let mapped = try SearchToolResultMapper.success(VaultSearchResponse(
+            strategy: .smart,
+            results: [],
+            searchedFileCount: 2,
+            skippedFileCount: 0,
+            skippedSensitiveFileCount: 0,
+            resourceLimitedFileCount: 0,
+            moreResultsAvailable: true,
+            coverageIncomplete: false,
+            nextCursor: "opaque-next-page",
+            omittedResultCountLowerBound: 7,
+            pdfSummary: summary
+        ))
+        let structured = try #require(mapped.structuredContent?.objectValue)
+        #expect(structured["next_cursor"]?.stringValue == "opaque-next-page")
+        #expect(structured["omitted_result_count_lower_bound"]?.intValue == 7)
+        #expect(structured["pdf_summary"]?.objectValue?["examined_file_count"]?
+            .intValue == 3)
+        #expect(structured["pdf_summary"]?.objectValue?["metadata_only_file_count"]?
+            .intValue == 1)
+        #expect(structured["pdf_summary"]?.objectValue?["ocr_performed"]?
+            .boolValue == false)
+
+        guard case .text(let text, _, _) = mapped.content.first else {
+            Issue.record("Expected compatibility JSON")
+            return
+        }
+        let json = try #require(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        )
+        #expect(json["next_cursor"] as? String == "opaque-next-page")
+        #expect(json["omitted_result_count_lower_bound"] as? Int == 7)
+        let jsonSummary = try #require(json["pdf_summary"] as? [String: Any])
+        #expect(jsonSummary["examined_file_count"] as? Int == 3)
+        #expect(jsonSummary["metadata_only_file_count"] as? Int == 1)
+        #expect(jsonSummary["ocr_performed"] as? Bool == false)
+    }
+
     @Test("The complete MCP result stays bounded without breaking JSON text clients")
     func wireResponseLimit() throws {
         let results = (0..<100).map { index in
@@ -426,6 +518,7 @@ struct SearchToolControllerTests {
         let boundedResults = try #require(structured["results"]?.arrayValue)
         #expect(boundedResults.count < results.count)
         #expect(structured["more_results_available"]?.boolValue == true)
+        #expect(structured["omitted_result_count_lower_bound"]?.intValue ?? 0 > 0)
         guard case .text(let text, _, _) = mapped.content.first else {
             Issue.record("Expected one compatibility JSON text block")
             return

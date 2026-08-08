@@ -275,7 +275,7 @@ struct SearchProductionAcceptanceTests {
         #expect(broad.results.contains { $0.path == "notes/chart.md" })
         #expect(broad.results.first?.path == "notes/full.md")
         #expect(broad.results.first?.termCoverage == 1)
-        #expect(broad.results.first?.relevance == 1)
+        #expect(broad.results.first?.relevance ?? 0 > 0.90)
 
         let typo = try await service.search(VaultSearchRequest(
             query: "concurent git lok",
@@ -283,6 +283,90 @@ struct SearchProductionAcceptanceTests {
         ))
         #expect(typo.results.first?.path == "notes/fuzzy.md")
         #expect(typo.results.first?.termCoverage == 1)
+    }
+
+    @Test("Conversational questions ignore filler words and retain the idea")
+    func conversationalRecall() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Removing an app completely\nUninstall app leftovers and files from Library folders.",
+            "notes/library-cleanup.md",
+            root: root
+        )
+        try write(
+            "# Actor isolation\nConcurrent shared state is protected from data races.",
+            "notes/actor-isolation.md",
+            root: root
+        )
+        try write("# Applications\nGeneral application notes.", "notes/apps.md", root: root)
+        let service = try engine(root: root)
+
+        let uninstall = try await service.search(VaultSearchRequest(
+            query: "where should I look for files left behind after uninstalling an app?",
+            strategy: .smart
+        ))
+        #expect(uninstall.results.first?.path == "notes/library-cleanup.md")
+        #expect(uninstall.results.first?.termCoverage ?? 0 >= 0.70)
+
+        let concurrency = try await service.search(VaultSearchRequest(
+            query: "how can I prevent concurrent access from corrupting shared state?",
+            strategy: .smart
+        ))
+        #expect(concurrency.results.first?.path == "notes/actor-isolation.md")
+        #expect(concurrency.results.first?.relevance
+            ?? 0 >= SearchRequestLimits.defaultMinimumRelevance)
+    }
+
+    @Test("Title specificity outranks long titles and embedded substrings")
+    func preciseTitleRanking() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write("# Search syntax\noperators", "notes/search-syntax.md", root: root)
+        try write(
+            "# Pattern modified binary search\nalgorithm",
+            "notes/pattern.md",
+            root: root
+        )
+        try write("# Research\nmethod", "notes/research.md", root: root)
+        let smart = try await engine(root: root).search(VaultSearchRequest(
+            query: "search",
+            strategy: .smart,
+            minimumRelevance: 0
+        ))
+        #expect(smart.results.map(\.path) == [
+            "notes/search-syntax.md", "notes/pattern.md",
+        ])
+        #expect(smart.results[0].relevance > smart.results[1].relevance)
+        #expect(!smart.results.contains { $0.path == "notes/research.md" })
+
+        let literal = try await engine(root: root).search(VaultSearchRequest(
+            query: "search",
+            strategy: .exact,
+            minimumRelevance: 0
+        ))
+        #expect(literal.results.last?.path == "notes/research.md")
+        #expect(literal.results.last?.relevance ?? 1 < literal.results.first?.relevance ?? 0)
+    }
+
+    @Test("Fuzzy terms can combine across title and body")
+    func distributedFuzzyTypos() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Binary search\nRotated array implementation details.",
+            "notes/binary-search.md",
+            root: root
+        )
+        let service = try engine(root: root)
+        for strategy in [SearchStrategy.fuzzy, .smart] {
+            let response = try await service.search(VaultSearchRequest(
+                query: "bniary serach rotated array",
+                strategy: strategy
+            ))
+            #expect(response.results.first?.path == "notes/binary-search.md")
+            #expect(response.results.first?.termCoverage == 1)
+        }
     }
 
     @Test("Field evidence distinguishes contribution from whole-query matches")

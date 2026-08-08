@@ -88,7 +88,12 @@ struct VaultRuntime: Sendable {
                 sourceValidator: externalSources,
                 encoder: AVFoundationVideoEncoder()
             ),
-            pdfReader: PDFReader()
+            pdfReader: PDFReader(admission: PDFReadAdmission(
+                processLock: POSIXAdvisoryFileLock(
+                    url: dataDirectory.lockDirectoryURL
+                        .appendingPathComponent("pdf-reference-reads.lock")
+                )
+            ))
         )
         let files = VaultFileService(
             vaultPath: vaultPath,

@@ -61,12 +61,15 @@ actor VaultCRUDStore {
     ///   ``FileResourcePolicy/Violation``, or a filesystem read error.
     func snapshot(
         _ target: ReadableFileTarget,
-        maximumBytes: Int
+        maximumBytes: Int,
+        rejectHiddenComponents: Bool = false
     ) throws -> FileSnapshot {
         let effectiveLimit = min(target.format.maximumFileBytes, maximumBytes)
         let opened = try VaultFileInspector.snapshot(
             target,
             maximumBytes: effectiveLimit,
+            rejectHiddenDescendantsOf: rejectHiddenComponents
+                ? URL(fileURLWithPath: vaultPath) : nil
         )
         return FileSnapshot(
             data: opened.data,

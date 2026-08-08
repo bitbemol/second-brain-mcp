@@ -9,7 +9,10 @@ struct SearchResourceLimits: Sendable {
     let maximumDirectoryEntries: Int
     let maximumFiles: Int
     let maximumFileBytes: Int
+    let maximumPDFFileBytes: Int
     let maximumAggregateBytes: Int
+    let maximumAggregateProjectionBytes: Int
+    let maximumAggregateSections: Int
     let maximumSectionsPerFile: Int
     let maximumMarkdownLines: Int
     let maximumFrontMatterLines: Int
@@ -22,11 +25,15 @@ struct SearchResourceLimits: Sendable {
     let maximumSnippetBytes: Int
     let maximumResponseBytes: Int
     let maximumSourceTokensPerField: Int
+    let maximumLiteralOccurrencesPerField: Int
+    let maximumLiteralOccurrencesPerRequest: Int
     let maximumTokenComparisons: Int
     let maximumFuzzyComparisons: Int
     let maximumEditDistanceCells: Int
     let maximumQueuedRequests: Int
     let maximumStructuredValuesPerFile: Int
+    let maximumPDFPagesPerFile: Int
+    let maximumPDFTextBytesPerFile: Int
 
     /// Production limits keep memory, output, and typo correction bounded.
     static let `default` = SearchResourceLimits(
@@ -37,24 +44,31 @@ struct SearchResourceLimits: Sendable {
         maximumDirectoryEntries: 10_000,
         maximumFiles: 5_000,
         maximumFileBytes: 8 * 1024 * 1024,
+        maximumPDFFileBytes: 64 * 1024 * 1024,
         maximumAggregateBytes: 128 * 1024 * 1024,
+        maximumAggregateProjectionBytes: 64 * 1024 * 1024,
+        maximumAggregateSections: 100_000,
         maximumSectionsPerFile: 2_000,
         maximumMarkdownLines: 50_000,
         maximumFrontMatterLines: 256,
         maximumTags: 128,
         maximumAggregateTagBytes: 16 * 1024,
-        maximumCandidates: 1_000,
+        maximumCandidates: 10_000,
         maximumMetadataCharacters: 512,
         maximumMetadataBytes: 2_048,
         maximumSnippetCharacters: 320,
         maximumSnippetBytes: 1_024,
         maximumResponseBytes: 64 * 1024,
         maximumSourceTokensPerField: 50_000,
+        maximumLiteralOccurrencesPerField: 100_000,
+        maximumLiteralOccurrencesPerRequest: 1_000_000,
         maximumTokenComparisons: 2_000_000,
         maximumFuzzyComparisons: 250_000,
         maximumEditDistanceCells: 8_000_000,
         maximumQueuedRequests: 32,
-        maximumStructuredValuesPerFile: 250_000
+        maximumStructuredValuesPerFile: 250_000,
+        maximumPDFPagesPerFile: 2_000,
+        maximumPDFTextBytesPerFile: 8 * 1024 * 1024
     )
 }
 
@@ -64,8 +78,12 @@ enum SearchResourcePolicy {
         let request: VaultSearchRequest
         let fields: Set<SearchField>
         let formats: Set<FileFormat>
-        let pathPrefix: String
+        let areas: Set<VaultArea>
+        let scopePrefixes: [String]
         let queryTokens: [SearchToken]
+        let cursorOffset: Int
+        let expectedCorpusFingerprint: String?
+        let cursorFingerprint: String
     }
 
     static func validate(
@@ -87,16 +105,25 @@ enum SearchResourcePolicy {
               (0...1).contains(request.minimumRelevance) else {
             throw VaultSearchRequestError.invalidMinimumRelevance
         }
+        guard (1...SearchRequestLimits.maximumHitsPerFile)
+            .contains(request.maxHitsPerFile) else {
+            throw VaultSearchRequestError.invalidMaxHitsPerFile(
+                maximum: SearchRequestLimits.maximumHitsPerFile
+            )
+        }
 
-        let queryTokens = SearchTokenizer.tokens(in: request.query)
-        guard queryTokens.count <= limits.maximumQueryTokens else {
+        let allQueryTokens = SearchTokenizer.tokens(in: request.query)
+        guard allQueryTokens.count <= limits.maximumQueryTokens else {
             throw VaultSearchRequestError.tooManyQueryTokens(limit: limits.maximumQueryTokens)
         }
-        guard queryTokens.allSatisfy({
+        guard allQueryTokens.allSatisfy({
             $0.normalized.unicodeScalars.count <= limits.maximumTokenScalars
         }) else {
             throw VaultSearchRequestError.tokenTooLarge(limit: limits.maximumTokenScalars)
         }
+        let queryTokens = request.strategy == .smart
+            ? SearchQueryAnalyzer.significantTokens(in: request.query)
+            : allQueryTokens
 
         let fields: Set<SearchField>
         if let requested = request.fields {
@@ -110,6 +137,21 @@ enum SearchResourcePolicy {
             fields = Set(requested)
         } else {
             fields = Set(SearchField.allCases)
+        }
+
+        let areas: Set<VaultArea>
+        if let requested = request.areas {
+            guard !requested.isEmpty else {
+                throw VaultSearchRequestError.emptySelection("areas")
+            }
+            guard requested.count <= capabilities.areas.count,
+                  Set(requested).count == requested.count,
+                  requested.allSatisfy(capabilities.areas.contains) else {
+                throw VaultSearchRequestError.invalidSelection("areas")
+            }
+            areas = Set(requested)
+        } else {
+            areas = Set(capabilities.areas)
         }
 
         let supported = Set(capabilities.formats)
@@ -127,10 +169,73 @@ enum SearchResourcePolicy {
             }
             formats = Set(requested)
         } else {
-            formats = supported
+            formats = areas.reduce(into: Set<FileFormat>()) { result, area in
+                result.formUnion(capabilities.formats(in: area))
+            }
         }
 
-        let rawPrefix = request.pathPrefix ?? "notes/"
+        let scopePrefixes: [String]
+        if let rawPrefix = request.pathPrefix {
+            let prefix = try canonicalPrefix(
+                rawPrefix,
+                allowedAreas: areas,
+                vaultPath: vaultPath
+            )
+            let areaName = String(prefix.prefix { $0 != "/" })
+            guard let area = VaultArea(rawValue: areaName),
+                  formats.contains(where: {
+                      capabilities.supports($0, in: area)
+                  }) else {
+                throw VaultSearchRequestError.invalidSelection(
+                    "formats and path_prefix"
+                )
+            }
+            scopePrefixes = [prefix]
+        } else {
+            scopePrefixes = capabilities.areas
+                .filter(areas.contains)
+                .map { $0.rawValue + "/" }
+        }
+
+        guard formats.allSatisfy({ format in
+            areas.contains(where: { capabilities.supports(format, in: $0) })
+        }) else {
+            throw VaultSearchRequestError.invalidSelection("formats and areas")
+        }
+
+        let fingerprint = SearchCursorCodec.fingerprint(
+            request: request,
+            fields: fields,
+            formats: formats,
+            areas: areas,
+            scopePrefixes: scopePrefixes
+        )
+        let decodedCursor = try request.cursor.map {
+            try SearchCursorCodec.decode($0, fingerprint: fingerprint)
+        }
+        let cursorOffset = decodedCursor?.offset ?? 0
+        guard cursorOffset <= limits.maximumCandidates else {
+            throw VaultSearchRequestError.invalidCursor
+        }
+
+        return ValidatedRequest(
+            request: request,
+            fields: fields,
+            formats: formats,
+            areas: areas,
+            scopePrefixes: scopePrefixes,
+            queryTokens: queryTokens,
+            cursorOffset: cursorOffset,
+            expectedCorpusFingerprint: decodedCursor?.corpusFingerprint,
+            cursorFingerprint: fingerprint
+        )
+    }
+
+    private static func canonicalPrefix(
+        _ rawPrefix: String,
+        allowedAreas: Set<VaultArea>,
+        vaultPath: String
+    ) throws -> String {
         guard rawPrefix.utf8.count <= SearchRequestLimits.maximumPathPrefixBytes,
               !rawPrefix.hasPrefix("/"),
               !rawPrefix.contains("\\"),
@@ -143,7 +248,9 @@ enum SearchResourcePolicy {
             .split(separator: "/", omittingEmptySubsequences: true)
             .map(String.init)
             .filter { $0 != "." }
-        guard components.first == "notes",
+        guard let first = components.first,
+              let area = VaultArea(rawValue: first),
+              allowedAreas.contains(area),
               components.allSatisfy({ $0 != ".." && !$0.hasPrefix(".") }) else {
             throw VaultSearchRequestError.invalidPathPrefix
         }
@@ -153,6 +260,7 @@ enum SearchResourcePolicy {
             root: vaultPath
         ),
               !containsHiddenComponent(
+                  area: area,
                   relativeComponents: Array(components.dropFirst()),
                   vaultPath: vaultPath
               ),
@@ -167,22 +275,16 @@ enum SearchResourcePolicy {
            !isDirectory.boolValue {
             throw VaultSearchRequestError.invalidPathPrefix
         }
-
-        return ValidatedRequest(
-            request: request,
-            fields: fields,
-            formats: formats,
-            pathPrefix: prefix,
-            queryTokens: queryTokens
-        )
+        return prefix
     }
 
     private static func containsHiddenComponent(
+        area: VaultArea,
         relativeComponents: [String],
         vaultPath: String
     ) -> Bool {
         var url = URL(fileURLWithPath: vaultPath)
-            .appendingPathComponent("notes", isDirectory: true)
+            .appendingPathComponent(area.rawValue, isDirectory: true)
         for component in relativeComponents {
             url.appendPathComponent(component, isDirectory: true)
             do {

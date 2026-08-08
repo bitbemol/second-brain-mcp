@@ -44,6 +44,76 @@ struct SearchTextMatcherTests {
         #expect(once.quality == duplicate.quality)
     }
 
+    @Test("Word strategies never promote embedded substrings")
+    func wholeWordBoundaries() throws {
+        for strategy in [SearchStrategy.lexical, .phrase, .fuzzy, .smart] {
+            #expect(try match("notifications applications aguacate", query: "cat", strategy: strategy) == nil)
+            #expect(try match("refactoring factorial interactor", query: "actor", strategy: strategy) == nil)
+            #expect(try match("research notes", query: "search", strategy: strategy) == nil)
+        }
+        let embedded = try #require(try match(
+            "research notes",
+            query: "search",
+            strategy: .exact
+        ))
+        #expect(embedded.kind == .literalSubstring)
+        #expect(embedded.quality < 100)
+        let whole = try #require(try match(
+            "research then search notes",
+            query: "search",
+            strategy: .exact
+        ))
+        #expect(whole.kind == .literalWhole)
+    }
+
+    @Test("Conversational punctuation does not force literal-only matching")
+    func conversationalPunctuation() throws {
+        let text = "App leftovers are stored in the user Library folder."
+        for query in [
+            "where should I look for files left after uninstalling an app?",
+            "where should I look for files left after uninstalling an app,",
+            "where should I look for files left after uninstalling an app:",
+        ] {
+            let tokens = SearchQueryAnalyzer.significantTokens(in: query)
+            var budget = SearchWorkBudget()
+            #expect(try SearchTextMatcher.match(
+                text: text,
+                query: query,
+                queryTokens: tokens,
+                strategy: .smart,
+                budget: &budget,
+                limits: .default,
+                allowsPartialFuzzy: true
+            ) != nil)
+        }
+    }
+
+    @Test("Dense embedded literal occurrences stop at a declared ceiling")
+    func boundedLiteralOccurrences() throws {
+        let source = String(repeating: "cat", count: 2_000) + " cat"
+        let limits = searchTestLimits(maximumLiteralOccurrencesPerField: 32)
+        var budget = SearchWorkBudget()
+        let result = try SearchTextMatcher.match(
+            text: source,
+            query: "cat",
+            queryTokens: SearchTokenizer.tokens(in: "cat"),
+            strategy: .exact,
+            budget: &budget,
+            limits: limits
+        )
+        #expect(result?.kind == .literalSubstring)
+        #expect(budget.truncated)
+    }
+
+    @Test("Identifier tokenization understands camel and acronym boundaries")
+    func identifierBoundaries() throws {
+        #expect(try match("SwiftUI state", query: "swift ui", strategy: .phrase) != nil)
+        #expect(try match("URLSession task", query: "url session", strategy: .phrase) != nil)
+        #expect(try match("MainActor", query: "actor", strategy: .lexical) != nil)
+        #expect(try match("@MainActor", query: "@main", strategy: .smart) == nil)
+        #expect(try match("@main entry", query: "@main", strategy: .smart) != nil)
+    }
+
     @Test("Fuzzy search repairs realistic typos but not short words")
     func fuzzy() throws {
         #expect(try match("concurrent git lock", query: "concurent git lok", strategy: .fuzzy) != nil)
@@ -150,7 +220,10 @@ struct SearchTextMatcherTests {
             maximumDirectoryEntries: 100,
             maximumFiles: 100,
             maximumFileBytes: 1_024,
+            maximumPDFFileBytes: 1_024,
             maximumAggregateBytes: 1_024,
+            maximumAggregateProjectionBytes: 1_024,
+            maximumAggregateSections: 100,
             maximumSectionsPerFile: 10,
             maximumMarkdownLines: 100,
             maximumFrontMatterLines: 20,
@@ -163,11 +236,15 @@ struct SearchTextMatcherTests {
             maximumSnippetBytes: 256,
             maximumResponseBytes: 1_024,
             maximumSourceTokensPerField: 100,
+            maximumLiteralOccurrencesPerField: 100,
+            maximumLiteralOccurrencesPerRequest: 1_000,
             maximumTokenComparisons: 100,
             maximumFuzzyComparisons: 2,
             maximumEditDistanceCells: 20,
             maximumQueuedRequests: 1,
-            maximumStructuredValuesPerFile: 100
+            maximumStructuredValuesPerFile: 100,
+            maximumPDFPagesPerFile: 10,
+            maximumPDFTextBytesPerFile: 1_024
         )
         var budget = SearchWorkBudget()
         _ = try SearchTextMatcher.match(

@@ -3,7 +3,7 @@ import Foundation
 /// Live, bounded implementation of the shared vault-search port.
 ///
 /// The engine has no persistent index or mutable strategy registry. It captures
-/// one coordinated snapshot per note, extracts the corpus once, and selects the
+/// one coordinated snapshot per file, extracts the corpus once, and selects the
 /// requested behavior through one exhaustive strategy switch in
 /// ``SearchTextMatcher``.
 struct VaultSearchEngine: VaultSearchService, Sendable {
@@ -11,7 +11,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
 
     private struct RankedResult: Sendable {
         let result: VaultSearchResult
-        let score: Double
+        var score: Double
+        let hasWholeLiteral: Bool
+        let coveredTerms: Set<String>
     }
 
     private struct FieldMatch: Sendable {
@@ -20,17 +22,31 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         let match: SearchMatch
     }
 
+    /// Deduplication key that shares result strings instead of joining a second
+    /// potentially multi-kilobyte identity allocation for every candidate.
+    private struct ResultIdentity: Hashable {
+        let path: String
+        let lineStart: Int
+        let lineEnd: Int
+        let nodeID: String?
+        let field: String?
+        let heading: String?
+        let physicalPage: Int?
+    }
+
     /// Remaining relaxed-matching work, shared fairly instead of allowing one
     /// early evidence file to consume the whole request.
     private struct WorkLedger {
         var tokenComparisons: Int
         var fuzzyComparisons: Int
         var editDistanceCells: Int
+        var literalOccurrences: Int
 
         init(limits: SearchResourceLimits) {
             tokenComparisons = limits.maximumTokenComparisons
             fuzzyComparisons = limits.maximumFuzzyComparisons
             editDistanceCells = limits.maximumEditDistanceCells
+            literalOccurrences = limits.maximumLiteralOccurrencesPerRequest
         }
 
         func budget(remainingDocuments: Int) -> SearchWorkBudget {
@@ -38,7 +54,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             return SearchWorkBudget(
                 maximumTokenComparisons: fairShare(tokenComparisons, divisor),
                 maximumFuzzyComparisons: fairShare(fuzzyComparisons, divisor),
-                maximumEditDistanceCells: fairShare(editDistanceCells, divisor)
+                maximumEditDistanceCells: fairShare(editDistanceCells, divisor),
+                maximumLiteralOccurrences: fairShare(literalOccurrences, divisor)
             )
         }
 
@@ -61,6 +78,13 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 editDistanceCells - min(
                     budget.editDistanceCells,
                     budget.maximumEditDistanceCells
+                ),
+                0
+            )
+            literalOccurrences = max(
+                literalOccurrences - min(
+                    budget.literalOccurrences,
+                    budget.maximumLiteralOccurrences
                 ),
                 0
             )
@@ -99,11 +123,12 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             vaultPath: vaultPath,
             store: store,
             operations: operations,
+            capabilities: capabilities,
             limits: limits
         )
     }
 
-    /// Searches current note snapshots and returns at most one section per file.
+    /// Searches current snapshots and returns bounded ranked passages.
     func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
         let validated = try SearchResourcePolicy.validate(
             request,
@@ -129,6 +154,10 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         _ validated: SearchResourcePolicy.ValidatedRequest
     ) async throws -> VaultSearchResponse {
         let corpus = try await corpusBuilder.build(for: validated)
+        if let expected = validated.expectedCorpusFingerprint,
+           expected != corpus.revisionFingerprint {
+            throw VaultSearchRequestError.invalidCursor
+        }
         var ranked: [RankedResult] = []
         var moreResultsAvailable = false
         var coverageIncomplete = corpus.coverageIncomplete
@@ -136,37 +165,68 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         var limitedPaths = corpus.partiallyLimitedPaths
         var resourceLimitSamples = corpus.resourceLimitSamples
         let searchedFiles = corpus.documents.count
+        let pdfSummary = makePDFSummary(corpus.documents)
         var skippedSensitive = corpus.skippedSensitiveFileCount
         var exactHitPaths = Set<String>()
+        var acceptedIdentities = Set<ResultIdentity>()
+        var acceptedHitsByPath: [String: Int] = [:]
 
         // Smart first performs a corpus-wide literal pass. This work is not
         // charged to fuzzy/lexical budgets, so smart can never lose an exact
         // result merely because an earlier HAR contains huge token streams.
         if validated.request.strategy == .smart {
-            for document in corpus.documents {
+            var exactLedger = WorkLedger(limits: limits)
+            for (index, document) in corpus.documents.enumerated() {
                 try Task.checkCancellation()
-                var exactWork = SearchWorkBudget()
-                guard let candidate = try bestResult(
+                var exactWork = exactLedger.budget(
+                    remainingDocuments: corpus.documents.count - index
+                )
+                let candidates = try bestResults(
                     in: document,
                     request: validated,
                     strategy: .exact,
                     allowsExact: true,
                     work: &exactWork
-                ) else { continue }
+                ).filter(\.hasWholeLiteral)
+                exactLedger.deduct(exactWork)
+                if exactWork.truncated || exactWork.exhausted {
+                    coverageIncomplete = true
+                    if limitedPaths.insert(document.path).inserted {
+                        resourceLimitedFiles += 1
+                    }
+                    if let sample = try SearchResourceDiagnostics.sample(
+                        path: document.path,
+                        reason: .matching,
+                        impact: .partial
+                    ) {
+                        resourceLimitSamples = SearchResourceDiagnostics.merged(
+                            resourceLimitSamples,
+                            [sample]
+                        )
+                    }
+                }
+                guard !candidates.isEmpty else { continue }
                 exactHitPaths.insert(document.path)
-                try accept(
-                    candidate,
-                    minimumRelevance: validated.request.minimumRelevance,
-                    ranked: &ranked,
-                    moreResultsAvailable: &moreResultsAvailable,
-                    skippedSensitive: &skippedSensitive,
-                    coverageIncomplete: &coverageIncomplete
-                )
+                for candidate in candidates {
+                    try accept(
+                        candidate,
+                        strategy: .smart,
+                        minimumRelevance: validated.request.minimumRelevance,
+                        ranked: &ranked,
+                        acceptedIdentities: &acceptedIdentities,
+                        acceptedHitsByPath: &acceptedHitsByPath,
+                        maximumHitsPerFile: validated.request.maxHitsPerFile,
+                        moreResultsAvailable: &moreResultsAvailable,
+                        skippedSensitive: &skippedSensitive,
+                        coverageIncomplete: &coverageIncomplete
+                    )
+                }
             }
         }
 
         let relaxedDocuments = corpus.documents.filter {
             validated.request.strategy != .smart
+                || validated.request.maxHitsPerFile > 1
                 || !exactHitPaths.contains($0.path)
         }
         var ledger = WorkLedger(limits: limits)
@@ -176,7 +236,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 remainingDocuments: relaxedDocuments.count - index
             )
             let strategy = validated.request.strategy
-            let candidate = try bestResult(
+            let candidates = try bestResults(
                 in: document,
                 request: validated,
                 strategy: strategy,
@@ -200,11 +260,15 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                     )
                 }
             }
-            if let candidate {
+            for candidate in candidates {
                 try accept(
                     candidate,
+                    strategy: strategy,
                     minimumRelevance: validated.request.minimumRelevance,
                     ranked: &ranked,
+                    acceptedIdentities: &acceptedIdentities,
+                    acceptedHitsByPath: &acceptedHitsByPath,
+                    maximumHitsPerFile: validated.request.maxHitsPerFile,
                     moreResultsAvailable: &moreResultsAvailable,
                     skippedSensitive: &skippedSensitive,
                     coverageIncomplete: &coverageIncomplete
@@ -212,18 +276,62 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             }
         }
 
+        applyRarityTieBreak(to: &ranked)
         ranked.sort { isBetter($0, than: $1) }
-        if ranked.count > validated.request.limit { moreResultsAvailable = true }
+        let offset = validated.cursorOffset
+        let available = offset < ranked.count
+            ? Array(ranked.dropFirst(offset)) : []
+        if available.count > validated.request.limit { moreResultsAvailable = true }
         var results: [VaultSearchResult] = []
-        let resultPayloadLimit = max((limits.maximumResponseBytes * 3) / 5, 0)
-        for candidate in ranked.prefix(validated.request.limit) {
+        var consumedCandidates = 0
+        // Reserve a conservative fixed envelope for coverage facts, PDF
+        // summary, and an optional cursor before admitting result payload.
+        let resultPayloadLimit = min(
+            max((limits.maximumResponseBytes - 1_024) / 2, 0),
+            SearchRequestLimits.maximumWireResultPayloadBytes
+        )
+        for candidate in available {
+            guard results.count < validated.request.limit else { break }
+            let individualBytes = try encodedResultsByteCount([candidate.result])
+            if individualBytes > resultPayloadLimit {
+                // Consume an unrepresentable candidate so its continuation
+                // cursor always advances to later bounded results.
+                consumedCandidates += 1
+                moreResultsAvailable = true
+                coverageIncomplete = true
+                if limitedPaths.insert(candidate.result.path).inserted {
+                    resourceLimitedFiles += 1
+                }
+                if let sample = try SearchResourceDiagnostics.sample(
+                    path: candidate.result.path,
+                    reason: .projection,
+                    impact: .omitted
+                ) {
+                    resourceLimitSamples = SearchResourceDiagnostics.merged(
+                        resourceLimitSamples,
+                        [sample]
+                    )
+                }
+                continue
+            }
             guard try encodedResultsByteCount(results + [candidate.result])
                     <= resultPayloadLimit else {
                 moreResultsAvailable = true
                 break
             }
             results.append(candidate.result)
+            consumedCandidates += 1
         }
+        let consumedOffset = offset + consumedCandidates
+        let knownRemaining = max(ranked.count - consumedOffset, 0)
+        let omittedResultCountLowerBound = knownRemaining
+            + (moreResultsAvailable && knownRemaining == 0 ? 1 : 0)
+        let nextCursor = knownRemaining > 0
+            ? SearchCursorCodec.encode(
+                offset: consumedOffset,
+                fingerprint: validated.cursorFingerprint,
+                corpusFingerprint: corpus.revisionFingerprint
+            ) : nil
         func makeResponse() -> VaultSearchResponse {
             VaultSearchResponse(
                 strategy: validated.request.strategy,
@@ -235,7 +343,10 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 moreResultsAvailable: moreResultsAvailable,
                 coverageIncomplete: coverageIncomplete,
                 minimumRelevance: validated.request.minimumRelevance,
-                resourceLimitSamples: resourceLimitSamples
+                resourceLimitSamples: resourceLimitSamples,
+                nextCursor: nextCursor,
+                omittedResultCountLowerBound: omittedResultCountLowerBound,
+                pdfSummary: pdfSummary
             )
         }
         var response = makeResponse()
@@ -255,13 +366,23 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
 
     private func accept(
         _ candidate: RankedResult,
+        strategy: SearchStrategy,
         minimumRelevance: Double,
         ranked: inout [RankedResult],
+        acceptedIdentities: inout Set<ResultIdentity>,
+        acceptedHitsByPath: inout [String: Int],
+        maximumHitsPerFile: Int,
         moreResultsAvailable: inout Bool,
         skippedSensitive: inout Int,
         coverageIncomplete: inout Bool
     ) throws {
+        if strategy == .fuzzy, candidate.result.termCoverage < 1 { return }
         guard candidate.result.relevance >= minimumRelevance else { return }
+        guard acceptedHitsByPath[candidate.result.path, default: 0]
+                < maximumHitsPerFile else { return }
+        guard acceptedIdentities.insert(identity(of: candidate.result)).inserted else {
+            return
+        }
         do {
             try validateProjection(candidate.result)
         } catch is SensitiveContentPolicy.Violation {
@@ -269,6 +390,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             coverageIncomplete = true
             return
         }
+        acceptedHitsByPath[candidate.result.path, default: 0] += 1
         if ranked.count < limits.maximumCandidates {
             ranked.append(candidate)
             return
@@ -282,6 +404,18 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         if isBetter(candidate, than: ranked[worst]) {
             ranked[worst] = candidate
         }
+    }
+
+    private func identity(of result: VaultSearchResult) -> ResultIdentity {
+        ResultIdentity(
+            path: result.path,
+            lineStart: result.lineStart,
+            lineEnd: result.lineEnd,
+            nodeID: result.location?.nodeID,
+            field: result.location?.field,
+            heading: result.heading,
+            physicalPage: result.physicalPage
+        )
     }
 
     private func encodedResponseByteCount(
@@ -306,14 +440,14 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         return try encoder.encode(results).count
     }
 
-    private func bestResult(
+    private func bestResults(
         in document: SearchDocument,
         request: SearchResourcePolicy.ValidatedRequest,
         strategy: SearchStrategy,
         allowsExact: Bool,
         work: inout SearchWorkBudget
-    ) throws -> RankedResult? {
-        var best: RankedResult?
+    ) throws -> [RankedResult] {
+        var candidates: [RankedResult] = []
         let metadataValues: [(SearchField, String)] = [
             (.title, document.title),
             (.tags, document.tags.joined(separator: " ")),
@@ -327,7 +461,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             work: &work
         )
         if let preferred = strongestMatch(in: metadataMatches) {
-            best = rankedResult(
+            candidates.append(rankedResult(
                 document: document,
                 matches: metadataMatches,
                 source: preferred.text,
@@ -336,8 +470,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 location: nil,
                 lineStart: 1,
                 lineEnd: 1,
-                queryTokens: request.queryTokens
-            )
+                queryTokens: request.queryTokens,
+                query: request.request.query
+            ))
         }
 
         for section in document.sections {
@@ -353,27 +488,35 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 work: &work
             )
             guard !localMatches.isEmpty else { continue }
+            // Metadata already has its own result. A section is independently
+            // useful only when its local evidence completes the query or is
+            // required to complete a distributed multi-field match.
+            if metadataMatches.contains(where: \.match.completeQuery),
+               !localMatches.contains(where: \.match.completeQuery) {
+                continue
+            }
             let matches = metadataMatches + localMatches
-            let presentation = strongestMatch(in: matches)!
-            let presentsSection = presentation.field == .heading
-                || presentation.field == .content
+            guard let presentation = strongestMatch(in: localMatches) else { continue }
             let candidate = rankedResult(
                 document: document,
                 matches: matches,
                 source: presentation.text,
                 range: presentation.match.range,
-                heading: presentsSection ? section.heading : nil,
+                heading: section.heading,
                 location: presentation.field == .content ? section.location : nil,
-                lineStart: presentsSection ? section.lineStart : 1,
+                lineStart: section.lineStart,
                 lineEnd: presentation.field == .content ? section.lineEnd
-                    : (presentsSection ? section.lineStart : 1),
-                queryTokens: request.queryTokens
+                    : section.lineStart,
+                queryTokens: request.queryTokens,
+                query: request.request.query,
+                physicalPage: section.physicalPage,
+                printedPage: section.printedPage,
+                pdfPageKind: section.pdfPageKind
             )
-            if best == nil || isBetter(candidate, than: best!) {
-                best = candidate
-            }
+            candidates.append(candidate)
         }
-        return best
+        candidates.sort { isBetter($0, than: $1) }
+        return Array(candidates.prefix(request.request.maxHitsPerFile))
     }
 
     private func strongestMatch(in matches: [FieldMatch]) -> FieldMatch? {
@@ -402,7 +545,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 strategy: strategy,
                 budget: &work,
                 limits: limits,
-                allowsExact: allowsExact
+                allowsExact: allowsExact,
+                allowsPartialFuzzy: true
             ) {
                 matches.append(FieldMatch(field: field, text: text, match: match))
             }
@@ -419,7 +563,11 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         location: VaultSearchLocation?,
         lineStart: Int,
         lineEnd: Int,
-        queryTokens: [SearchToken]
+        queryTokens: [SearchToken],
+        query: String,
+        physicalPage: Int? = nil,
+        printedPage: String? = nil,
+        pdfPageKind: PDFSearchPageKind? = nil
     ) -> RankedResult {
         let queryTerms = Set(queryTokens.map(\.normalized))
         let coveredTerms = matches.reduce(into: Set<String>()) {
@@ -431,14 +579,36 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             : min(Double(coveredTerms.count) / Double(queryTerms.count), 1)
         let strongestStrength = matches.map(\.match.strength).max() ?? 0
         let strongestField = matches.map { relevanceFieldStrength($0.field) }.max() ?? 0
-        let hasLiteralMatch = matches.contains { $0.match.quality == 100 }
-        let relevance = hasLiteralMatch ? 1 : quantized(
+        let strongestDensity = matches.map { match in
+            // Density is a small tie signal, so a bounded byte-derived estimate
+            // is preferable to allocating an unbounded second token projection.
+            let sourceTerms = max(match.text.utf8.count / 6, 1)
+            return min(
+                Double(max(match.match.coveredTerms.count, 1))
+                    / Double(sourceTerms),
+                1
+            )
+        }.max() ?? 0
+        let titleEqualsQuery = matches.contains {
+            $0.field == .title
+                && $0.match.kind == .literalWhole
+                && SearchTokenizer.normalize(
+                    $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                ) == SearchTokenizer.normalize(
+                    query.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+        }
+        let unadjustedRelevance = titleEqualsQuery ? 1 : quantized(
             min(max(
-                (0.80 * termCoverage)
-                    + (0.15 * strongestStrength)
-                    + (0.05 * strongestField),
+                (0.72 * termCoverage)
+                    + (0.18 * strongestStrength)
+                    + (0.08 * strongestField)
+                    + (0.02 * strongestDensity),
                 0
             ), 1)
+        )
+        let relevance = quantized(
+            unadjustedRelevance * pageRelevanceMultiplier(pdfPageKind)
         )
         let primary = matches.map {
             ($0.match.quality * 100) + fieldWeight($0.field)
@@ -465,11 +635,17 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             termCoverage: quantized(termCoverage),
             completeQueryFields: SearchField.allCases.filter { field in
                 matches.contains { $0.field == field && $0.match.completeQuery }
-            }
+            },
+            physicalPage: physicalPage,
+            printedPage: printedPage,
+            pdfPageKind: pdfPageKind,
+            pdfTextExtractionStatus: document.pdfTextExtractionStatus
         )
         return RankedResult(
             result: result,
-            score: (relevance * 1_000_000) + primary + secondary
+            score: (relevance * 1_000_000) + primary + secondary,
+            hasWholeLiteral: matches.contains { $0.match.kind == .literalWhole },
+            coveredTerms: coveredTerms
         )
     }
 
@@ -493,14 +669,72 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         }
     }
 
+    private func pageRelevanceMultiplier(
+        _ kind: PDFSearchPageKind?
+    ) -> Double {
+        switch kind {
+        case .tableOfContents: 0.80
+        case .index: 0.84
+        case .bibliography: 0.88
+        case .glossary: 0.86
+        case .body, nil: 1
+        }
+    }
+
+    private func makePDFSummary(
+        _ documents: [SearchDocument]
+    ) -> VaultSearchPDFSummary {
+        let statuses = documents.compactMap(\.pdfTextExtractionStatus)
+        return VaultSearchPDFSummary(
+            examinedFileCount: statuses.count,
+            metadataOnlyFileCount: statuses.count(where: {
+                $0 == .metadataOnly
+            }),
+            extractedFileCount: statuses.count(where: { $0 == .extracted }),
+            partialFileCount: statuses.count(where: { $0 == .partial }),
+            noExtractableTextFileCount: statuses.count(where: {
+                $0 == .noExtractableText
+            }),
+            unavailableFileCount: statuses.count(where: {
+                $0 == .locked || $0 == .cannotOpen
+                    || $0 == .contentSkippedFileBytes
+            }),
+            ocrPerformed: false
+        )
+    }
+
     private func quantized(_ value: Double) -> Double {
         (value * 1_000).rounded() / 1_000
+    }
+
+    /// Adds a bounded corpus-local rarity tie-break without changing the public
+    /// relevance value or making it depend on unrelated nonmatching files.
+    private func applyRarityTieBreak(to ranked: inout [RankedResult]) {
+        var pathsByTerm: [String: Set<String>] = [:]
+        for candidate in ranked {
+            for term in candidate.coveredTerms {
+                pathsByTerm[term, default: []].insert(candidate.result.path)
+            }
+        }
+        for index in ranked.indices {
+            let frequencies = ranked[index].coveredTerms.compactMap {
+                pathsByTerm[$0]?.count
+            }
+            guard !frequencies.isEmpty else { continue }
+            let rarity = frequencies.map { 1 / sqrt(Double($0)) }
+                .reduce(0, +) / Double(frequencies.count)
+            ranked[index].score += rarity * 2_500
+        }
     }
 
     private func isBetter(_ lhs: RankedResult, than rhs: RankedResult) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.result.path != rhs.result.path {
             return lhs.result.path < rhs.result.path
+        }
+        if lhs.result.physicalPage != rhs.result.physicalPage {
+            return (lhs.result.physicalPage ?? 0)
+                < (rhs.result.physicalPage ?? 0)
         }
         return lhs.result.lineStart < rhs.result.lineStart
     }
@@ -513,6 +747,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             result.location?.nodeID ?? "",
             result.location?.nodeType ?? "",
             result.location?.field ?? "",
+            result.printedPage ?? "",
             result.snippet,
         ]
         for field in fields where !field.isEmpty {

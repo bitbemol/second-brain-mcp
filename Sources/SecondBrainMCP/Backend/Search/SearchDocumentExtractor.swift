@@ -45,8 +45,20 @@ enum SearchDocumentExtractor {
             .maximumMetadataCharacters,
         maximumMetadataBytes: Int = SearchResourceLimits.default.maximumMetadataBytes,
         maximumStructuredValues: Int = SearchResourceLimits.default
-            .maximumStructuredValuesPerFile
+            .maximumStructuredValuesPerFile,
+        maximumPDFPages: Int = SearchResourceLimits.default.maximumPDFPagesPerFile,
+        maximumPDFTextBytes: Int = SearchResourceLimits.default.maximumPDFTextBytesPerFile
     ) throws -> ExtractedSearchDocument {
+        if format == .pdf {
+            return try PDFSearchDocumentExtractor.extract(
+                data: originalData,
+                path: path,
+                maximumPages: maximumPDFPages,
+                maximumTextBytes: maximumPDFTextBytes,
+                maximumMetadataCharacters: maximumMetadataCharacters,
+                maximumMetadataBytes: maximumMetadataBytes
+            )
+        }
         if format == .canvas {
             do {
                 try JSONSyntaxValidator.validate(
@@ -141,7 +153,7 @@ enum SearchDocumentExtractor {
     ) throws -> ExtractedSearchDocument {
         var sections: [SearchSection] = []
         sections.reserveCapacity(min(inspection.nodes.count, maximumSections))
-        let truncatedFields: Set<SearchField> = inspection.nodes.count > maximumSections
+        var truncatedFields: Set<SearchField> = inspection.nodes.count > maximumSections
             ? [.content] : []
 
         for node in inspection.nodes.prefix(max(maximumSections, 0)) {
@@ -154,13 +166,22 @@ enum SearchDocumentExtractor {
             case .group: field = "label"
             }
             guard !node.searchText.isEmpty else { continue }
-            sections.append(SearchSection(
-                heading: nil,
-                location: VaultSearchLocation(
+            let location: VaultSearchLocation?
+            if node.id.utf8.count <= SearchRequestLimits.maximumLocatorBytes {
+                location = VaultSearchLocation(
                     nodeID: node.id,
                     nodeType: node.kind.rawValue,
                     field: field
-                ),
+                )
+            } else {
+                // Never return a truncated identifier that cannot locate its
+                // node, and never let one locator make a result unencodable.
+                location = nil
+                truncatedFields.insert(.content)
+            }
+            sections.append(SearchSection(
+                heading: nil,
+                location: location,
                 content: node.searchText,
                 lineStart: 1,
                 lineEnd: 1
@@ -218,8 +239,10 @@ enum SearchDocumentExtractor {
             )
         case .markdown, .log:
             break
-        case .png, .jpeg, .gif, .webp, .heic, .tiff, .bmp, .pdf:
+        case .png, .jpeg, .gif, .webp, .heic, .tiff, .bmp:
             throw VaultSearchRequestError.unsupportedFormat(format)
+        case .pdf:
+            preconditionFailure("PDF projection is handled before text validation")
         }
     }
 

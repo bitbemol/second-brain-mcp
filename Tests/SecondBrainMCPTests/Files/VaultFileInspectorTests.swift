@@ -56,6 +56,28 @@ struct VaultFileInspectorTests {
         }
     }
 
+    @Test("Temporary snapshots remain immutable after the vault path changes")
+    func temporarySnapshotIsPrivate() throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let target = try ReadableFileTarget.resolve(
+            path: "notes/evidence.log",
+            format: .log,
+            vaultPath: root
+        )
+        try Data("original".utf8).write(to: target.url)
+
+        let snapshot = try VaultFileInspector.temporarySnapshot(
+            target,
+            maximumBytes: 64
+        )
+        defer { snapshot.remove() }
+        try Data("replacement".utf8).write(to: target.url, options: .atomic)
+
+        #expect(try Data(contentsOf: snapshot.url) == Data("original".utf8))
+        #expect(snapshot.byteCount == 8)
+    }
+
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "VaultFileInspectorTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(

@@ -4,9 +4,12 @@ enum SearchToolArgument: String, CaseIterable, Sendable {
     case strategy
     case fields
     case formats
+    case areas
     case pathPrefix = "path_prefix"
     case limit
     case minimumRelevance = "minimum_relevance"
+    case maxHitsPerFile = "max_hits_per_file"
+    case cursor
 }
 
 extension Dictionary where Key == String {

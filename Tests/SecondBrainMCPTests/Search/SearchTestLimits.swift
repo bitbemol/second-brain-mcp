@@ -5,7 +5,10 @@ func searchTestLimits(
     maximumDirectoryEntries: Int? = nil,
     maximumFiles: Int? = nil,
     maximumFileBytes: Int? = nil,
+    maximumPDFFileBytes: Int? = nil,
     maximumAggregateBytes: Int? = nil,
+    maximumAggregateProjectionBytes: Int? = nil,
+    maximumAggregateSections: Int? = nil,
     maximumSectionsPerFile: Int? = nil,
     maximumMarkdownLines: Int? = nil,
     maximumFrontMatterLines: Int? = nil,
@@ -17,11 +20,15 @@ func searchTestLimits(
     maximumSnippetBytes: Int? = nil,
     maximumResponseBytes: Int? = nil,
     maximumSourceTokensPerField: Int? = nil,
+    maximumLiteralOccurrencesPerField: Int? = nil,
+    maximumLiteralOccurrencesPerRequest: Int? = nil,
     maximumTokenComparisons: Int? = nil,
     maximumFuzzyComparisons: Int? = nil,
     maximumEditDistanceCells: Int? = nil,
     maximumQueuedRequests: Int? = nil,
-    maximumStructuredValuesPerFile: Int? = nil
+    maximumStructuredValuesPerFile: Int? = nil,
+    maximumPDFPagesPerFile: Int? = nil,
+    maximumPDFTextBytesPerFile: Int? = nil
 ) -> SearchResourceLimits {
     let base = SearchResourceLimits.default
     return SearchResourceLimits(
@@ -33,8 +40,13 @@ func searchTestLimits(
             ?? base.maximumDirectoryEntries,
         maximumFiles: maximumFiles ?? base.maximumFiles,
         maximumFileBytes: maximumFileBytes ?? base.maximumFileBytes,
+        maximumPDFFileBytes: maximumPDFFileBytes ?? base.maximumPDFFileBytes,
         maximumAggregateBytes: maximumAggregateBytes
             ?? base.maximumAggregateBytes,
+        maximumAggregateProjectionBytes: maximumAggregateProjectionBytes
+            ?? base.maximumAggregateProjectionBytes,
+        maximumAggregateSections: maximumAggregateSections
+            ?? base.maximumAggregateSections,
         maximumSectionsPerFile: maximumSectionsPerFile
             ?? base.maximumSectionsPerFile,
         maximumMarkdownLines: maximumMarkdownLines
@@ -55,6 +67,10 @@ func searchTestLimits(
         maximumResponseBytes: maximumResponseBytes ?? base.maximumResponseBytes,
         maximumSourceTokensPerField: maximumSourceTokensPerField
             ?? base.maximumSourceTokensPerField,
+        maximumLiteralOccurrencesPerField: maximumLiteralOccurrencesPerField
+            ?? base.maximumLiteralOccurrencesPerField,
+        maximumLiteralOccurrencesPerRequest: maximumLiteralOccurrencesPerRequest
+            ?? base.maximumLiteralOccurrencesPerRequest,
         maximumTokenComparisons: maximumTokenComparisons
             ?? base.maximumTokenComparisons,
         maximumFuzzyComparisons: maximumFuzzyComparisons
@@ -64,6 +80,10 @@ func searchTestLimits(
         maximumQueuedRequests: maximumQueuedRequests
             ?? base.maximumQueuedRequests,
         maximumStructuredValuesPerFile: maximumStructuredValuesPerFile
-            ?? base.maximumStructuredValuesPerFile
+            ?? base.maximumStructuredValuesPerFile,
+        maximumPDFPagesPerFile: maximumPDFPagesPerFile
+            ?? base.maximumPDFPagesPerFile,
+        maximumPDFTextBytesPerFile: maximumPDFTextBytesPerFile
+            ?? base.maximumPDFTextBytesPerFile
     )
 }

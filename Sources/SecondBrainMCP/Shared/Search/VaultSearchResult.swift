@@ -28,17 +28,20 @@ struct VaultSearchResourceLimit: Codable, Equatable, Sendable {
     let impact: VaultSearchResourceLimitImpact
 }
 
-/// One best matching section from a searched note.
+/// One ranked matching passage from a searched file.
 struct VaultSearchResult: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case path, format, title, heading, location, snippet, lineStart, lineEnd
         case matchedFields, relevance, termCoverage, completeQueryFields
+        case area, physicalPage, printedPage, pdfPageKind, pdfTextExtractionStatus
     }
 
-    /// Canonical vault-relative note path.
+    /// Canonical vault-relative file path.
     let path: String
     /// Concrete stored file format.
     let format: FileFormat
+    /// Structural vault area containing the result.
+    let area: VaultArea
     /// Human-readable title derived from trusted file structure.
     let title: String
     /// Markdown section heading, when the hit belongs to one.
@@ -59,11 +62,20 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
     let termCoverage: Double
     /// Fields that individually satisfied the complete query.
     let completeQueryFields: [SearchField]
+    /// One-based physical PDF page for page-content hits.
+    let physicalPage: Int?
+    /// Printed PDF page label when it differs from physical numbering.
+    let printedPage: String?
+    /// Coarse PDF page role used by ranking.
+    let pdfPageKind: PDFSearchPageKind?
+    /// PDF text availability; `nil` for non-PDF results.
+    let pdfTextExtractionStatus: PDFTextExtractionStatus?
 
     /// Creates one result, retaining source compatibility for internal callers.
     init(
         path: String,
         format: FileFormat,
+        area: VaultArea? = nil,
         title: String,
         heading: String?,
         location: VaultSearchLocation?,
@@ -73,10 +85,15 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
         matchedFields: [SearchField],
         relevance: Double = 0,
         termCoverage: Double = 0,
-        completeQueryFields: [SearchField]? = nil
+        completeQueryFields: [SearchField]? = nil,
+        physicalPage: Int? = nil,
+        printedPage: String? = nil,
+        pdfPageKind: PDFSearchPageKind? = nil,
+        pdfTextExtractionStatus: PDFTextExtractionStatus? = nil
     ) {
         self.path = path
         self.format = format
+        self.area = area ?? (try? VaultArea.resolve(path: path)) ?? .notes
         self.title = title
         self.heading = heading
         self.location = location
@@ -87,6 +104,10 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
         self.relevance = relevance
         self.termCoverage = termCoverage
         self.completeQueryFields = completeQueryFields ?? []
+        self.physicalPage = physicalPage
+        self.printedPage = printedPage
+        self.pdfPageKind = pdfPageKind
+        self.pdfTextExtractionStatus = pdfTextExtractionStatus
     }
 
     /// Decodes older additive responses with conservative complete-match defaults.
@@ -96,6 +117,7 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
         self.init(
             path: try values.decode(String.self, forKey: .path),
             format: try values.decode(FileFormat.self, forKey: .format),
+            area: try values.decodeIfPresent(VaultArea.self, forKey: .area),
             title: try values.decode(String.self, forKey: .title),
             heading: try values.decodeIfPresent(String.self, forKey: .heading),
             location: try values.decodeIfPresent(VaultSearchLocation.self, forKey: .location),
@@ -108,7 +130,17 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
             completeQueryFields: try values.decodeIfPresent(
                 [SearchField].self,
                 forKey: .completeQueryFields
-            ) ?? []
+            ) ?? [],
+            physicalPage: try values.decodeIfPresent(Int.self, forKey: .physicalPage),
+            printedPage: try values.decodeIfPresent(String.self, forKey: .printedPage),
+            pdfPageKind: try values.decodeIfPresent(
+                PDFSearchPageKind.self,
+                forKey: .pdfPageKind
+            ),
+            pdfTextExtractionStatus: try values.decodeIfPresent(
+                PDFTextExtractionStatus.self,
+                forKey: .pdfTextExtractionStatus
+            )
         )
     }
 }
@@ -118,14 +150,15 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case strategy, minimumRelevance, results, searchedFileCount, skippedFileCount
         case skippedSensitiveFileCount, resourceLimitedFileCount, resourceLimitSamples
-        case moreResultsAvailable, coverageIncomplete, truncated
+        case moreResultsAvailable, nextCursor, omittedResultCountLowerBound
+        case coverageIncomplete, truncated, pdfSummary
     }
 
     /// Effective matching strategy.
     let strategy: SearchStrategy
     /// Effective normalized relevance floor.
     let minimumRelevance: Double
-    /// At most one best result per file, in stable rank order for the examined corpus.
+    /// Ranked passages in stable order for the examined current corpus.
     let results: [VaultSearchResult]
     /// Number of safe, eligible files whose content was searched.
     let searchedFileCount: Int
@@ -142,6 +175,12 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
     let resourceLimitSamples: [VaultSearchResourceLimit]
     /// Whether known matching results were omitted from the returned page.
     let moreResultsAvailable: Bool
+    /// Opaque continuation token for the next stable page, when available.
+    let nextCursor: String?
+    /// Minimum number of ranked results known to be omitted after this page.
+    let omittedResultCountLowerBound: Int
+    /// Aggregate PDF extraction facts, including references with no matching page.
+    let pdfSummary: VaultSearchPDFSummary
     /// Whether any in-scope content could not be fully evaluated.
     let coverageIncomplete: Bool
     /// Backward-compatible union of result and coverage truncation.
@@ -158,7 +197,10 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
         moreResultsAvailable: Bool,
         coverageIncomplete: Bool,
         minimumRelevance: Double = SearchRequestLimits.defaultMinimumRelevance,
-        resourceLimitSamples: [VaultSearchResourceLimit] = []
+        resourceLimitSamples: [VaultSearchResourceLimit] = [],
+        nextCursor: String? = nil,
+        omittedResultCountLowerBound: Int = 0,
+        pdfSummary: VaultSearchPDFSummary = .empty
     ) {
         self.strategy = strategy
         self.minimumRelevance = minimumRelevance
@@ -169,6 +211,9 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
         self.resourceLimitedFileCount = resourceLimitedFileCount
         self.resourceLimitSamples = resourceLimitSamples
         self.moreResultsAvailable = moreResultsAvailable
+        self.nextCursor = nextCursor
+        self.omittedResultCountLowerBound = omittedResultCountLowerBound
+        self.pdfSummary = pdfSummary
         self.coverageIncomplete = coverageIncomplete
         self.truncated = moreResultsAvailable || coverageIncomplete
     }
@@ -199,7 +244,16 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
             resourceLimitSamples: try values.decodeIfPresent(
                 [VaultSearchResourceLimit].self,
                 forKey: .resourceLimitSamples
-            ) ?? []
+            ) ?? [],
+            nextCursor: try values.decodeIfPresent(String.self, forKey: .nextCursor),
+            omittedResultCountLowerBound: try values.decodeIfPresent(
+                Int.self,
+                forKey: .omittedResultCountLowerBound
+            ) ?? 0,
+            pdfSummary: try values.decodeIfPresent(
+                VaultSearchPDFSummary.self,
+                forKey: .pdfSummary
+            ) ?? .empty
         )
         guard encodedTruncated == truncated else {
             throw DecodingError.dataCorruptedError(
@@ -222,6 +276,12 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
         try values.encode(resourceLimitedFileCount, forKey: .resourceLimitedFileCount)
         try values.encode(resourceLimitSamples, forKey: .resourceLimitSamples)
         try values.encode(moreResultsAvailable, forKey: .moreResultsAvailable)
+        try values.encodeIfPresent(nextCursor, forKey: .nextCursor)
+        try values.encode(
+            omittedResultCountLowerBound,
+            forKey: .omittedResultCountLowerBound
+        )
+        try values.encode(pdfSummary, forKey: .pdfSummary)
         try values.encode(coverageIncomplete, forKey: .coverageIncomplete)
         try values.encode(truncated, forKey: .truncated)
     }

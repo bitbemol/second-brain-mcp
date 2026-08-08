@@ -64,14 +64,25 @@ enum PDFDocumentNavigation {
     ///   - label: Printed label such as `xii` or `42`.
     ///   - document: An already-opened PDF document.
     /// - Returns: Matching one-based physical page number, or `nil`.
-    static func resolvePage(label: String, in document: PDFDocument) -> Int? {
-        for index in 0..<document.pageCount {
+    static func resolvePage(
+        label: String,
+        in document: PDFDocument,
+        maximumPages: Int = 2_000
+    ) throws -> Int? {
+        let scannedPages = min(max(document.pageCount, 0), max(maximumPages, 0))
+        for index in 0..<scannedPages {
+            try Task.checkCancellation()
             let matches = autoreleasepool {
                 document.page(at: index)?.label == label
             }
             if matches {
                 return index + 1
             }
+        }
+        guard scannedPages == document.pageCount else {
+            throw PDFReadError.pageLabelSearchIncomplete(
+                maximumPages: maximumPages
+            )
         }
         return nil
     }
@@ -88,7 +99,7 @@ enum PDFDocumentNavigation {
         in document: PDFDocument,
         maximumEntries: Int = 50,
         maximumVisitedNodes: Int = 500
-    ) -> [OutlineEntry]? {
+    ) throws -> [OutlineEntry]? {
         guard maximumEntries > 0, maximumVisitedNodes > 0,
               let root = document.outlineRoot,
               root.numberOfChildren > 0 else {
@@ -97,7 +108,7 @@ enum PDFDocumentNavigation {
 
         var entries: [OutlineEntry] = []
         var visitedNodes = 0
-        appendChildren(
+        try appendChildren(
             of: root,
             document: document,
             level: 0,
@@ -117,15 +128,17 @@ enum PDFDocumentNavigation {
         maximumVisitedNodes: Int,
         visitedNodes: inout Int,
         to entries: inout [OutlineEntry]
-    ) {
+    ) throws {
         for index in 0..<parent.numberOfChildren {
+            try Task.checkCancellation()
             guard entries.count < maximumEntries,
                   visitedNodes < maximumVisitedNodes else { return }
             visitedNodes += 1
             guard let child = parent.child(at: index) else { continue }
 
-            if let title = child.label,
+            if let rawTitle = child.label,
                let page = child.destination?.page {
+                let title = boundedMetadata(rawTitle)
                 let pageIndex = document.index(for: page)
                 if pageIndex != NSNotFound {
                     entries.append(
@@ -139,7 +152,7 @@ enum PDFDocumentNavigation {
             }
 
             if level < 2 {
-                appendChildren(
+                try appendChildren(
                     of: child,
                     document: document,
                     level: level + 1,
@@ -150,5 +163,9 @@ enum PDFDocumentNavigation {
                 )
             }
         }
+    }
+
+    private static func boundedMetadata(_ value: String) -> String {
+        PDFDisplayText.bounded(value, maximumBytes: 512)
     }
 }

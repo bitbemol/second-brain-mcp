@@ -9,6 +9,11 @@ enum SearchToolResultMapper {
         var bounded = response
         while try encodedResultsByteCount(bounded.results)
                 > SearchRequestLimits.maximumWireResultPayloadBytes {
+            // Production already uses this exact result budget. A custom
+            // service must not advance a cursor over a result removed here.
+            guard bounded.nextCursor == nil else {
+                throw MappingError.responseTooLarge
+            }
             guard !bounded.results.isEmpty else { break }
             bounded = replacing(
                 bounded,
@@ -63,7 +68,11 @@ enum SearchToolResultMapper {
             moreResultsAvailable: moreResultsAvailable,
             coverageIncomplete: response.coverageIncomplete,
             minimumRelevance: response.minimumRelevance,
-            resourceLimitSamples: samples
+            resourceLimitSamples: samples,
+            nextCursor: response.nextCursor,
+            omittedResultCountLowerBound: response.omittedResultCountLowerBound
+                + max(response.results.count - results.count, 0),
+            pdfSummary: response.pdfSummary
         )
     }
 
@@ -84,7 +93,7 @@ enum SearchToolResultMapper {
     }
 
     private static func structuredContent(_ response: VaultSearchResponse) -> Value {
-        .object([
+        var values: [String: Value] = [
             "strategy": .string(response.strategy.rawValue),
             "results": .array(response.results.map(resultValue)),
             "searched_file_count": .int(response.searchedFileCount),
@@ -100,8 +109,30 @@ enum SearchToolResultMapper {
             }),
             "minimum_relevance": .double(response.minimumRelevance),
             "more_results_available": .bool(response.moreResultsAvailable),
+            "omitted_result_count_lower_bound": .int(
+                response.omittedResultCountLowerBound
+            ),
+            "pdf_summary": pdfSummaryValue(response.pdfSummary),
             "coverage_incomplete": .bool(response.coverageIncomplete),
             "truncated": .bool(response.truncated),
+        ]
+        if let cursor = response.nextCursor {
+            values["next_cursor"] = .string(cursor)
+        }
+        return .object(values)
+    }
+
+    private static func pdfSummaryValue(_ summary: VaultSearchPDFSummary) -> Value {
+        .object([
+            "examined_file_count": .int(summary.examinedFileCount),
+            "metadata_only_file_count": .int(summary.metadataOnlyFileCount),
+            "extracted_file_count": .int(summary.extractedFileCount),
+            "partial_file_count": .int(summary.partialFileCount),
+            "no_extractable_text_file_count": .int(
+                summary.noExtractableTextFileCount
+            ),
+            "unavailable_file_count": .int(summary.unavailableFileCount),
+            "ocr_performed": .bool(summary.ocrPerformed),
         ])
     }
 
@@ -109,6 +140,7 @@ enum SearchToolResultMapper {
         var values: [String: Value] = [
             "path": .string(result.path),
             "format": .string(result.format.rawValue),
+            "area": .string(result.area.rawValue),
             "title": .string(result.title),
             "snippet": .string(result.snippet),
             "line_start": .int(result.lineStart),
@@ -127,6 +159,14 @@ enum SearchToolResultMapper {
                 "node_type": .string(location.nodeType),
                 "field": .string(location.field),
             ])
+        }
+        if let page = result.physicalPage { values["physical_page"] = .int(page) }
+        if let page = result.printedPage { values["printed_page"] = .string(page) }
+        if let kind = result.pdfPageKind {
+            values["pdf_page_kind"] = .string(kind.rawValue)
+        }
+        if let status = result.pdfTextExtractionStatus {
+            values["pdf_text_extraction_status"] = .string(status.rawValue)
         }
         return .object(values)
     }

@@ -26,17 +26,36 @@ struct PDFPageRenderer {
     static func renderPages(
         in document: PDFDocument,
         pageNumbers: [Int],
-        configuration: PDFRenderConfiguration = .default
-    ) -> [RenderedPDFPage] {
+        configuration: PDFRenderConfiguration = .default,
+        maximumTextBytes: Int = FileReadRequestLimits.maximumPDFRenderedTextBytes,
+        maximumPayloadBytes: Int = FileReadRequestLimits
+            .maximumPDFRenderedPayloadBytes
+            - FileReadRequestLimits.PDFRenderedPayloadEnvelopeBytes
+    ) throws -> PDFPageRenderResult {
         var results: [RenderedPDFPage] = []
+        var retainedTextBytes = 0
+        var retainedPayloadBytes = 0
+        var renderFailures = 0
+        var payloadOmissions = 0
+        var textOmissions = 0
         for pageNumber in pageNumbers {
+            try Task.checkCancellation()
             guard pageNumber > 0, pageNumber <= document.pageCount else { continue }
+            guard retainedPayloadBytes < max(maximumPayloadBytes, 0) else {
+                payloadOmissions += 1
+                continue
+            }
             let pageIndex = pageNumber - 1
+            let remainingTextBytes = max(maximumTextBytes - retainedTextBytes, 0)
 
-            let rendered: RenderedPDFPage? = autoreleasepool {
+            let projection: (
+                page: RenderedPDFPage,
+                textBytes: Int,
+                textOmitted: Bool
+            )? = autoreleasepool {
                 guard let page = document.page(at: pageIndex) else { return nil }
 
-                let label = page.label
+                let label = Self.boundedMetadata(page.label)
                 guard let jpegData = Self.jpegData(
                     for: page,
                     configuration: configuration
@@ -47,25 +66,76 @@ struct PDFPageRenderer {
                 // Extract text alongside the image. Detach the string to break the
                 // NSString -> PDFPage -> PDFDocument reference chain.
                 var text: String? = nil
-                if let rawText = page.string, !rawText.isEmpty {
+                var textBytes = 0
+                var textOmitted = false
+                if page.numberOfCharacters > remainingTextBytes {
+                    textOmitted = page.numberOfCharacters > 0
+                } else if let rawText = page.string, !rawText.isEmpty {
                     var detached = rawText
                     detached.makeContiguousUTF8()
-                    text = detached
+                    let bytes = detached.utf8.count
+                    if bytes <= remainingTextBytes {
+                        text = Self.displaySafeText(detached)
+                        textBytes = bytes
+                    } else {
+                        textOmitted = true
+                    }
                 }
 
-                return RenderedPDFPage(
-                    pageNumber: pageNumber,
-                    bookLabel: label,
-                    jpegData: jpegData,
-                    extractedText: text
+                return (
+                    RenderedPDFPage(
+                        pageNumber: pageNumber,
+                        bookLabel: label,
+                        jpegData: jpegData,
+                        extractedText: text
+                    ),
+                    textBytes,
+                    textOmitted
                 )
             }
+            // A native PDFKit render cannot be interrupted mid-call, but a
+            // canceled request never begins another expensive page.
+            try Task.checkCancellation()
 
-            if let rendered {
-                results.append(rendered)
+            guard let projection else {
+                renderFailures += 1
+                continue
             }
+            let pagePayloadBytes = Self.base64EncodedByteCount(
+                projection.page.jpegData.count
+            ) + (projection.textBytes * 2)
+                + (projection.page.bookLabel?.utf8.count ?? 0) * 2 + 256
+            guard pagePayloadBytes <= maximumPayloadBytes - retainedPayloadBytes else {
+                payloadOmissions += 1
+                continue
+            }
+            results.append(projection.page)
+            retainedTextBytes += projection.textBytes
+            retainedPayloadBytes += pagePayloadBytes
+            if projection.textOmitted { textOmissions += 1 }
         }
-        return results
+        return PDFPageRenderResult(
+            pages: results,
+            renderFailureCount: renderFailures,
+            payloadOmissionCount: payloadOmissions,
+            textOmissionCount: textOmissions,
+            retainedPayloadBytes: retainedPayloadBytes
+        )
+    }
+
+    private static func base64EncodedByteCount(_ bytes: Int) -> Int {
+        guard bytes > 0 else { return 0 }
+        return ((bytes + 2) / 3) * 4
+    }
+
+    private static func boundedMetadata(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        let result = PDFDisplayText.bounded(value, maximumBytes: 512)
+        return result.isEmpty ? nil : result
+    }
+
+    private static func displaySafeText(_ value: String) -> String {
+        PDFDisplayText.sanitized(value)
     }
 
     /// Renders one PDFKit page to bounded JPEG data.

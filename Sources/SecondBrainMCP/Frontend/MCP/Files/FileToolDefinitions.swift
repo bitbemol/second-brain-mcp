@@ -103,9 +103,24 @@ enum FileToolDefinitions {
                             "type": .string("integer"), "minimum": .int(1),
                             "description": .string("For PDFs, physical 1-indexed page")
                         ]),
-                        .bookPage: .object(["type": .string("string"), "description": .string("For PDFs, printed page label")]),
-                        .pageRange: .object(["type": .string("string"), "description": .string("For PDFs, range such as 10-20")]),
-                        .query: .object(["type": .string("string"), "description": .string("For PDFs, find and render matching pages")]),
+                        .bookPage: .object([
+                            "type": .string("string"),
+                            "minLength": .int(1),
+                            "maxLength": .int(FileReadRequestLimits.maximumPDFBookPageBytes),
+                            "description": .string("For PDFs, printed page label; the backend limit is measured in UTF-8 bytes"),
+                        ]),
+                        .pageRange: .object([
+                            "type": .string("string"),
+                            "minLength": .int(1),
+                            "maxLength": .int(FileReadRequestLimits.maximumPDFPageRangeBytes),
+                            "description": .string("For PDFs, range such as 10-20; the backend limit is measured in UTF-8 bytes"),
+                        ]),
+                        .query: .object([
+                            "type": .string("string"),
+                            "minLength": .int(1),
+                            "maxLength": .int(FileReadRequestLimits.maximumPDFQueryBytes),
+                            "description": .string("For PDFs, find and render matching pages; the backend limit is measured in UTF-8 bytes"),
+                        ]),
                         .maxPages: .object([
                             "type": .string("integer"), "minimum": .int(1), "maximum": .int(20),
                             "description": .string("For PDFs, maximum pages (default 5)")

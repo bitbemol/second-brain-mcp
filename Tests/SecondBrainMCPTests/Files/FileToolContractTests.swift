@@ -64,6 +64,19 @@ struct FileToolContractTests {
         #expect(replacementDescription.contains("Markdown"))
         #expect(replacementDescription.contains("JSON"))
         #expect(replacementDescription.contains("CSV"))
+        let readProperties = try inputProperties(of: #require(tools["read_file"]))
+        #expect(
+            readProperties["query"]?.objectValue?["maxLength"]?.intValue
+                == FileReadRequestLimits.maximumPDFQueryBytes
+        )
+        #expect(
+            readProperties["book_page"]?.objectValue?["maxLength"]?.intValue
+                == FileReadRequestLimits.maximumPDFBookPageBytes
+        )
+        #expect(
+            readProperties["page_range"]?.objectValue?["maxLength"]?.intValue
+                == FileReadRequestLimits.maximumPDFPageRangeBytes
+        )
 
         for operation in FileToolName.allCases.map(\.rawValue) {
             let formats = try formatInputs(of: #require(tools[operation]))

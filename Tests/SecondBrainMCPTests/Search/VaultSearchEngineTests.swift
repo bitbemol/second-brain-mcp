@@ -5,12 +5,13 @@ import Testing
 @Suite("Vault search engine")
 struct VaultSearchEngineTests {
     private func searchCapabilities() -> SearchCapabilities {
-        let fileCapabilities = FileCapabilities(formats: FileFormat.allCases
+        var formats: [FileCapabilities.Format] = FileFormat.allCases
             .filter(\.isTextual)
             .map { format in
                 .init(format: format, operations: [.read: [.notes]])
-            })
-        return SearchCapabilities(fileCapabilities: fileCapabilities)
+            }
+        formats.append(.init(format: .pdf, operations: [.read: [.references]]))
+        return SearchCapabilities(fileCapabilities: FileCapabilities(formats: formats))
     }
 
     private func makeEngine(
@@ -46,6 +47,10 @@ struct VaultSearchEngineTests {
             atPath: root + "/notes",
             withIntermediateDirectories: true
         )
+        try FileManager.default.createDirectory(
+            atPath: root + "/references",
+            withIntermediateDirectories: true
+        )
         return root
     }
 
@@ -56,6 +61,15 @@ struct VaultSearchEngineTests {
             withIntermediateDirectories: true
         )
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func write(_ data: Data, to relativePath: String, root: String) throws {
+        let url = URL(fileURLWithPath: root).appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
     }
 
     @Test("Title, heading, and body weights produce deterministic breadth")
@@ -193,6 +207,37 @@ struct VaultSearchEngineTests {
         #expect(response.results.map(\.path) == ["notes/work/data.json"])
     }
 
+    @Test("Area filters derive compatible default formats")
+    func areaFilters() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write("notes-only sentinel", to: "notes/only.md", root: root)
+        let engine = try makeEngine(root: root)
+
+        let notes = try await engine.search(VaultSearchRequest(
+            query: "notes-only sentinel",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+        #expect(notes.results.map(\.path) == ["notes/only.md"])
+        #expect(notes.pdfSummary == .empty)
+
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "anything",
+                formats: [.pdf],
+                areas: [.notes]
+            ))
+        }
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "anything",
+                formats: [.pdf],
+                pathPrefix: "notes/"
+            ))
+        }
+    }
+
     @Test("Path prefixes scope traversal before directory budgets apply")
     func pathPrefixScopesTraversal() async throws {
         let root = try makeVault()
@@ -293,6 +338,7 @@ struct VaultSearchEngineTests {
             operations: VaultOperationCoordinator(
                 lockDirectoryURL: dataDirectory.lockDirectoryURL
             ),
+            capabilities: searchCapabilities(),
             limits: .default
         ).build(for: validated)
 
@@ -333,6 +379,80 @@ struct VaultSearchEngineTests {
             strategy: .exact
         ))
         #expect(safe.results.map(\.path) == ["notes/safe.md"])
+    }
+
+    @Test("Resolved search targets stay bound to their enumerated location")
+    func resolvedTargetsMatchLexicalCandidates() throws {
+        let root = try makeVault()
+        let rootAlias = NSTemporaryDirectory()
+            + "VaultSearchRootAlias-\(UUID().uuidString)"
+        defer {
+            try? FileManager.default.removeItem(atPath: rootAlias)
+            try? FileManager.default.removeItem(atPath: root)
+        }
+        try write("regular", to: "notes/regular.md", root: root)
+        try write("sibling", to: "notes/sibling.md", root: root)
+        try FileManager.default.createDirectory(
+            atPath: root + "/notes/real-parent",
+            withIntermediateDirectories: true
+        )
+        try write("nested", to: "notes/real-parent/nested.md", root: root)
+        try FileManager.default.createSymbolicLink(
+            atPath: root + "/notes/final-link.md",
+            withDestinationPath: root + "/notes/sibling.md"
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: root + "/notes/parent-link",
+            withDestinationPath: root + "/notes/real-parent"
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: rootAlias,
+            withDestinationPath: root
+        )
+
+        let regular = try ReadableFileTarget.resolve(
+            path: "notes/regular.md",
+            format: .markdown,
+            vaultPath: root
+        )
+        #expect(SearchCorpusBuilder.matchesEnumeratedLocation(
+            target: regular,
+            candidatePath: "notes/regular.md",
+            vaultPath: root
+        ))
+
+        let finalLink = try ReadableFileTarget.resolve(
+            path: "notes/final-link.md",
+            format: .markdown,
+            vaultPath: root
+        )
+        #expect(!SearchCorpusBuilder.matchesEnumeratedLocation(
+            target: finalLink,
+            candidatePath: "notes/final-link.md",
+            vaultPath: root
+        ))
+
+        let parentLink = try ReadableFileTarget.resolve(
+            path: "notes/parent-link/nested.md",
+            format: .markdown,
+            vaultPath: root
+        )
+        #expect(!SearchCorpusBuilder.matchesEnumeratedLocation(
+            target: parentLink,
+            candidatePath: "notes/parent-link/nested.md",
+            vaultPath: root
+        ))
+
+        let aliasedRootTarget = try ReadableFileTarget.resolve(
+            path: "notes/regular.md",
+            format: .markdown,
+            vaultPath: rootAlias
+        )
+        #expect(SearchCorpusBuilder.matchesEnumeratedLocation(
+            target: aliasedRootTarget,
+            candidatePath: "notes/regular.md",
+            vaultPath: rootAlias
+        ))
     }
 
     @Test("Hidden entries consume traversal budget without entering the corpus")
@@ -430,6 +550,20 @@ struct VaultSearchEngineTests {
                 minimumRelevance: -0.01
             ))
         }
+        for value in [0, SearchRequestLimits.maximumHitsPerFile + 1] {
+            await #expect(throws: VaultSearchRequestError.self) {
+                _ = try await engine.search(VaultSearchRequest(
+                    query: "common",
+                    maxHitsPerFile: value
+                ))
+            }
+        }
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "common",
+                cursor: "not-a-search-cursor"
+            ))
+        }
         let bounded = try await engine.search(VaultSearchRequest(
             query: "common",
             strategy: .exact,
@@ -458,6 +592,12 @@ struct VaultSearchEngineTests {
             _ = try await engine.search(VaultSearchRequest(
                 query: "safe",
                 formats: [.markdown, .markdown]
+            ))
+        }
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "safe",
+                areas: [.notes, .notes]
             ))
         }
         await #expect(throws: VaultSearchRequestError.self) {
@@ -799,6 +939,60 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
+    @Test("Literal occurrence ceilings report partial matching coverage")
+    func literalOccurrenceCoverage() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            String(repeating: "cat", count: 100) + " cat",
+            to: "notes/dense.log",
+            root: root
+        )
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumLiteralOccurrencesPerField: 8)
+        ).search(VaultSearchRequest(
+            query: "cat",
+            strategy: .exact,
+            formats: [.log]
+        ))
+        #expect(response.results.first?.path == "notes/dense.log")
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.reason == .matching)
+    }
+
+    @Test("Literal work is bounded across the complete request")
+    func requestWideLiteralOccurrenceCoverage() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write("cat", to: "notes/000-whole.md", root: root)
+        try write(
+            String(repeating: "concatenate ", count: 64),
+            to: "notes/999-dense.md",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(
+                maximumLiteralOccurrencesPerField: 64,
+                maximumLiteralOccurrencesPerRequest: 3
+            )
+        ).search(VaultSearchRequest(
+            query: "cat",
+            strategy: .exact,
+            fields: [.content],
+            minimumRelevance: 0
+        ))
+
+        #expect(response.results.contains { $0.path == "notes/000-whole.md" })
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.path == "notes/999-dense.md")
+        #expect(response.resourceLimitSamples.first?.reason == .matching)
+    }
+
     @Test("Limits in unrequested fields do not make filtered coverage incomplete")
     func fieldSpecificCoverage() async throws {
         let root = try makeVault()
@@ -943,7 +1137,7 @@ struct VaultSearchEngineTests {
                 root: root
             )
         }
-        let limit = 1_200
+        let limit = 4_000
         let response = try await makeEngine(
             root: root,
             limits: searchTestLimits(maximumResponseBytes: limit)
@@ -1002,6 +1196,725 @@ struct VaultSearchEngineTests {
         lease.release()
         #expect(try await task.value.results.map(\.path) == ["notes/a.md"])
         #expect(await completion.completed)
+    }
+
+    @Test("Opaque cursors page through every ranked result without overlap")
+    func pagination() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        for index in 0..<123 {
+            try write(
+                "# Generated \(index)\npagination sentinel",
+                to: String(format: "notes/result-%03d.md", index),
+                root: root
+            )
+        }
+        let engine = try makeEngine(root: root)
+        var cursor: String?
+        var paths: [String] = []
+        var previousOmitted = Int.max
+
+        repeat {
+            let response = try await engine.search(VaultSearchRequest(
+                query: "pagination sentinel",
+                strategy: .smart,
+                limit: 17,
+                cursor: cursor
+            ))
+            #expect(response.omittedResultCountLowerBound < previousOmitted)
+            previousOmitted = response.omittedResultCountLowerBound
+            paths.append(contentsOf: response.results.map(\.path))
+            cursor = response.nextCursor
+            #expect(response.moreResultsAvailable == (cursor != nil))
+        } while cursor != nil
+
+        #expect(paths.count == 123)
+        #expect(Set(paths).count == paths.count)
+        #expect(paths == paths.sorted())
+        #expect(previousOmitted == 0)
+    }
+
+    @Test("One search discovers notes and ranked PDF pages with extraction status")
+    func unifiedPDFDiscovery() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Concurrency Safety\nA concise note about the sentinel.",
+            to: "notes/concurrency.md",
+            root: root
+        )
+        let pdf = try generatedSearchPDF(
+            pages: [
+                "Table of Contents\nConcurrency safety ........ 3",
+                "Preface\nGenerated fixture without the target phrase.",
+                "Concurrency safety prevents shared-state corruption in actors.",
+            ],
+            title: "Generated Concurrency Handbook"
+        )
+        try write(pdf, to: "references/generated-handbook.pdf", root: root)
+        let engine = try makeEngine(root: root)
+
+        let response = try await engine.search(VaultSearchRequest(
+            query: "concurrency safety",
+            strategy: .phrase,
+            limit: 10,
+            maxHitsPerFile: 3
+        ))
+        #expect(Set(response.results.map(\.area)) == [.notes, .references])
+        let pdfResults = response.results.filter { $0.format == .pdf }
+        #expect(pdfResults.count == 2)
+        #expect(pdfResults.first?.physicalPage == 3)
+        #expect(pdfResults.first?.pdfPageKind == .body)
+        #expect(pdfResults.last?.physicalPage == 1)
+        #expect(pdfResults.last?.pdfPageKind == .tableOfContents)
+        #expect(pdfResults.allSatisfy {
+            $0.pdfTextExtractionStatus == .extracted
+                && $0.area == .references
+        })
+        #expect(response.pdfSummary.examinedFileCount == 1)
+        #expect(response.pdfSummary.extractedFileCount == 1)
+        #expect(!response.pdfSummary.ocrPerformed)
+
+        let scoped = try await engine.search(VaultSearchRequest(
+            query: "concurrency safety",
+            strategy: .phrase,
+            formats: [.pdf],
+            areas: [.references],
+            pathPrefix: "references/",
+            maxHitsPerFile: 3
+        ))
+        #expect(scoped.results.allSatisfy { $0.format == .pdf })
+        #expect(scoped.results.map(\.physicalPage) == [3, 1])
+    }
+
+    @Test("Oversized PDFs remain discoverable by metadata and disclose missing text")
+    func oversizedPDFMetadata() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let pdf = try generatedSearchPDF(pages: [
+            "private body sentinel that cannot enter the bounded search"
+        ])
+        try write(pdf, to: "references/oversized-reference.pdf", root: root)
+        let engine = try makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumPDFFileBytes: 32)
+        )
+
+        let metadata = try await engine.search(VaultSearchRequest(
+            query: "oversized-reference",
+            strategy: .exact,
+            fields: [.title, .path],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        let result = try #require(metadata.results.first)
+        #expect(result.path == "references/oversized-reference.pdf")
+        #expect(result.pdfTextExtractionStatus == .contentSkippedFileBytes)
+        #expect(metadata.coverageIncomplete)
+        #expect(metadata.resourceLimitedFileCount == 1)
+        #expect(metadata.resourceLimitSamples.first?.reason == .fileBytes)
+        #expect(metadata.resourceLimitSamples.first?.impact == .partial)
+        #expect(metadata.pdfSummary.unavailableFileCount == 1)
+
+        let content = try await engine.search(VaultSearchRequest(
+            query: "private body sentinel",
+            strategy: .exact,
+            fields: [.content],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(content.results.isEmpty)
+        #expect(content.coverageIncomplete)
+        #expect(content.resourceLimitedFileCount == 1)
+        #expect(content.resourceLimitSamples.first?.reason == .fileBytes)
+        #expect(content.resourceLimitSamples.first?.impact == .partial)
+    }
+
+    @Test("Path-only PDF search reads no bytes and never opens PDFKit")
+    func pathOnlyPDFMetadata() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            Data("not a PDF and intentionally unreadable at a zero-byte cap".utf8),
+            to: "references/path-only-sentinel.pdf",
+            root: root
+        )
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumPDFFileBytes: 0)
+        ).search(VaultSearchRequest(
+            query: "path-only-sentinel",
+            strategy: .exact,
+            fields: [.path],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+
+        let result = try #require(response.results.first)
+        #expect(result.title == "path only sentinel")
+        #expect(result.pdfTextExtractionStatus == .metadataOnly)
+        #expect(response.pdfSummary.metadataOnlyFileCount == 1)
+        #expect(response.pdfSummary.unavailableFileCount == 0)
+        #expect(response.resourceLimitedFileCount == 0)
+        #expect(!response.coverageIncomplete)
+
+        let nonTextFields = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumPDFFileBytes: 0)
+        ).search(VaultSearchRequest(
+            query: "path-only-sentinel",
+            strategy: .exact,
+            fields: [.path, .tags],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(nonTextFields.results.first?.pdfTextExtractionStatus
+            == .metadataOnly)
+        #expect(!nonTextFields.coverageIncomplete)
+    }
+
+    @Test("Title-only PDF search reads metadata without enumerating pages")
+    func titleOnlyPDFMetadata() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedSearchPDF(
+                pages: ["page text must not be inspected"],
+                title: "Metadata Only Sentinel"
+            ),
+            to: "references/opaque-name.pdf",
+            root: root
+        )
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(
+                maximumPDFPagesPerFile: 0,
+                maximumPDFTextBytesPerFile: 0
+            )
+        ).search(VaultSearchRequest(
+            query: "Metadata Only Sentinel",
+            strategy: .exact,
+            fields: [.title],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+
+        let result = try #require(response.results.first)
+        #expect(result.title == "Metadata Only Sentinel")
+        #expect(result.pdfTextExtractionStatus == .metadataOnly)
+        #expect(response.pdfSummary.metadataOnlyFileCount == 1)
+        #expect(response.pdfSummary.partialFileCount == 0)
+        #expect(!response.coverageIncomplete)
+    }
+
+    @Test("A bounded-away PDF title reports incomplete title coverage")
+    func truncatedPDFTitleCoverage() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedSearchPDF(
+                pages: ["body"],
+                title: String(repeating: " ", count: 32) + "Hidden Sentinel"
+            ),
+            to: "references/fallback.pdf",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumMetadataBytes: 8)
+        ).search(VaultSearchRequest(
+            query: "Hidden Sentinel",
+            strategy: .exact,
+            fields: [.title],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+
+        #expect(response.results.isEmpty)
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.reason == .projection)
+        #expect(response.resourceLimitSamples.first?.impact == .partial)
+    }
+
+    @Test("Title-only PDF search distinguishes readable metadata from cannot-open")
+    func titleOnlyPDFUnavailableStatuses() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedLockedSearchPDF(pages: ["protected page text"]),
+            to: "references/locked-sentinel.pdf",
+            root: root
+        )
+        let engine = try makeEngine(root: root)
+
+        let locked = try await engine.search(VaultSearchRequest(
+            query: "locked-sentinel",
+            strategy: .exact,
+            fields: [.title, .path],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(locked.results.first?.pdfTextExtractionStatus == .metadataOnly)
+        #expect(locked.pdfSummary.metadataOnlyFileCount == 1)
+        #expect(locked.pdfSummary.unavailableFileCount == 0)
+        #expect(!locked.coverageIncomplete)
+
+        let lockedContent = try await engine.search(VaultSearchRequest(
+            query: "locked-sentinel",
+            strategy: .exact,
+            fields: [.path, .content],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(lockedContent.results.first?.pdfTextExtractionStatus == .locked)
+        #expect(lockedContent.pdfSummary.unavailableFileCount == 1)
+        #expect(lockedContent.coverageIncomplete)
+
+        try write(
+            Data("not a PDF".utf8),
+            to: "references/broken-sentinel.pdf",
+            root: root
+        )
+        let broken = try await engine.search(VaultSearchRequest(
+            query: "broken-sentinel",
+            strategy: .exact,
+            fields: [.title, .path],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(broken.results.first?.pdfTextExtractionStatus == .cannotOpen)
+        #expect(broken.pdfSummary.unavailableFileCount == 1)
+        #expect(broken.coverageIncomplete)
+        #expect(broken.resourceLimitedFileCount == 1)
+    }
+
+    @Test("PDFs without extractable text remain visible without implying OCR")
+    func noTextPDFStatus() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedSearchPDF(pages: [""]),
+            to: "references/scanned-receipt.pdf",
+            root: root
+        )
+        let response = try await makeEngine(root: root).search(VaultSearchRequest(
+            query: "scanned-receipt",
+            strategy: .exact,
+            fields: [.title, .path, .content],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(response.results.first?.pdfTextExtractionStatus
+            == .noExtractableText)
+        #expect(response.pdfSummary.noExtractableTextFileCount == 1)
+        #expect(!response.pdfSummary.ocrPerformed)
+        #expect(!response.coverageIncomplete)
+    }
+
+    @Test("Expanded PDF text shares one retained-projection budget")
+    func aggregatePDFProjectionBudget() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedSearchPDF(pages: [String(repeating: "small ", count: 25)]),
+            to: "references/000-small.pdf",
+            root: root
+        )
+        try write(
+            try generatedSearchPDF(pages: [
+                "unique projection sentinel "
+                    + String(repeating: "expanded ", count: 150),
+            ]),
+            to: "references/999-expanded.pdf",
+            root: root
+        )
+        let limits = searchTestLimits(maximumAggregateProjectionBytes: 512)
+        let response = try await makeEngine(root: root, limits: limits).search(
+            VaultSearchRequest(
+                query: "unique projection sentinel",
+                strategy: .exact,
+                fields: [.content],
+                formats: [.pdf],
+                areas: [.references]
+            )
+        )
+        #expect(response.results.isEmpty)
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.reason == .projection)
+        #expect(response.resourceLimitSamples.first?.impact == .partial)
+        #expect(response.pdfSummary.extractedFileCount == 1)
+        #expect(response.pdfSummary.partialFileCount == 1)
+    }
+
+    @Test("Aggregate section limits reject an oversized file without hiding a later fit")
+    func aggregateSectionBudgetPreservesLaterFit() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# A\nx\n# B\ny",
+            to: "notes/000-two-sections.md",
+            root: root
+        )
+        try write(
+            "# Target\naggregate section sentinel with enough filler",
+            to: "notes/999-target.md",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumAggregateSections: 1)
+        ).search(VaultSearchRequest(
+            query: "aggregate section sentinel",
+            strategy: .exact,
+            fields: [.content]
+        ))
+
+        #expect(response.results.map(\.path) == ["notes/999-target.md"])
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitSamples.first?.path
+            == "notes/000-two-sections.md")
+        #expect(response.resourceLimitSamples.first?.reason == .projection)
+    }
+
+    @Test("Exhausted section budget prevents later PDF page extraction")
+    func aggregateSectionBudgetBoundsPDFExtraction() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedSearchPDF(pages: [
+                "later pdf sentinel " + String(repeating: "padding ", count: 40),
+            ]),
+            to: "references/999-larger.pdf",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumAggregateSections: 0)
+        ).search(VaultSearchRequest(
+            query: "later pdf sentinel",
+            strategy: .exact,
+            fields: [.content],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+
+        #expect(response.results.isEmpty)
+        #expect(response.pdfSummary.extractedFileCount == 0)
+        #expect(response.pdfSummary.partialFileCount == 1)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.coverageIncomplete)
+    }
+
+    @Test("A mixed text and image-only PDF reports partial extraction")
+    func mixedPDFExtractionStatus() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            try generatedSearchPDF(pages: ["mixed text sentinel", ""]),
+            to: "references/mixed.pdf",
+            root: root
+        )
+        let response = try await makeEngine(root: root).search(VaultSearchRequest(
+            query: "mixed text sentinel",
+            strategy: .exact,
+            fields: [.content],
+            formats: [.pdf],
+            areas: [.references]
+        ))
+        #expect(response.results.first?.pdfTextExtractionStatus == .partial)
+        #expect(response.pdfSummary.partialFileCount == 1)
+        #expect(response.coverageIncomplete)
+    }
+
+    @Test("A cursor is bound to every result-shaping request option")
+    func cursorBinding() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write("cursor sentinel", to: "notes/a.md", root: root)
+        try write("cursor sentinel", to: "notes/b.md", root: root)
+        let engine = try makeEngine(root: root)
+        let first = try await engine.search(VaultSearchRequest(
+            query: "cursor sentinel",
+            strategy: .smart,
+            limit: 1
+        ))
+        let cursor = try #require(first.nextCursor)
+
+        let second = try await engine.search(VaultSearchRequest(
+            query: "cursor sentinel",
+            strategy: .smart,
+            limit: 1,
+            cursor: cursor
+        ))
+        #expect(second.results.map(\.path) == ["notes/b.md"])
+
+        for changed in [
+            VaultSearchRequest(
+                query: "different",
+                strategy: .smart,
+                limit: 1,
+                cursor: cursor
+            ),
+            VaultSearchRequest(
+                query: "cursor sentinel",
+                strategy: .exact,
+                limit: 1,
+                cursor: cursor
+            ),
+            VaultSearchRequest(
+                query: "cursor sentinel",
+                strategy: .smart,
+                fields: [.title],
+                limit: 1,
+                cursor: cursor
+            ),
+            VaultSearchRequest(
+                query: "cursor sentinel",
+                strategy: .smart,
+                limit: 1,
+                minimumRelevance: 0,
+                cursor: cursor
+            ),
+            VaultSearchRequest(
+                query: "cursor sentinel",
+                strategy: .smart,
+                limit: 1,
+                maxHitsPerFile: 2,
+                cursor: cursor
+            ),
+        ] {
+            await #expect(throws: VaultSearchRequestError.self) {
+                _ = try await engine.search(changed)
+            }
+        }
+    }
+
+    @Test("Oversized locators cannot produce a non-advancing cursor")
+    func oversizedLocatorPagination() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let identifier = String(
+            repeating: "node-x",
+            count: SearchRequestLimits.maximumLocatorBytes
+        )
+        let canvas = """
+        {"nodes":[{"id":"\(identifier)","type":"text","x":0,"y":0,
+        "width":1,"height":1,"text":"cursor locator sentinel"}],"edges":[]}
+        """
+        try write(canvas, to: "notes/000-locator.canvas", root: root)
+        try write(
+            "cursor locator sentinel",
+            to: "notes/999-later.md",
+            root: root
+        )
+        let engine = try makeEngine(root: root)
+        let first = try await engine.search(VaultSearchRequest(
+            query: "cursor locator sentinel",
+            strategy: .exact,
+            limit: 1
+        ))
+        #expect(first.results.first?.path == "notes/000-locator.canvas")
+        #expect(first.results.first?.location == nil)
+        #expect(first.coverageIncomplete)
+        let cursor = try #require(first.nextCursor)
+
+        let second = try await engine.search(VaultSearchRequest(
+            query: "cursor locator sentinel",
+            strategy: .exact,
+            limit: 1,
+            cursor: cursor
+        ))
+        #expect(second.results.map(\.path) == ["notes/999-later.md"])
+    }
+
+    @Test("Continuation rejects a corpus changed between pages")
+    func cursorCorpusRevision() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write("revision sentinel", to: "notes/a.md", root: root)
+        try write("revision sentinel", to: "notes/b.md", root: root)
+        let engine = try makeEngine(root: root)
+        let first = try await engine.search(VaultSearchRequest(
+            query: "revision sentinel",
+            strategy: .exact,
+            limit: 1
+        ))
+        let cursor = try #require(first.nextCursor)
+        try write("revision sentinel changed", to: "notes/b.md", root: root)
+
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "revision sentinel",
+                strategy: .exact,
+                limit: 1,
+                cursor: cursor
+            ))
+        }
+    }
+
+    @Test("Continuation binds skipped versus admitted projection outcomes")
+    func cursorProjectionOutcome() async throws {
+        let root = try makeVault()
+        let pdfPath = root + "/references/outcome-sentinel.pdf"
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: pdfPath
+            )
+            try? FileManager.default.removeItem(atPath: root)
+        }
+        try write(
+            "# Outcome Sentinel A",
+            to: "notes/outcome-sentinel-a.md",
+            root: root
+        )
+        try write(
+            "# Outcome Sentinel B",
+            to: "notes/outcome-sentinel-b.md",
+            root: root
+        )
+        try write(
+            try generatedSearchPDF(
+                pages: ["body"],
+                title: "Outcome Sentinel PDF"
+            ),
+            to: "references/outcome-sentinel.pdf",
+            root: root
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000],
+            ofItemAtPath: pdfPath
+        )
+        let engine = try makeEngine(root: root)
+        let first = try await engine.search(VaultSearchRequest(
+            query: "outcome sentinel",
+            strategy: .exact,
+            fields: [.title, .path],
+            formats: [.markdown, .pdf],
+            areas: [.notes, .references],
+            limit: 1
+        ))
+        let cursor = try #require(first.nextCursor)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: pdfPath
+        )
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "outcome sentinel",
+                strategy: .exact,
+                fields: [.title, .path],
+                formats: [.markdown, .pdf],
+                areas: [.notes, .references],
+                limit: 1,
+                cursor: cursor
+            ))
+        }
+    }
+
+    @Test("Callers can request several distinct passages from one file")
+    func multiplePassagesPerFile() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            """
+            # First
+            passage needle alpha
+
+            # Second
+            passage needle beta
+
+            # Third
+            passage needle gamma
+            """,
+            to: "notes/multi.md",
+            root: root
+        )
+        let engine = try makeEngine(root: root)
+
+        let defaultResponse = try await engine.search(VaultSearchRequest(
+            query: "passage needle",
+            strategy: .smart
+        ))
+        #expect(defaultResponse.results.count == 1)
+
+        let expanded = try await engine.search(VaultSearchRequest(
+            query: "passage needle",
+            strategy: .smart,
+            maxHitsPerFile: 3
+        ))
+        #expect(expanded.results.count == 3)
+        #expect(Set(expanded.results.map(\.path)) == ["notes/multi.md"])
+        #expect(expanded.results.map(\.heading) == ["First", "Second", "Third"])
+        #expect(Set(expanded.results.map(\.lineStart)).count == 3)
+    }
+
+    @Test("Smart enforces one per-file passage ceiling across both passes")
+    func smartPassesShareHitLimit() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            """
+            # Phrase One
+            alpha beta
+
+            # Phrase Two
+            alpha beta
+
+            # Token One
+            alpha, beta
+
+            # Token Two
+            alpha, beta
+            """,
+            to: "notes/mixed-passages.md",
+            root: root
+        )
+        let response = try await makeEngine(root: root).search(VaultSearchRequest(
+            query: "alpha beta",
+            strategy: .smart,
+            maxHitsPerFile: 2
+        ))
+        #expect(response.results.count == 2)
+        #expect(Set(response.results.map(\.lineStart)).count == 2)
+    }
+
+    @Test("Distributed metadata evidence preserves distinct local passages")
+    func distributedPassagePresentation() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            """
+            ---
+            title: Focus
+            ---
+            # First
+            engine one
+
+            # Second
+            engine two
+
+            # Third
+            engine three
+            """,
+            to: "notes/distributed.md",
+            root: root
+        )
+        let response = try await makeEngine(root: root).search(VaultSearchRequest(
+            query: "focus engine",
+            strategy: .smart,
+            maxHitsPerFile: 3
+        ))
+        #expect(response.results.count == 3)
+        #expect(response.results.map(\.heading) == ["First", "Second", "Third"])
+        #expect(response.results.allSatisfy { $0.snippet.contains("engine") })
     }
 
     @Test("A canceled search leaves the shared admission queue immediately")

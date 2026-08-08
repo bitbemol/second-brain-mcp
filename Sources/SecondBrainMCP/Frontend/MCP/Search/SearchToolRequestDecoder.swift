@@ -45,11 +45,19 @@ enum SearchToolRequestDecoder {
                 as: FileFormat.self,
                 maximumCount: FileFormat.allCases.count
             ),
+            areas: try enumArray(
+                .areas,
+                in: values,
+                as: VaultArea.self,
+                maximumCount: VaultArea.allCases.count
+            ),
             pathPrefix: try string(.pathPrefix, in: values),
             limit: try integer(.limit, in: values)
                 ?? SearchRequestLimits.defaultResults,
             minimumRelevance: try number(.minimumRelevance, in: values)
-                ?? SearchRequestLimits.defaultMinimumRelevance
+                ?? SearchRequestLimits.defaultMinimumRelevance,
+            maxHitsPerFile: try integer(.maxHitsPerFile, in: values) ?? 1,
+            cursor: try string(.cursor, in: values)
         )
     }
 

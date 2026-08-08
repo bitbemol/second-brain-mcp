@@ -12,7 +12,7 @@ stdio-capable MCP client ──> SecondBrainMCP
 ## Features
 
 - **Four generic file CRUD tools** — `create_file`, `read_file`, `update_file`, and `delete_file`; every request declares a concrete format
-- **Ranked vault search** — `search_vault` supports smart, exact, phrase, lexical, and conservative fuzzy matching across safe snapshots of text notes
+- **Ranked vault search** — `search_vault` supports smart, exact, phrase, lexical, and conservative fuzzy matching across safe note snapshots and page-aware PDF references
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
@@ -157,7 +157,7 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 | Tool | Purpose |
 |------|---------|
-| `search_vault` | Rank matching text notes by title, heading, tags, path, or content without returning a mutation revision |
+| `search_vault` | Rank matching notes and PDF references by title, heading, tags, path, or content without returning a mutation revision |
 | `create_file` | Validate/transform input, atomically create under `notes/`, and git-commit |
 | `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
@@ -165,21 +165,25 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 ### Search
 
-Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and `minimum_relevance` defaults to `0.60` on a normalized `0...1` scale. Set the floor to `0` only when broad partial recall is more useful than precision. Omitted `fields` or `formats` mean every value advertised by the tool schema. `path_prefix` can narrow traversal to a canonical, non-hidden, non-package directory under `notes/`.
+Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and `minimum_relevance` defaults to `0.60` on a normalized `0...1` scale. Set the floor to `0` only when broad partial recall is more useful than precision. Omitted `fields`, `formats`, or `areas` mean every value advertised by the tool schema, including both `notes` and `references`. `path_prefix` can narrow traversal to a canonical, non-hidden, non-package directory in a selected area. `max_hits_per_file` defaults to one and can retain up to five independently relevant passages from a large file.
 
 | Strategy | Behavior |
 |----------|----------|
-| `smart` | Prefers literal and ordered matches, ranks lexical coverage, then repairs conservative likely typos |
-| `exact` | Case/diacritic-insensitive literal substring; punctuation remains significant |
+| `smart` | Removes conversational filler, preserves whole-token literal hits, ranks ordered/lexical coverage, then repairs conservative per-token typos |
+| `exact` | Case/diacritic-insensitive literal substring; punctuation remains significant and whole-token occurrences outrank embedded substrings |
 | `phrase` | Adjacent ordered terms across punctuation and whitespace |
 | `lexical` | Word coverage ranked by field importance |
 | `fuzzy` | Bounded typo matching, including adjacent transpositions; one- and two-character terms remain exact-only |
 
-Search covers textual formats readable under `notes/`: Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include the node ID, kind, and field. One best section or structured node is returned per file for breadth. Every result includes `relevance` (ranking strength, not probability), `term_coverage`, contributing `matched_fields`, and `complete_query_fields` that individually satisfied the whole query. Ranking and tie-breaking are stable for the examined corpus. Smart search performs an exhaustive literal pass before fair per-file phrase/lexical/fuzzy work, so expensive evidence files cannot hide literal hits in later notes. Ordinary notes and smaller files are admitted before large HAR evidence, with an 8 MiB live-search ceiling per file; omitted files remain explicitly readable through `read_file`.
+Search covers Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV under `notes/`, plus PDFs under `references/`. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include a bounded complete node ID, kind, and field; an unrepresentable locator is omitted rather than truncated. Identifier tokenization understands camel/Pascal case, acronym boundaries, snake case, digits, and punctuation-preserving compact code queries. Sentence punctuation remains conversational input. Each result includes `area`, `relevance` (ranking strength, not probability), `term_coverage`, contributing `matched_fields`, and `complete_query_fields` that individually satisfied the whole query. Ranking and tie-breaking are stable for an unchanged examined corpus. Smart search performs a corpus-wide whole-literal pass before fair per-file phrase/lexical/fuzzy work, so expensive evidence files cannot hide later literal or typo hits. Ordinary notes and smaller files are admitted before large HAR/PDF evidence, with 8 MiB textual, 64 MiB PDF, 128 MiB aggregate snapshot, 64 MiB retained-projection, and 100,000 retained-section ceilings.
+
+PDF content is searched from immutable bounded snapshots, one autorelease-scoped page at a time. Path-only searches use validated filenames without opening PDFKit; title-only searches open the bounded snapshot for document metadata without enumerating pages. Results include the physical page, a non-trivial bounded printed page label, page role, and `pdf_text_extraction_status`. Body pages rank above tables of contents, indexes, bibliographies, and glossaries. Metadata-only hits remain available when page text is unnecessary, oversized, locked, unreadable by PDFKit, or not extractable; mixed text/image-only or inaccessible-page documents report partial extraction. `pdf_summary` separately counts metadata-only, fully extracted, partial, textless, and unavailable PDFs even when no PDF page matched, and states that broad search never triggers OCR implicitly. A direct `read_file(format: pdf, query: ...)` first makes a stable private copy, accepts at most 1,024 UTF-8 query bytes, inspects at most 8 MiB of extracted text, ranks substantive pages first, and reports a matching-page lower bound, possible omitted matches, pages scanned, extraction status, rendering failures, and OCR status. Direct PDF snapshot/PDFKit work is serialized through bounded local and cross-process admission so concurrent agents cannot multiply temporary disk use.
+
+When more ranked hits exist, `next_cursor` continues the same request; cursors are bound to the query, strategy, filters, relevance floor, passage count, and exact admitted file revisions. A changed corpus rejects the continuation instead of silently duplicating or skipping ranked hits. `omitted_result_count_lower_bound` states how many ranked hits are known to remain. This makes result sets larger than the per-call cap reachable without weakening the 64 KiB MCP response ceiling.
 
 Coverage is explicit in every response. `more_results_available` means matching results were omitted by a result or encoded-output limit. `coverage_incomplete` means some requested searchable content could not be fully evaluated. `resource_limited_file_count` is the number of known files wholly or partially omitted by a resource ceiling; it is necessarily a lower bound if directory traversal itself ends before every entry is discovered. `resource_limit_samples` gives at most eight stable, non-sensitive `{path, reason, impact}` examples and is never exhaustive. A partially evaluated file can appear in both `searched_file_count` and `resource_limited_file_count`, so the counters are facts rather than a partition to sum. `skipped_file_count` covers eligible-file safe-read, availability, containment, or parse failures, while `skipped_sensitive_file_count` remains separate. The legacy `truncated` field is the union of `more_results_available` and `coverage_incomplete`.
 
-Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. Broad PDF-library search is not performed live because opening every PDF would make latency and memory unpredictable; use `read_file(format: pdf, query: ...)` after identifying a PDF. HAR is shape-bounded and sanitized before matching, and other legacy text containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share a bounded in-process queue and one cancellation-aware vault-scoped cross-process permit, so concurrent agents or MCP processes cannot multiply the corpus memory ceiling; canceled queued calls leave the line immediately. The complete MCP result—including compatibility JSON text and structured content—is byte-bounded.
+Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. HAR is shape-bounded and sanitized before matching, PDF extraction is byte/page/text bounded, and legacy searchable content containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share a bounded in-process queue and one cancellation-aware vault-scoped cross-process permit, so concurrent agents or MCP processes cannot multiply the corpus memory ceiling; canceled queued calls leave the line immediately. The complete MCP result—including compatibility JSON text and structured content—is byte-bounded.
 
 ### Formats and operations
 
@@ -209,7 +213,7 @@ Format-specific CRUD behavior stays behind the four endpoints:
 - CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
 - Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
-- PDF reads return extracted text plus rendered page images and support page, printed-page, range, and query navigation.
+- PDF reads return extracted text plus rendered page images and support page, printed-page, range, and ranked query navigation with truncation/extraction status.
 
 ## Resources
 

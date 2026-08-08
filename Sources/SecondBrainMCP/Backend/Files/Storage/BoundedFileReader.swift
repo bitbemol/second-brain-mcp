@@ -7,6 +7,7 @@ enum BoundedFileReader {
     enum ReadError: Error, Sendable {
         case notFound
         case notARegularFile
+        case hiddenComponent
         case changedDuringRead
     }
 
@@ -69,14 +70,16 @@ enum BoundedFileReader {
         maximumBytes: Int,
         path: String,
         cancellationCheck: () throws -> Void = { try Task.checkCancellation() },
-        descriptorDidClose: ((Int32) -> Void)? = nil
+        descriptorDidClose: ((Int32) -> Void)? = nil,
+        rejectHiddenDescendantsOf protectedRoot: URL? = nil
     ) throws -> Snapshot {
         let captured = try withStableFileDescriptor(
             fromCanonical: url,
             maximumBytes: maximumBytes,
             path: path,
             cancellationCheck: cancellationCheck,
-            descriptorDidClose: descriptorDidClose
+            descriptorDidClose: descriptorDidClose,
+            rejectHiddenDescendantsOf: protectedRoot
         ) { descriptor, initialBytes in
             var data = Data()
             data.reserveCapacity(initialBytes)
@@ -118,6 +121,7 @@ enum BoundedFileReader {
         path: String,
         cancellationCheck: () throws -> Void = { try Task.checkCancellation() },
         descriptorDidClose: ((Int32) -> Void)? = nil,
+        rejectHiddenDescendantsOf protectedRoot: URL? = nil,
         operation: (Int32, Int) throws -> Value
     ) throws -> (value: Value, metadata: RegularFileMetadata) {
         guard maximumBytes >= 0 else {
@@ -131,7 +135,8 @@ enum BoundedFileReader {
         let descriptor = try openCanonical(
             url,
             cancellationCheck: cancellationCheck,
-            descriptorDidClose: descriptorDidClose
+            descriptorDidClose: descriptorDidClose,
+            rejectHiddenDescendantsOf: protectedRoot
         )
         defer {
             Darwin.close(descriptor)
@@ -178,12 +183,16 @@ enum BoundedFileReader {
     private static func openCanonical(
         _ url: URL,
         cancellationCheck: () throws -> Void,
-        descriptorDidClose: ((Int32) -> Void)?
+        descriptorDidClose: ((Int32) -> Void)?,
+        rejectHiddenDescendantsOf protectedRoot: URL?
     ) throws -> Int32 {
         let path = url.standardized.path
         guard path.hasPrefix("/") else { throw ReadError.notARegularFile }
         let components = path.split(separator: "/").map(String.init)
         guard !components.isEmpty else { throw ReadError.notARegularFile }
+        let protectedComponentCount = protectedRoot.map {
+            $0.standardized.resolvingSymlinksInPath().pathComponents.count - 1
+        }
 
         var descriptor = Darwin.open(
             "/",
@@ -235,6 +244,20 @@ enum BoundedFileReader {
                 default:
                     errno = observedErrno
                     throw posixError()
+                }
+            }
+            if let protectedComponentCount,
+               index >= protectedComponentCount {
+                var metadata = stat()
+                if Darwin.fstat(next, &metadata) != 0 {
+                    let code = errno
+                    Darwin.close(next)
+                    errno = code
+                    throw posixError()
+                }
+                guard metadata.st_flags & UInt32(UF_HIDDEN) == 0 else {
+                    Darwin.close(next)
+                    throw ReadError.hiddenComponent
                 }
             }
             descriptor = next

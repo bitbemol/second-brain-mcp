@@ -7,6 +7,23 @@ struct SearchDocument: Sendable {
     let title: String
     let tags: [String]
     let sections: [SearchSection]
+    let pdfTextExtractionStatus: PDFTextExtractionStatus?
+
+    init(
+        path: String,
+        format: FileFormat,
+        title: String,
+        tags: [String],
+        sections: [SearchSection],
+        pdfTextExtractionStatus: PDFTextExtractionStatus? = nil
+    ) {
+        self.path = path
+        self.format = format
+        self.title = title
+        self.tags = tags
+        self.sections = sections
+        self.pdfTextExtractionStatus = pdfTextExtractionStatus
+    }
 }
 
 /// One format-aware section with stable source-line coordinates.
@@ -16,11 +33,36 @@ struct SearchSection: Sendable {
     let content: String
     let lineStart: Int
     let lineEnd: Int
+    let physicalPage: Int?
+    let printedPage: String?
+    let pdfPageKind: PDFSearchPageKind?
+
+    init(
+        heading: String?,
+        location: VaultSearchLocation?,
+        content: String,
+        lineStart: Int,
+        lineEnd: Int,
+        physicalPage: Int? = nil,
+        printedPage: String? = nil,
+        pdfPageKind: PDFSearchPageKind? = nil
+    ) {
+        self.heading = heading
+        self.location = location
+        self.content = content
+        self.lineStart = lineStart
+        self.lineEnd = lineEnd
+        self.physicalPage = physicalPage
+        self.printedPage = printedPage
+        self.pdfPageKind = pdfPageKind
+    }
 }
 
 /// Corpus construction facts that remain independent from ranking strategy.
 struct SearchCorpus: Sendable {
     let documents: [SearchDocument]
+    /// Exact-byte identity of every admitted snapshot and candidate shape.
+    let revisionFingerprint: String
     let skippedFileCount: Int
     let skippedSensitiveFileCount: Int
     let resourceLimitedFileCount: Int
@@ -110,11 +152,15 @@ enum SearchTokenizer {
 
         func finish(at end: String.Index) {
             guard let tokenStart = start else { return }
-            let source = String(text[tokenStart..<end])
-            tokens.append(SearchToken(
-                normalized: normalize(source),
+            for range in identifierComponentRanges(
+                in: text,
                 range: tokenStart..<end
-            ))
+            ) {
+                let normalized = normalize(String(text[range]))
+                if !normalized.isEmpty {
+                    tokens.append(SearchToken(normalized: normalized, range: range))
+                }
+            }
             start = nil
         }
 
@@ -165,13 +211,15 @@ enum SearchTokenizer {
                 return true
             }
             guard tokens.count < maximumTokens else { return false }
-            let source = String(text[tokenStart..<end])
-            let normalized = normalize(source)
-            if !normalized.isEmpty {
-                tokens.append(SearchToken(
-                    normalized: normalized,
-                    range: tokenStart..<end
-                ))
+            for range in identifierComponentRanges(
+                in: text,
+                range: tokenStart..<end
+            ) {
+                guard tokens.count < maximumTokens else { return false }
+                let normalized = normalize(String(text[range]))
+                if !normalized.isEmpty {
+                    tokens.append(SearchToken(normalized: normalized, range: range))
+                }
             }
             return true
         }
@@ -199,9 +247,109 @@ enum SearchTokenizer {
     }
 
     static func normalize(_ text: String) -> String {
-        text.folding(
+        let folded = text.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
         )
+        return englishSearchRoot(folded)
+    }
+
+    /// Splits identifiers at lower-to-upper, acronym-to-word, and digit
+    /// boundaries while preserving ranges into the original source string.
+    private static func identifierComponentRanges(
+        in text: String,
+        range: Range<String.Index>
+    ) -> [Range<String.Index>] {
+        let indices = Array(text.indices[range])
+        guard indices.count > 1 else { return [range] }
+        var boundaries = [range.lowerBound]
+        for offset in 1..<indices.count {
+            let previous = text[indices[offset - 1]]
+            let current = text[indices[offset]]
+            let next = offset + 1 < indices.count ? text[indices[offset + 1]] : nil
+            let lowerToUpper = previous.isLowercase && current.isUppercase
+            let acronymToWord = previous.isUppercase && current.isUppercase
+                && next?.isLowercase == true
+            let digitBoundary = previous.isNumber != current.isNumber
+                && (previous.isLetter || previous.isNumber)
+                && (current.isLetter || current.isNumber)
+            if lowerToUpper || acronymToWord || digitBoundary {
+                boundaries.append(indices[offset])
+            }
+        }
+        boundaries.append(range.upperBound)
+        return zip(boundaries, boundaries.dropFirst()).map { $0..<$1 }
+    }
+
+    /// Conservative inflection folding used only by word-oriented strategies.
+    private static func englishSearchRoot(_ value: String) -> String {
+        guard value.unicodeScalars.allSatisfy({
+            CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
+        }) else { return value }
+        guard value.count > 3 else { return value }
+        if value.hasSuffix("ies"), value.count > 4 {
+            return String(value.dropLast(3)) + "y"
+        }
+        if value.hasSuffix("ing"), value.count > 5 {
+            var root = String(value.dropLast(3))
+            if root.count > 2, root.last == root.dropLast().last {
+                root.removeLast()
+            }
+            return root
+        }
+        if value.hasSuffix("ed"), value.count > 4 {
+            return String(value.dropLast(2))
+        }
+        if value.hasSuffix("s"),
+           !value.hasSuffix("ss"),
+           !value.hasSuffix("us"),
+           !value.hasSuffix("is") {
+            return String(value.dropLast())
+        }
+        return value
+    }
+}
+
+/// Extracts the high-information terms used by conversational smart search.
+enum SearchQueryAnalyzer {
+    private static let stopWords: Set<String> = Set([
+        "a", "about", "after", "an", "and", "are", "as", "at", "be",
+        "behind", "by", "can", "could", "did", "do", "does", "for", "from",
+        "how", "i", "in", "into", "is", "it", "look", "me", "my", "of",
+        "on", "or", "please", "should", "show", "that", "the", "their",
+        "this", "to", "was", "were", "what", "when", "where", "which",
+        "who", "why", "with", "would", "you",
+    ].map(SearchTokenizer.normalize))
+
+    private static let intentWords: Set<String> = Set([
+        "avoid", "explain", "find", "help", "prevent", "tell", "want",
+    ].map(SearchTokenizer.normalize))
+
+    static func significantTokens(in query: String) -> [SearchToken] {
+        let all = SearchTokenizer.tokens(in: query)
+        let significant = all.filter {
+            !stopWords.contains($0.normalized) && !intentWords.contains($0.normalized)
+        }
+        return significant.isEmpty ? all : significant
+    }
+
+    static func containsSymbolSyntax(_ query: String) -> Bool {
+        // Natural-language punctuation must not turn an otherwise conversational
+        // smart query into literal-only code search. Strong code/path sigils are
+        // protected only when the complete query is one compact expression;
+        // callers can always select `.exact` for a longer literal expression.
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.unicodeScalars.contains(where: {
+                  CharacterSet.whitespacesAndNewlines.contains($0)
+              }) else { return false }
+        let strongSymbols = CharacterSet(charactersIn: "@#$%^&*+=<>/\\|[]{}\u{0060}")
+        if trimmed.unicodeScalars.contains(where: strongSymbols.contains) {
+            return true
+        }
+        // A compact dotted identifier or hidden/path-like name is code-shaped;
+        // ordinary sentence-final periods are not because they include spaces.
+        return trimmed.dropFirst().dropLast().contains(".")
+            || trimmed.hasPrefix(".")
     }
 }

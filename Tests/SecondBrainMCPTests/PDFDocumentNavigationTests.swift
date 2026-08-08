@@ -27,7 +27,7 @@ struct PDFDocumentNavigationTests {
         let tracker = PageLifetimeTracker()
         let document = TrackingPDFDocument(pageCount: 1_500, tracker: tracker)
 
-        #expect(PDFDocumentNavigation.resolvePage(label: "2", in: document) == 2)
+        #expect(try PDFDocumentNavigation.resolvePage(label: "2", in: document) == 2)
 
         let counts = tracker.counts
         #expect(counts.created == 2)
@@ -35,12 +35,28 @@ struct PDFDocumentNavigationTests {
         #expect(counts.peak == 1)
     }
 
+    @Test("Document label lookup reports an incomplete bounded scan")
+    func documentLabelLookupIsBounded() throws {
+        let tracker = PageLifetimeTracker()
+        let document = TrackingPDFDocument(pageCount: 100, tracker: tracker)
+
+        #expect(throws: PDFReadError.self) {
+            _ = try PDFDocumentNavigation.resolvePage(
+                label: "missing",
+                in: document,
+                maximumPages: 10
+            )
+        }
+        #expect(tracker.counts.created == 10)
+        #expect(tracker.counts.live == 0)
+    }
+
     @Test("Empty documents expose no navigation metadata")
-    func emptyDocumentHasNoNavigation() {
+    func emptyDocumentHasNoNavigation() throws {
         let document = PDFDocument()
 
         #expect(PDFDocumentNavigation.pageLabels(in: document) == nil)
-        #expect(PDFDocumentNavigation.outline(in: document) == nil)
+        #expect(try PDFDocumentNavigation.outline(in: document) == nil)
     }
 
     @Test("Outline extraction stops at its entry limit")
@@ -61,7 +77,7 @@ struct PDFDocumentNavigationTests {
         document.outlineRoot = root
 
         let outline = try #require(
-            PDFDocumentNavigation.outline(in: document, maximumEntries: 10)
+            try PDFDocumentNavigation.outline(in: document, maximumEntries: 10)
         )
 
         #expect(outline.count == 10)
@@ -70,7 +86,7 @@ struct PDFDocumentNavigationTests {
     }
 
     @Test("Outline traversal also limits malformed bookmarks")
-    func malformedOutlineTraversalIsBounded() {
+    func malformedOutlineTraversalIsBounded() throws {
         let document = PDFDocument()
         let page = PDFPage()
         document.insert(page, at: 0)
@@ -86,7 +102,7 @@ struct PDFDocumentNavigationTests {
         document.outlineRoot = root
 
         #expect(
-            PDFDocumentNavigation.outline(
+            try PDFDocumentNavigation.outline(
                 in: document,
                 maximumEntries: 10,
                 maximumVisitedNodes: 10

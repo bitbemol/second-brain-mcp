@@ -4,10 +4,16 @@ enum SearchRequestLimits {
     static let maximumQueryBytes = 1_024
     /// Maximum UTF-8 bytes accepted in a vault-relative search prefix.
     static let maximumPathPrefixBytes = 4_096
-    /// Default number of different files returned.
+    /// Default number of ranked results returned.
     static let defaultResults = 20
-    /// Maximum number of different files returned.
+    /// Maximum number of ranked results returned in one page.
     static let maximumResults = 50
+    /// Maximum independently ranked passages returned from one file.
+    static let maximumHitsPerFile = 5
+    /// Maximum UTF-8 bytes accepted in an opaque continuation cursor.
+    static let maximumCursorBytes = 512
+    /// Maximum UTF-8 bytes retained for one optional result locator value.
+    static let maximumLocatorBytes = 4 * 1024
     /// Default relevance floor used to suppress weak partial matches.
     static let defaultMinimumRelevance = 0.60
     /// Maximum number of resource-limited paths exposed diagnostically.
@@ -28,6 +34,8 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
     case tokenTooLarge(limit: Int)
     case invalidLimit(maximum: Int)
     case invalidMinimumRelevance
+    case invalidMaxHitsPerFile(maximum: Int)
+    case invalidCursor
     case unsupportedFormat(FileFormat)
     case emptySelection(String)
     case invalidSelection(String)
@@ -48,6 +56,10 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
             "Search limit must be between 1 and \(maximum)"
         case .invalidMinimumRelevance:
             "minimum_relevance must be a finite number between 0 and 1"
+        case .invalidMaxHitsPerFile(let maximum):
+            "max_hits_per_file must be between 1 and \(maximum)"
+        case .invalidCursor:
+            "Search cursor is invalid or belongs to a different request"
         case .unsupportedFormat(let format):
             "Format is not searchable: \(format.rawValue)"
         case .emptySelection(let name):
@@ -55,7 +67,7 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
         case .invalidSelection(let name):
             "Search \(name) contains duplicates or too many values"
         case .invalidPathPrefix:
-            "path_prefix must be a safe directory under notes/"
+            "path_prefix must be a safe directory under a selected searchable area"
         case .searchBusy:
             "Search is at capacity; retry after an active search finishes"
         }
