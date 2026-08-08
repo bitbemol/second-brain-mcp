@@ -6,6 +6,7 @@ enum SearchToolArgument: String, CaseIterable, Sendable {
     case formats
     case pathPrefix = "path_prefix"
     case limit
+    case minimumRelevance = "minimum_relevance"
 }
 
 extension Dictionary where Key == String {

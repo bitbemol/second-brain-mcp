@@ -149,6 +149,7 @@ struct SearchTextMatcherTests {
             maximumResults: 50,
             maximumDirectoryEntries: 100,
             maximumFiles: 100,
+            maximumFileBytes: 1_024,
             maximumAggregateBytes: 1_024,
             maximumSectionsPerFile: 10,
             maximumMarkdownLines: 100,

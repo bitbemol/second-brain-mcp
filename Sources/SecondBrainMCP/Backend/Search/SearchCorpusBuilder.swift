@@ -18,12 +18,15 @@ struct SearchCorpusBuilder: Sendable {
     private struct Candidate: Sendable {
         let path: String
         let format: FileFormat
+        /// Untrusted enumeration hint used only for deterministic admission order.
+        let estimatedBytes: Int
     }
 
     private struct EnumerationResult {
         let candidates: [Candidate]
         let skippedFileCount: Int
         let resourceLimitedFileCount: Int
+        let resourceLimitSamples: [VaultSearchResourceLimit]
         let coverageIncomplete: Bool
     }
 
@@ -54,6 +57,7 @@ struct SearchCorpusBuilder: Sendable {
         var skippedSensitiveFiles = 0
         var resourceLimitedFiles = enumeration.resourceLimitedFileCount
         var partiallyLimitedPaths = Set<String>()
+        var resourceLimitSamples = enumeration.resourceLimitSamples
         var aggregateBytes = 0
         var coverageIncomplete = enumeration.coverageIncomplete
 
@@ -94,14 +98,28 @@ struct SearchCorpusBuilder: Sendable {
             }
 
             let remaining = max(limits.maximumAggregateBytes - aggregateBytes, 0)
+            let perFileLimit = min(remaining, limits.maximumFileBytes)
             let snapshot: FileSnapshot
             do {
                 snapshot = try await operations.withRead(target: target) {
-                    try await store.snapshot(target, maximumBytes: remaining)
+                    try await store.snapshot(target, maximumBytes: perFileLimit)
                 }
             } catch is FileResourcePolicy.Violation {
                 resourceLimitedFiles += 1
                 coverageIncomplete = true
+                let reason: VaultSearchResourceLimitReason = remaining
+                    < min(candidate.format.maximumFileBytes, limits.maximumFileBytes)
+                    ? .corpusBytes : .fileBytes
+                if let sample = try SearchResourceDiagnostics.sample(
+                    path: candidate.path,
+                    reason: reason,
+                    impact: .omitted
+                ) {
+                    resourceLimitSamples = SearchResourceDiagnostics.merged(
+                        resourceLimitSamples,
+                        [sample]
+                    )
+                }
                 continue
             } catch is CancellationError {
                 throw CancellationError()
@@ -124,6 +142,16 @@ struct SearchCorpusBuilder: Sendable {
             guard snapshot.data.count <= remaining else {
                 resourceLimitedFiles += 1
                 coverageIncomplete = true
+                if let sample = try SearchResourceDiagnostics.sample(
+                    path: candidate.path,
+                    reason: .corpusBytes,
+                    impact: .omitted
+                ) {
+                    resourceLimitSamples = SearchResourceDiagnostics.merged(
+                        resourceLimitSamples,
+                        [sample]
+                    )
+                }
                 continue
             }
             aggregateBytes += snapshot.data.count
@@ -147,6 +175,16 @@ struct SearchCorpusBuilder: Sendable {
                     resourceLimitedFiles += 1
                     partiallyLimitedPaths.insert(candidate.path)
                     coverageIncomplete = true
+                    if let sample = try SearchResourceDiagnostics.sample(
+                        path: candidate.path,
+                        reason: .projection,
+                        impact: .partial
+                    ) {
+                        resourceLimitSamples = SearchResourceDiagnostics.merged(
+                            resourceLimitSamples,
+                            [sample]
+                        )
+                    }
                 }
             } catch is SensitiveContentPolicy.Violation {
                 skippedSensitiveFiles += 1
@@ -154,9 +192,29 @@ struct SearchCorpusBuilder: Sendable {
             } catch is FileResourcePolicy.Violation {
                 resourceLimitedFiles += 1
                 coverageIncomplete = true
+                if let sample = try SearchResourceDiagnostics.sample(
+                    path: candidate.path,
+                    reason: .projection,
+                    impact: .omitted
+                ) {
+                    resourceLimitSamples = SearchResourceDiagnostics.merged(
+                        resourceLimitSamples,
+                        [sample]
+                    )
+                }
             } catch is SearchDocumentExtractor.ResourceLimit {
                 resourceLimitedFiles += 1
                 coverageIncomplete = true
+                if let sample = try SearchResourceDiagnostics.sample(
+                    path: candidate.path,
+                    reason: .projection,
+                    impact: .omitted
+                ) {
+                    resourceLimitSamples = SearchResourceDiagnostics.merged(
+                        resourceLimitSamples,
+                        [sample]
+                    )
+                }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -171,6 +229,7 @@ struct SearchCorpusBuilder: Sendable {
             skippedSensitiveFileCount: skippedSensitiveFiles,
             resourceLimitedFileCount: resourceLimitedFiles,
             partiallyLimitedPaths: partiallyLimitedPaths,
+            resourceLimitSamples: resourceLimitSamples,
             coverageIncomplete: coverageIncomplete
         )
     }
@@ -187,6 +246,7 @@ struct SearchCorpusBuilder: Sendable {
             .isHiddenKey,
             .isUbiquitousItemKey,
             .ubiquitousItemDownloadingStatusKey,
+            .fileSizeKey,
         ]
         let scopeAttributes: [FileAttributeKey: Any]
         guard !PathValidator.containsSymbolicLinkComponent(
@@ -197,6 +257,7 @@ struct SearchCorpusBuilder: Sendable {
                 candidates: [],
                 skippedFileCount: 0,
                 resourceLimitedFileCount: 0,
+                resourceLimitSamples: [],
                 coverageIncomplete: true
             )
         }
@@ -218,6 +279,7 @@ struct SearchCorpusBuilder: Sendable {
                 candidates: [],
                 skippedFileCount: 0,
                 resourceLimitedFileCount: 0,
+                resourceLimitSamples: [],
                 coverageIncomplete: !isMissing
             )
         }
@@ -227,6 +289,7 @@ struct SearchCorpusBuilder: Sendable {
                 candidates: [],
                 skippedFileCount: 0,
                 resourceLimitedFileCount: 0,
+                resourceLimitSamples: [],
                 coverageIncomplete: true
             )
         }
@@ -235,6 +298,7 @@ struct SearchCorpusBuilder: Sendable {
                 candidates: [],
                 skippedFileCount: 0,
                 resourceLimitedFileCount: 0,
+                resourceLimitSamples: [],
                 coverageIncomplete: true
             )
         }
@@ -244,6 +308,7 @@ struct SearchCorpusBuilder: Sendable {
                     candidates: [],
                     skippedFileCount: 0,
                     resourceLimitedFileCount: 0,
+                    resourceLimitSamples: [],
                     coverageIncomplete: true
                 )
             }
@@ -258,6 +323,7 @@ struct SearchCorpusBuilder: Sendable {
                     candidates: [],
                     skippedFileCount: 0,
                     resourceLimitedFileCount: 0,
+                    resourceLimitSamples: [],
                     coverageIncomplete: true
                 )
             }
@@ -266,6 +332,7 @@ struct SearchCorpusBuilder: Sendable {
                 candidates: [],
                 skippedFileCount: 0,
                 resourceLimitedFileCount: 0,
+                resourceLimitSamples: [],
                 coverageIncomplete: true
             )
         }
@@ -283,6 +350,7 @@ struct SearchCorpusBuilder: Sendable {
                 candidates: [],
                 skippedFileCount: 0,
                 resourceLimitedFileCount: 0,
+                resourceLimitSamples: [],
                 coverageIncomplete: true
             )
         }
@@ -340,18 +408,43 @@ struct SearchCorpusBuilder: Sendable {
                 continue
             }
 
-            candidates.append(Candidate(path: relativePath, format: format))
+            candidates.append(Candidate(
+                path: relativePath,
+                format: format,
+                estimatedBytes: max(values.fileSize ?? 0, 0)
+            ))
         }
 
-        candidates.sort { $0.path < $1.path }
+        // Favor ordinary notes and smaller evidence files so a few large HARs
+        // cannot consume the entire live-search corpus. The descriptor snapshot
+        // remains the size and containment authority; this hint affects order only.
+        candidates.sort {
+            let lhs = admissionKey($0)
+            let rhs = admissionKey($1)
+            if lhs.format != rhs.format { return lhs.format < rhs.format }
+            if lhs.bytes != rhs.bytes { return lhs.bytes < rhs.bytes }
+            return $0.path < $1.path
+        }
         if traversalErrors.value > initiallyCountedTraversalErrors {
             coverageIncomplete = true
         }
         if skipped > 0 { coverageIncomplete = true }
         let maximumFiles = max(limits.maximumFiles, 0)
         var resourceLimitedFiles = 0
+        var resourceLimitSamples: [VaultSearchResourceLimit] = []
         if candidates.count > maximumFiles {
             resourceLimitedFiles = candidates.count - maximumFiles
+            for candidate in candidates.dropFirst(maximumFiles) {
+                guard let sample = try SearchResourceDiagnostics.sample(
+                    path: candidate.path,
+                    reason: .fileCount,
+                    impact: .omitted
+                ) else { continue }
+                resourceLimitSamples = SearchResourceDiagnostics.merged(
+                    resourceLimitSamples,
+                    [sample]
+                )
+            }
             candidates = Array(candidates.prefix(maximumFiles))
             coverageIncomplete = true
         }
@@ -359,8 +452,20 @@ struct SearchCorpusBuilder: Sendable {
             candidates: candidates,
             skippedFileCount: skipped,
             resourceLimitedFileCount: resourceLimitedFiles,
+            resourceLimitSamples: resourceLimitSamples,
             coverageIncomplete: coverageIncomplete
         )
+    }
+
+    private func admissionKey(_ candidate: Candidate) -> (format: Int, bytes: Int) {
+        let priority: Int
+        switch candidate.format {
+        case .markdown: priority = 0
+        case .canvas, .json, .csv, .patch, .log: priority = 1
+        case .har: priority = 2
+        default: priority = 3
+        }
+        return (priority, candidate.estimatedBytes)
     }
 
     /// Rechecks every scoped ancestor after request validation and immediately

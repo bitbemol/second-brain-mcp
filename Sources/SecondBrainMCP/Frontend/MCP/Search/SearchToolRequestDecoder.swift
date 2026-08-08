@@ -47,7 +47,9 @@ enum SearchToolRequestDecoder {
             ),
             pathPrefix: try string(.pathPrefix, in: values),
             limit: try integer(.limit, in: values)
-                ?? SearchRequestLimits.defaultResults
+                ?? SearchRequestLimits.defaultResults,
+            minimumRelevance: try number(.minimumRelevance, in: values)
+                ?? SearchRequestLimits.defaultMinimumRelevance
         )
     }
 
@@ -92,6 +94,29 @@ enum SearchToolRequestDecoder {
             )
         }
         return integer
+    }
+
+    private static func number(
+        _ argument: SearchToolArgument,
+        in values: [String: Value]
+    ) throws -> Double? {
+        guard let value = values[argument] else { return nil }
+        let number: Double
+        if let double = value.doubleValue {
+            number = double
+        } else if let integer = value.intValue {
+            number = Double(integer)
+        } else {
+            throw DecodingError.invalid(
+                "Invalid parameter '\(argument.rawValue)': expected number"
+            )
+        }
+        guard number.isFinite, (0...1).contains(number) else {
+            throw DecodingError.invalid(
+                "Invalid parameter '\(argument.rawValue)': expected number from 0 through 1"
+            )
+        }
+        return number
     }
 
     private static func enumArray<Element: RawRepresentable>(

@@ -12,6 +12,8 @@ struct VaultSearchRequest: Sendable {
     let pathPrefix: String?
     /// Maximum number of different files returned.
     let limit: Int
+    /// Minimum normalized relevance accepted into the result set.
+    let minimumRelevance: Double
 
     /// Creates a search request with safe, useful defaults.
     init(
@@ -20,7 +22,8 @@ struct VaultSearchRequest: Sendable {
         fields: [SearchField]? = nil,
         formats: [FileFormat]? = nil,
         pathPrefix: String? = nil,
-        limit: Int = SearchRequestLimits.defaultResults
+        limit: Int = SearchRequestLimits.defaultResults,
+        minimumRelevance: Double = SearchRequestLimits.defaultMinimumRelevance
     ) {
         self.query = query
         self.strategy = strategy
@@ -28,5 +31,6 @@ struct VaultSearchRequest: Sendable {
         self.formats = formats
         self.pathPrefix = pathPrefix
         self.limit = limit
+        self.minimumRelevance = minimumRelevance
     }
 }

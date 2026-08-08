@@ -8,6 +8,7 @@ struct SearchResourceLimits: Sendable {
     let maximumResults: Int
     let maximumDirectoryEntries: Int
     let maximumFiles: Int
+    let maximumFileBytes: Int
     let maximumAggregateBytes: Int
     let maximumSectionsPerFile: Int
     let maximumMarkdownLines: Int
@@ -35,6 +36,7 @@ struct SearchResourceLimits: Sendable {
         maximumResults: SearchRequestLimits.maximumResults,
         maximumDirectoryEntries: 10_000,
         maximumFiles: 5_000,
+        maximumFileBytes: 8 * 1024 * 1024,
         maximumAggregateBytes: 128 * 1024 * 1024,
         maximumSectionsPerFile: 2_000,
         maximumMarkdownLines: 50_000,
@@ -80,6 +82,10 @@ enum SearchResourcePolicy {
         }
         guard (1...limits.maximumResults).contains(request.limit) else {
             throw VaultSearchRequestError.invalidLimit(maximum: limits.maximumResults)
+        }
+        guard request.minimumRelevance.isFinite,
+              (0...1).contains(request.minimumRelevance) else {
+            throw VaultSearchRequestError.invalidMinimumRelevance
         }
 
         let queryTokens = SearchTokenizer.tokens(in: request.query)

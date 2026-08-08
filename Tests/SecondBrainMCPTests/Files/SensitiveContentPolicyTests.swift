@@ -64,6 +64,74 @@ struct SensitiveContentPolicyTests {
         )
     }
 
+    @Test("Uppercase symbolic credential identifiers remain writable")
+    func permitsSymbolicCredentialIdentifiers() throws {
+        let safe = [
+            "Bearer ACTUAL_LITELLM_API_KEY",
+            "Authorization: Bearer LITELLM_ACCESS_TOKEN",
+            "Authorization: SERVICE_CLIENT_SECRET",
+            "api_key=TEST_PROVIDER_V2_API_KEY",
+            "access_token=DOCUMENTED_ACCESS_TOKEN",
+            "password=DATABASE_PASSWORD",
+        ]
+
+        for value in safe {
+            try SensitiveContentPolicy.validate(
+                Data(value.utf8),
+                format: .markdown,
+                path: "notes/setup.md"
+            )
+        }
+    }
+
+    @Test("Symbolic exemption does not admit opaque or malformed credentials")
+    func rejectsValuesThatOnlyResembleSymbolicIdentifiers() {
+        let unsafe = [
+            // Case must be exact: mixed-case values can be real credentials.
+            "Bearer Actual_LITELLM_API_KEY",
+            "Bearer ACTUAL_LiteLLM_API_KEY",
+            // Uppercase alone does not make an opaque value a placeholder.
+            "Bearer ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+            // Underscores alone are insufficient without a credential noun.
+            "Bearer ABCDEFGHIJKL_MNOPQRSTUVWX_0123456789",
+            // Empty, leading, and trailing components are not identifiers.
+            "Bearer ACTUAL__LITELLM_API_KEY",
+            "Bearer _ACTUAL_LITELLM_API_KEY",
+            "Bearer ACTUAL_LITELLM_API_KEY_",
+            // Non-identifier punctuation remains credential-shaped input.
+            "Bearer ACTUAL.LITELLM.API.KEY.012345",
+        ]
+
+        for value in unsafe {
+            #expect(throws: SensitiveContentPolicy.Violation.self) {
+                try SensitiveContentPolicy.validate(
+                    Data(value.utf8),
+                    format: .markdown,
+                    path: "notes/security.md"
+                )
+            }
+        }
+    }
+
+    @Test("Known provider credentials cannot use the symbolic exemption")
+    func rejectsProviderCredentialsNearSymbolicIdentifiers() {
+        let unsafe = [
+            "Bearer sk-proj-" + String(repeating: "A", count: 24),
+            "Bearer github_pat_" + String(repeating: "B", count: 24),
+            "Bearer AKIA" + String(repeating: "7", count: 16),
+        ]
+
+        for value in unsafe {
+            #expect(throws: SensitiveContentPolicy.Violation.self) {
+                try SensitiveContentPolicy.validate(
+                    Data(value.utf8),
+                    format: .markdown,
+                    path: "notes/security.md"
+                )
+            }
+        }
+    }
+
     @Test("Placeholders must occupy the complete credential value")
     func rejectsPlaceholderPrefixesAndMixedCookies() {
         let unsafe = [

@@ -1,5 +1,40 @@
+/// Why a known search file could not be evaluated completely.
+enum VaultSearchResourceLimitReason: String, Codable, CaseIterable, Sendable {
+    /// The individual file exceeded the search-specific byte ceiling.
+    case fileBytes = "file_bytes"
+    /// The request-wide corpus byte budget could not admit the file.
+    case corpusBytes = "corpus_bytes"
+    /// The candidate-count ceiling omitted the file.
+    case fileCount = "file_count"
+    /// Format-aware extraction omitted all or part of the searchable projection.
+    case projection
+    /// Relaxed lexical or fuzzy evaluation reached its fair work allowance.
+    case matching
+}
+
+/// Whether a resource ceiling omitted a whole file or only part of its search surface.
+enum VaultSearchResourceLimitImpact: String, Codable, CaseIterable, Sendable {
+    case omitted
+    case partial
+}
+
+/// One bounded, non-exhaustive resource-limit diagnostic.
+struct VaultSearchResourceLimit: Codable, Equatable, Sendable {
+    /// Canonical vault-relative path, validated by the sensitive-content policy.
+    let path: String
+    /// Stable machine-readable ceiling category.
+    let reason: VaultSearchResourceLimitReason
+    /// Whether the file was wholly omitted or only partially evaluated.
+    let impact: VaultSearchResourceLimitImpact
+}
+
 /// One best matching section from a searched note.
 struct VaultSearchResult: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case path, format, title, heading, location, snippet, lineStart, lineEnd
+        case matchedFields, relevance, termCoverage, completeQueryFields
+    }
+
     /// Canonical vault-relative note path.
     let path: String
     /// Concrete stored file format.
@@ -16,20 +51,80 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
     let lineStart: Int
     /// One-based last source line represented by the matching section.
     let lineEnd: Int
-    /// Concrete fields that contributed to this result's rank.
+    /// Fields that contributed any evidence to this result.
     let matchedFields: [SearchField]
+    /// Normalized ranking strength in `0...1`; this is not a probability.
+    let relevance: Double
+    /// Fraction of unique normalized query terms covered across all evidence.
+    let termCoverage: Double
+    /// Fields that individually satisfied the complete query.
+    let completeQueryFields: [SearchField]
+
+    /// Creates one result, retaining source compatibility for internal callers.
+    init(
+        path: String,
+        format: FileFormat,
+        title: String,
+        heading: String?,
+        location: VaultSearchLocation?,
+        snippet: String,
+        lineStart: Int,
+        lineEnd: Int,
+        matchedFields: [SearchField],
+        relevance: Double = 0,
+        termCoverage: Double = 0,
+        completeQueryFields: [SearchField]? = nil
+    ) {
+        self.path = path
+        self.format = format
+        self.title = title
+        self.heading = heading
+        self.location = location
+        self.snippet = snippet
+        self.lineStart = lineStart
+        self.lineEnd = lineEnd
+        self.matchedFields = matchedFields
+        self.relevance = relevance
+        self.termCoverage = termCoverage
+        self.completeQueryFields = completeQueryFields ?? []
+    }
+
+    /// Decodes older additive responses with conservative complete-match defaults.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let matched = try values.decode([SearchField].self, forKey: .matchedFields)
+        self.init(
+            path: try values.decode(String.self, forKey: .path),
+            format: try values.decode(FileFormat.self, forKey: .format),
+            title: try values.decode(String.self, forKey: .title),
+            heading: try values.decodeIfPresent(String.self, forKey: .heading),
+            location: try values.decodeIfPresent(VaultSearchLocation.self, forKey: .location),
+            snippet: try values.decode(String.self, forKey: .snippet),
+            lineStart: try values.decode(Int.self, forKey: .lineStart),
+            lineEnd: try values.decode(Int.self, forKey: .lineEnd),
+            matchedFields: matched,
+            relevance: try values.decodeIfPresent(Double.self, forKey: .relevance) ?? 0,
+            termCoverage: try values.decodeIfPresent(Double.self, forKey: .termCoverage) ?? 0,
+            completeQueryFields: try values.decodeIfPresent(
+                [SearchField].self,
+                forKey: .completeQueryFields
+            ) ?? []
+        )
+    }
 }
 
 /// Bounded search results plus coverage facts for the caller.
 struct VaultSearchResponse: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
-        case strategy, results, searchedFileCount, skippedFileCount
-        case skippedSensitiveFileCount, resourceLimitedFileCount
+        case strategy, minimumRelevance, results, searchedFileCount, skippedFileCount
+        case skippedSensitiveFileCount, resourceLimitedFileCount, resourceLimitSamples
         case moreResultsAvailable, coverageIncomplete, truncated
     }
 
     /// Effective matching strategy.
     let strategy: SearchStrategy
+    /// Effective normalized relevance floor.
+    let minimumRelevance: Double
     /// At most one best result per file, in stable rank order for the examined corpus.
     let results: [VaultSearchResult]
     /// Number of safe, eligible files whose content was searched.
@@ -43,6 +138,8 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
     /// When directory traversal itself is cut short, this remains a lower bound
     /// because undiscovered entries cannot be counted safely.
     let resourceLimitedFileCount: Int
+    /// Stable bounded examples explaining known resource omissions.
+    let resourceLimitSamples: [VaultSearchResourceLimit]
     /// Whether known matching results were omitted from the returned page.
     let moreResultsAvailable: Bool
     /// Whether any in-scope content could not be fully evaluated.
@@ -59,14 +156,18 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
         skippedSensitiveFileCount: Int,
         resourceLimitedFileCount: Int,
         moreResultsAvailable: Bool,
-        coverageIncomplete: Bool
+        coverageIncomplete: Bool,
+        minimumRelevance: Double = SearchRequestLimits.defaultMinimumRelevance,
+        resourceLimitSamples: [VaultSearchResourceLimit] = []
     ) {
         self.strategy = strategy
+        self.minimumRelevance = minimumRelevance
         self.results = results
         self.searchedFileCount = searchedFileCount
         self.skippedFileCount = skippedFileCount
         self.skippedSensitiveFileCount = skippedSensitiveFileCount
         self.resourceLimitedFileCount = resourceLimitedFileCount
+        self.resourceLimitSamples = resourceLimitSamples
         self.moreResultsAvailable = moreResultsAvailable
         self.coverageIncomplete = coverageIncomplete
         self.truncated = moreResultsAvailable || coverageIncomplete
@@ -89,14 +190,16 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
                 Int.self,
                 forKey: .resourceLimitedFileCount
             ),
-            moreResultsAvailable: try values.decode(
-                Bool.self,
-                forKey: .moreResultsAvailable
-            ),
-            coverageIncomplete: try values.decode(
-                Bool.self,
-                forKey: .coverageIncomplete
-            )
+            moreResultsAvailable: try values.decode(Bool.self, forKey: .moreResultsAvailable),
+            coverageIncomplete: try values.decode(Bool.self, forKey: .coverageIncomplete),
+            minimumRelevance: try values.decodeIfPresent(
+                Double.self,
+                forKey: .minimumRelevance
+            ) ?? SearchRequestLimits.defaultMinimumRelevance,
+            resourceLimitSamples: try values.decodeIfPresent(
+                [VaultSearchResourceLimit].self,
+                forKey: .resourceLimitSamples
+            ) ?? []
         )
         guard encodedTruncated == truncated else {
             throw DecodingError.dataCorruptedError(
@@ -111,11 +214,13 @@ struct VaultSearchResponse: Codable, Equatable, Sendable {
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(strategy, forKey: .strategy)
+        try values.encode(minimumRelevance, forKey: .minimumRelevance)
         try values.encode(results, forKey: .results)
         try values.encode(searchedFileCount, forKey: .searchedFileCount)
         try values.encode(skippedFileCount, forKey: .skippedFileCount)
         try values.encode(skippedSensitiveFileCount, forKey: .skippedSensitiveFileCount)
         try values.encode(resourceLimitedFileCount, forKey: .resourceLimitedFileCount)
+        try values.encode(resourceLimitSamples, forKey: .resourceLimitSamples)
         try values.encode(moreResultsAvailable, forKey: .moreResultsAvailable)
         try values.encode(coverageIncomplete, forKey: .coverageIncomplete)
         try values.encode(truncated, forKey: .truncated)

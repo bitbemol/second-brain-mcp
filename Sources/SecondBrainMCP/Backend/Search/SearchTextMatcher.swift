@@ -7,12 +7,29 @@ struct SearchWorkBudget: Sendable {
     var editDistanceCells = 0
     var exhausted = false
     var truncated = false
+    let maximumTokenComparisons: Int
+    let maximumFuzzyComparisons: Int
+    let maximumEditDistanceCells: Int
+
+    init(
+        maximumTokenComparisons: Int = .max,
+        maximumFuzzyComparisons: Int = .max,
+        maximumEditDistanceCells: Int = .max
+    ) {
+        self.maximumTokenComparisons = maximumTokenComparisons
+        self.maximumFuzzyComparisons = maximumFuzzyComparisons
+        self.maximumEditDistanceCells = maximumEditDistanceCells
+        self.exhausted = maximumTokenComparisons <= 0
+    }
 }
 
 /// One field-level match. Quality is an internal ranking value, not a probability.
 struct SearchMatch: Sendable {
     let quality: Double
+    let strength: Double
     let range: Range<String.Index>?
+    let coveredTerms: Set<String>
+    let completeQuery: Bool
 }
 
 /// Literal, lexical, and bounded typo-tolerant matching primitives.
@@ -30,13 +47,18 @@ enum SearchTextMatcher {
         queryTokens: [SearchToken],
         strategy: SearchStrategy,
         budget: inout SearchWorkBudget,
-        limits: SearchResourceLimits
+        limits: SearchResourceLimits,
+        allowsExact: Bool = true
     ) throws -> SearchMatch? {
         switch strategy {
         case .exact:
-            return exact(text: text, query: query)
+            return exact(text: text, query: query, queryTokens: queryTokens)
         case .phrase, .lexical, .fuzzy, .smart:
-            if let exact = exact(text: text, query: query) { return exact }
+            if allowsExact,
+               let exact = exact(text: text, query: query, queryTokens: queryTokens) {
+                return exact
+            }
+            guard !budget.exhausted else { return nil }
             let tokenization = try SearchTokenizer.boundedTokens(
                 in: text,
                 maximumTokens: limits.maximumSourceTokensPerField,
@@ -106,13 +128,23 @@ enum SearchTextMatcher {
         }
     }
 
-    private static func exact(text: String, query: String) -> SearchMatch? {
+    private static func exact(
+        text: String,
+        query: String,
+        queryTokens: [SearchToken]
+    ) -> SearchMatch? {
         guard let range = text.range(
             of: query,
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
         ) else { return nil }
-        return SearchMatch(quality: 100, range: range)
+        return SearchMatch(
+            quality: 100,
+            strength: 1,
+            range: range,
+            coveredTerms: Set(queryTokens.map(\.normalized)),
+            completeQuery: true
+        )
     }
 
     private static func phrase(
@@ -139,9 +171,12 @@ enum SearchTextMatcher {
             if matches {
                 return SearchMatch(
                     quality: 80,
+                    strength: 0.95,
                     range: sourceTokens[start].range.lowerBound..<sourceTokens[
                         start + required.count - 1
-                    ].range.upperBound
+                    ].range.upperBound,
+                    coveredTerms: Set(required),
+                    completeQuery: true
                 )
             }
         }
@@ -172,7 +207,10 @@ enum SearchTextMatcher {
         let allTermsBonus = firstRangeByTerm.count == required.count ? 10.0 : 0.0
         return SearchMatch(
             quality: 30 + (30 * coverage) + allTermsBonus,
-            range: firstRangeByTerm.values.min { $0.lowerBound < $1.lowerBound }
+            strength: 0.85,
+            range: firstRangeByTerm.values.min { $0.lowerBound < $1.lowerBound },
+            coveredTerms: Set(firstRangeByTerm.keys),
+            completeQuery: firstRangeByTerm.count == required.count
         )
     }
 
@@ -231,7 +269,11 @@ enum SearchTextMatcher {
                     continue
                 }
                 budget.fuzzyComparisons += 1
-                if budget.fuzzyComparisons > limits.maximumFuzzyComparisons {
+                let maximumFuzzy = min(
+                    limits.maximumFuzzyComparisons,
+                    budget.maximumFuzzyComparisons
+                )
+                if budget.fuzzyComparisons > maximumFuzzy {
                     budget.exhausted = true
                     return nil
                 }
@@ -272,7 +314,10 @@ enum SearchTextMatcher {
             : 1.0 - (Double(totalDistance) / Double(totalAllowance))
         return SearchMatch(
             quality: 48 + (10 * exactFraction) + (6 * max(closeness, 0)),
-            range: earliestRange(chosen.map(\.range), in: text)
+            strength: 0.60 + (0.20 * max(closeness, 0)),
+            range: earliestRange(chosen.map(\.range), in: text),
+            coveredTerms: Set(required),
+            completeQuery: true
         )
     }
 
@@ -384,7 +429,11 @@ enum SearchTextMatcher {
         if budget.tokenComparisons.isMultiple(of: 1_024) {
             try Task.checkCancellation()
         }
-        guard budget.tokenComparisons <= limits.maximumTokenComparisons else {
+        let maximum = min(
+            limits.maximumTokenComparisons,
+            budget.maximumTokenComparisons
+        )
+        guard budget.tokenComparisons <= maximum else {
             budget.exhausted = true
             return false
         }
@@ -410,7 +459,11 @@ enum SearchTextMatcher {
             var rowMinimum = current[0]
             for rightIndex in right.indices {
                 budget.editDistanceCells += 1
-                if budget.editDistanceCells > limits.maximumEditDistanceCells {
+                let maximumCells = min(
+                    limits.maximumEditDistanceCells,
+                    budget.maximumEditDistanceCells
+                )
+                if budget.editDistanceCells > maximumCells {
                     budget.exhausted = true
                     return nil
                 }

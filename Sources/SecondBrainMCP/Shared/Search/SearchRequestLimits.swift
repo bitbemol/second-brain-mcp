@@ -8,8 +8,16 @@ enum SearchRequestLimits {
     static let defaultResults = 20
     /// Maximum number of different files returned.
     static let maximumResults = 50
+    /// Default relevance floor used to suppress weak partial matches.
+    static let defaultMinimumRelevance = 0.60
+    /// Maximum number of resource-limited paths exposed diagnostically.
+    static let maximumResourceLimitSamples = 8
+    /// Maximum UTF-8 bytes exposed for one diagnostic path.
+    static let maximumDiagnosticPathBytes = 512
     /// Maximum encoded MCP tool-result bytes returned by one search call.
     static let maximumWireResponseBytes = 64 * 1_024
+    /// Strategy-independent result-array budget inside the duplicated MCP wire shape.
+    static let maximumWireResultPayloadBytes = 20 * 1_024
 }
 
 /// Safe request-validation failures that may cross the backend/frontend boundary.
@@ -19,6 +27,7 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
     case tooManyQueryTokens(limit: Int)
     case tokenTooLarge(limit: Int)
     case invalidLimit(maximum: Int)
+    case invalidMinimumRelevance
     case unsupportedFormat(FileFormat)
     case emptySelection(String)
     case invalidSelection(String)
@@ -37,6 +46,8 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
             "Search query contains a token longer than \(limit) Unicode scalars"
         case .invalidLimit(let maximum):
             "Search limit must be between 1 and \(maximum)"
+        case .invalidMinimumRelevance:
+            "minimum_relevance must be a finite number between 0 and 1"
         case .unsupportedFormat(let format):
             "Format is not searchable: \(format.rawValue)"
         case .emptySelection(let name):

@@ -4,6 +4,7 @@
 func searchTestLimits(
     maximumDirectoryEntries: Int? = nil,
     maximumFiles: Int? = nil,
+    maximumFileBytes: Int? = nil,
     maximumAggregateBytes: Int? = nil,
     maximumSectionsPerFile: Int? = nil,
     maximumMarkdownLines: Int? = nil,
@@ -31,6 +32,7 @@ func searchTestLimits(
         maximumDirectoryEntries: maximumDirectoryEntries
             ?? base.maximumDirectoryEntries,
         maximumFiles: maximumFiles ?? base.maximumFiles,
+        maximumFileBytes: maximumFileBytes ?? base.maximumFileBytes,
         maximumAggregateBytes: maximumAggregateBytes
             ?? base.maximumAggregateBytes,
         maximumSectionsPerFile: maximumSectionsPerFile

@@ -51,6 +51,17 @@ struct SearchToolContractTests {
         #expect(outputProperties["resource_limited_file_count"] != nil)
         #expect(outputProperties["more_results_available"] != nil)
         #expect(outputProperties["coverage_incomplete"] != nil)
+        #expect(properties["minimum_relevance"]?.objectValue?["default"]?
+            .doubleValue == SearchRequestLimits.defaultMinimumRelevance)
+        #expect(outputProperties["minimum_relevance"] != nil)
+        #expect(outputProperties["resource_limit_samples"]?.objectValue?["maxItems"]?
+            .intValue == SearchRequestLimits.maximumResourceLimitSamples)
+        let diagnosticPath = try #require(
+            outputProperties["resource_limit_samples"]?.objectValue?["items"]?
+                .objectValue?["properties"]?.objectValue?["path"]?.objectValue
+        )
+        #expect(diagnosticPath["maxLength"]?.intValue
+            == SearchRequestLimits.maximumDiagnosticPathBytes)
         for name in [
             "searched_file_count", "skipped_file_count",
             "skipped_sensitive_file_count", "resource_limited_file_count",
@@ -63,12 +74,18 @@ struct SearchToolContractTests {
                 .objectValue?["properties"]?.objectValue
         )
         #expect(resultProperties["location"] != nil)
+        #expect(resultProperties["path"]?.objectValue?["maxLength"] == nil)
         #expect(outputProperties["results"]?.objectValue?["maxItems"]?.intValue
             == SearchRequestLimits.maximumResults)
         #expect(resultProperties["format"]?.objectValue?["enum"]?.arrayValue?
             .compactMap(\.stringValue) == ["har", "json", "markdown"])
         #expect(resultProperties["line_start"]?.objectValue?["minimum"]?.intValue == 1)
         #expect(resultProperties["matched_fields"]?.objectValue?["uniqueItems"]?.boolValue == true)
+        #expect(resultProperties["matched_fields"]?.objectValue?["description"]?
+            .stringValue?.contains("contributing any query evidence") == true)
+        #expect(resultProperties["relevance"]?.objectValue?["maximum"]?.intValue == 1)
+        #expect(resultProperties["term_coverage"]?.objectValue?["maximum"]?.intValue == 1)
+        #expect(resultProperties["complete_query_fields"] != nil)
 
         let outputRequired = try #require(
             tool.outputSchema?.objectValue?["required"]?.arrayValue
@@ -76,6 +93,8 @@ struct SearchToolContractTests {
         #expect(outputRequired.contains("resource_limited_file_count"))
         #expect(outputRequired.contains("more_results_available"))
         #expect(outputRequired.contains("coverage_incomplete"))
+        #expect(outputRequired.contains("minimum_relevance"))
+        #expect(outputRequired.contains("resource_limit_samples"))
     }
 
     @Test("Decoder applies defaults and rejects malformed arrays")
@@ -88,6 +107,24 @@ struct SearchToolContractTests {
         #expect(defaults.limit == 20)
         #expect(defaults.fields == nil)
         #expect(defaults.formats == nil)
+        #expect(defaults.minimumRelevance == SearchRequestLimits.defaultMinimumRelevance)
+
+        let explicitFloor = try SearchToolRequestDecoder.decode(.init(
+            name: "search_vault",
+            arguments: [
+                "query": .string("actors"),
+                "minimum_relevance": .double(0.75),
+            ]
+        ))
+        #expect(explicitFloor.minimumRelevance == 0.75)
+        let integerFloor = try SearchToolRequestDecoder.decode(.init(
+            name: "search_vault",
+            arguments: [
+                "query": .string("actors"),
+                "minimum_relevance": .int(0),
+            ]
+        ))
+        #expect(integerFloor.minimumRelevance == 0)
 
         #expect(throws: SearchToolRequestDecoder.DecodingError.self) {
             _ = try SearchToolRequestDecoder.decode(.init(
@@ -97,6 +134,17 @@ struct SearchToolContractTests {
                     "fields": .array([.string("title"), .int(1)]),
                 ]
             ))
+        }
+        for invalid in [Value.double(-0.1), .double(1.1), .double(.infinity)] {
+            #expect(throws: SearchToolRequestDecoder.DecodingError.self) {
+                _ = try SearchToolRequestDecoder.decode(.init(
+                    name: "search_vault",
+                    arguments: [
+                        "query": .string("actors"),
+                        "minimum_relevance": invalid,
+                    ]
+                ))
+            }
         }
         #expect(throws: SearchToolRequestDecoder.DecodingError.self) {
             _ = try SearchToolRequestDecoder.decode(.init(
@@ -145,6 +193,22 @@ struct SearchToolContractTests {
             )
         }
     }
+
+    @Test("Legacy results decode new evidence conservatively")
+    func legacyResultEvidence() throws {
+        let legacy = """
+        {"path":"notes/legacy.md","format":"markdown","title":"Legacy",
+        "heading":null,"location":null,"snippet":"partial","lineStart":1,
+        "lineEnd":1,"matchedFields":["content"]}
+        """
+        let result = try JSONDecoder().decode(
+            VaultSearchResult.self,
+            from: Data(legacy.utf8)
+        )
+        #expect(result.relevance == 0)
+        #expect(result.termCoverage == 0)
+        #expect(result.completeQueryFields.isEmpty)
+    }
 }
 
 @Suite("MCP vault search controller")
@@ -165,7 +229,10 @@ struct SearchToolControllerTests {
                     snippet: "one result",
                     lineStart: 1,
                     lineEnd: 1,
-                    matchedFields: [.content]
+                    matchedFields: [.content],
+                    relevance: 1,
+                    termCoverage: 1,
+                    completeQueryFields: [.content]
                 )],
                 searchedFileCount: 1,
                 skippedFileCount: 0,
@@ -209,6 +276,7 @@ struct SearchToolControllerTests {
         #expect(request?.formats == [.markdown])
         #expect(request?.pathPrefix == "notes/work/")
         #expect(request?.limit == 7)
+        #expect(request?.minimumRelevance == SearchRequestLimits.defaultMinimumRelevance)
     }
 
     @Test("Cancellation escapes to the MCP transport")
@@ -236,7 +304,10 @@ struct SearchToolControllerTests {
                 snippet: injection,
                 lineStart: 3,
                 lineEnd: 3,
-                matchedFields: [.content]
+                matchedFields: [.content],
+                relevance: 1,
+                termCoverage: 1,
+                completeQueryFields: [.content]
             )],
             searchedFileCount: 1,
             skippedFileCount: 0,
@@ -255,6 +326,14 @@ struct SearchToolControllerTests {
         #expect(structured["more_results_available"]?.boolValue == false)
         #expect(structured["coverage_incomplete"]?.boolValue == false)
         #expect(structured["truncated"]?.boolValue == false)
+        #expect(structured["minimum_relevance"]?.doubleValue
+            == SearchRequestLimits.defaultMinimumRelevance)
+        #expect(structured["resource_limit_samples"]?.arrayValue == [])
+        let structuredResult = try #require(results[0].objectValue)
+        #expect(structuredResult["relevance"]?.doubleValue == 1)
+        #expect(structuredResult["term_coverage"]?.doubleValue == 1)
+        #expect(structuredResult["complete_query_fields"]?.arrayValue?
+            .compactMap(\.stringValue) == ["content"])
 
         guard case .text(let text, _, _) = mapped.content.first else {
             Issue.record("Expected one JSON text block")
@@ -290,7 +369,10 @@ struct SearchToolControllerTests {
                 snippet: "needle",
                 lineStart: 1,
                 lineEnd: 1,
-                matchedFields: [.content]
+                matchedFields: [.content],
+                relevance: 1,
+                termCoverage: 1,
+                completeQueryFields: [.content]
             )],
             searchedFileCount: 1,
             skippedFileCount: 0,
@@ -321,7 +403,10 @@ struct SearchToolControllerTests {
                 snippet: String(repeating: "bounded content ", count: 100),
                 lineStart: 1,
                 lineEnd: 1,
-                matchedFields: [.content]
+                matchedFields: [.content],
+                relevance: 1,
+                termCoverage: 1,
+                completeQueryFields: [.content]
             )
         }
         let mapped = try SearchToolResultMapper.success(VaultSearchResponse(
@@ -350,5 +435,63 @@ struct SearchToolControllerTests {
         )
         #expect((decoded["results"] as? [Any])?.count == boundedResults.count)
         #expect(decoded["more_results_available"] as? Bool == true)
+    }
+
+    @Test("Wire trimming preserves exact paths when smart has diagnostics")
+    func smartWireRecall() throws {
+        let results = (0..<50).map { index in
+            VaultSearchResult(
+                path: String(format: "notes/result-%02d.md", index),
+                format: .markdown,
+                title: "Result \(index)",
+                heading: nil,
+                location: nil,
+                snippet: String(repeating: "long exact evidence ", count: 50),
+                lineStart: 1,
+                lineEnd: 1,
+                matchedFields: [.content],
+                relevance: 1,
+                termCoverage: 1,
+                completeQueryFields: [.content]
+            )
+        }
+        let samples = (0..<SearchRequestLimits.maximumResourceLimitSamples).map {
+            VaultSearchResourceLimit(
+                path: "notes/limited-\($0)-" + String(repeating: "x", count: 400) + ".har",
+                reason: .matching,
+                impact: .partial
+            )
+        }
+        let exact = try SearchToolResultMapper.success(VaultSearchResponse(
+            strategy: .exact,
+            results: results,
+            searchedFileCount: 58,
+            skippedFileCount: 0,
+            skippedSensitiveFileCount: 0,
+            resourceLimitedFileCount: 0,
+            moreResultsAvailable: false,
+            coverageIncomplete: false
+        ))
+        let smart = try SearchToolResultMapper.success(VaultSearchResponse(
+            strategy: .smart,
+            results: results,
+            searchedFileCount: 58,
+            skippedFileCount: 0,
+            skippedSensitiveFileCount: 0,
+            resourceLimitedFileCount: 8,
+            moreResultsAvailable: false,
+            coverageIncomplete: true,
+            resourceLimitSamples: samples
+        ))
+        func paths(_ result: CallTool.Result) throws -> [String] {
+            try #require(result.structuredContent?.objectValue?["results"]?.arrayValue)
+                .compactMap { $0.objectValue?["path"]?.stringValue }
+        }
+        let exactPaths = try paths(exact)
+        let smartPaths = try paths(smart)
+        #expect(Set(exactPaths).isSubset(of: Set(smartPaths)))
+        #expect(exactPaths == smartPaths)
+        #expect(try JSONEncoder().encode(smart).count
+            <= SearchRequestLimits.maximumWireResponseBytes)
     }
 }

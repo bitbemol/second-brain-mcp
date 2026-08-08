@@ -169,7 +169,9 @@ struct VaultSearchEngineTests {
         #expect(result.heading == nil)
         #expect(result.lineStart == 1)
         #expect(result.matchedFields.contains(.title))
-        #expect(result.matchedFields.contains(.content))
+        #expect(result.completeQueryFields == [.title])
+        #expect(result.relevance == 1)
+        #expect(result.termCoverage == 1)
     }
 
     @Test("Nested paths, field filters, format filters, and prefixes compose")
@@ -422,6 +424,12 @@ struct VaultSearchEngineTests {
         await #expect(throws: VaultSearchRequestError.self) {
             _ = try await engine.search(VaultSearchRequest(query: "common", limit: 51))
         }
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                query: "common",
+                minimumRelevance: -0.01
+            ))
+        }
         let bounded = try await engine.search(VaultSearchRequest(
             query: "common",
             strategy: .exact,
@@ -476,6 +484,11 @@ struct VaultSearchEngineTests {
         #expect(!response.moreResultsAvailable)
         #expect(response.coverageIncomplete)
         #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples == [VaultSearchResourceLimit(
+            path: "notes/z.md",
+            reason: .fileCount,
+            impact: .omitted
+        )])
         #expect(response.truncated)
     }
 

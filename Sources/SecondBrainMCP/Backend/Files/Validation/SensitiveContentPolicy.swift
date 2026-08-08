@@ -359,9 +359,12 @@ enum SensitiveContentPolicy {
 
     /// Recognizes only complete, conspicuous documentation values.
     private static func isPlaceholder(_ candidate: String) -> Bool {
-        let value = candidate
+        let trimmed = candidate
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        if isSymbolicCredentialIdentifier(trimmed) {
+            return true
+        }
+        let value = trimmed.lowercased()
         if (value.hasPrefix("${") && value.hasSuffix("}"))
             || (value.hasPrefix("<") && value.hasSuffix(">")) {
             return true
@@ -381,6 +384,44 @@ enum SensitiveContentPolicy {
         return words.dropFirst().allSatisfy {
             permittedSuffixes.contains(String($0))
         }
+    }
+
+    /// Recognizes environment-variable-style credential names used in setup
+    /// instructions, for example `ACTUAL_LITELLM_API_KEY`.
+    ///
+    /// Requiring an exact uppercase ASCII identifier, at least one underscore,
+    /// and a credential-specific final word keeps mixed-case and opaque bearer
+    /// values subject to the normal detectors. Concrete provider-token patterns
+    /// are evaluated independently and are never placeholder-exempt.
+    private static func isSymbolicCredentialIdentifier(
+        _ candidate: String
+    ) -> Bool {
+        guard candidate.count <= 128,
+              candidate.contains("_"),
+              candidate.first?.isASCIIUppercase == true,
+              candidate.allSatisfy({
+                  $0.isASCIIUppercase || $0.isASCIIDigit || $0 == "_"
+              }) else {
+            return false
+        }
+
+        let components = candidate.split(
+            separator: "_",
+            omittingEmptySubsequences: false
+        )
+        guard components.count >= 2,
+              components.allSatisfy({
+                  !$0.isEmpty
+                      && $0.count <= 32
+                      && $0.first?.isASCIIUppercase == true
+              }),
+              let finalComponent = components.last else {
+            return false
+        }
+
+        return [
+            "CREDENTIAL", "CREDENTIALS", "KEY", "PASSWORD", "SECRET", "TOKEN",
+        ].contains(finalComponent)
     }
 
     /// Decodes JSON escape spellings without materializing the JSON value.
@@ -442,5 +483,17 @@ enum SensitiveContentPolicy {
             }
         }
         return line
+    }
+}
+
+private extension Character {
+    var isASCIIUppercase: Bool {
+        unicodeScalars.count == 1
+            && unicodeScalars.first.map { (0x41...0x5a).contains($0.value) } == true
+    }
+
+    var isASCIIDigit: Bool {
+        unicodeScalars.count == 1
+            && unicodeScalars.first.map { (0x30...0x39).contains($0.value) } == true
     }
 }

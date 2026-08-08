@@ -25,7 +25,64 @@ struct SearchCorpus: Sendable {
     let skippedSensitiveFileCount: Int
     let resourceLimitedFileCount: Int
     let partiallyLimitedPaths: Set<String>
+    let resourceLimitSamples: [VaultSearchResourceLimit]
     let coverageIncomplete: Bool
+}
+
+/// Builds non-sensitive, deterministic resource diagnostics without retaining
+/// an unbounded list of omitted paths.
+enum SearchResourceDiagnostics {
+    static func sample(
+        path: String,
+        reason: VaultSearchResourceLimitReason,
+        impact: VaultSearchResourceLimitImpact
+    ) throws -> VaultSearchResourceLimit? {
+        try Task.checkCancellation()
+        guard path.utf8.count <= SearchRequestLimits.maximumDiagnosticPathBytes else {
+            return nil
+        }
+        do {
+            try SensitiveContentPolicy.validate(
+                Data(path.utf8),
+                format: .markdown,
+                path: "search diagnostic path"
+            )
+            return VaultSearchResourceLimit(path: path, reason: reason, impact: impact)
+        } catch is SensitiveContentPolicy.Violation {
+            return nil
+        }
+    }
+
+    static func merged(
+        _ groups: [VaultSearchResourceLimit]...
+    ) -> [VaultSearchResourceLimit] {
+        var byPath: [String: VaultSearchResourceLimit] = [:]
+        for diagnostic in groups.flatMap({ $0 }) {
+            if let existing = byPath[diagnostic.path] {
+                let existingPriority = priority(existing)
+                if priority(diagnostic) < existingPriority {
+                    byPath[diagnostic.path] = diagnostic
+                }
+            } else {
+                byPath[diagnostic.path] = diagnostic
+            }
+        }
+        return Array(byPath.values)
+            .sorted {
+                if $0.path != $1.path { return $0.path < $1.path }
+                if $0.reason.rawValue != $1.reason.rawValue {
+                    return $0.reason.rawValue < $1.reason.rawValue
+                }
+                return $0.impact.rawValue < $1.impact.rawValue
+            }
+            .prefix(SearchRequestLimits.maximumResourceLimitSamples)
+            .map { $0 }
+    }
+
+    private static func priority(_ diagnostic: VaultSearchResourceLimit) -> String {
+        let impact = diagnostic.impact == .omitted ? "0" : "1"
+        return impact + diagnostic.reason.rawValue
+    }
 }
 
 /// A query or corpus token whose range always belongs to its original string.
