@@ -18,20 +18,23 @@ struct POSIXAdvisoryFileLockTests {
         let firstLease = try await first.acquire(.shared)
         let secondLease = try await second.acquire(.shared)
         let probe = AdvisoryLockProbe()
+        let contention = AdvisoryContentionProbe()
 
         let writer = Task {
             try await POSIXAdvisoryFileLock(
                 url: url,
-                retryNanoseconds: 1_000_000
+                retryNanoseconds: 1_000_000,
+                contentionObserver: { contention.mark() }
             ).withLock(.exclusive) {
                 await probe.enter()
             }
         }
-        try await Task.sleep(for: .milliseconds(20))
+        while !contention.observed { await Task.yield() }
         #expect(await probe.entered == false)
 
         firstLease.release()
-        try await Task.sleep(for: .milliseconds(20))
+        let previousContentionCount = contention.count
+        while contention.count <= previousContentionCount { await Task.yield() }
         #expect(await probe.entered == false)
 
         secondLease.release()
@@ -42,9 +45,11 @@ struct POSIXAdvisoryFileLockTests {
     @Test("A canceled waiter never acquires the protected operation")
     func canceledWaiter() async throws {
         let url = try lockURL()
+        let contention = AdvisoryContentionProbe()
         let lock = POSIXAdvisoryFileLock(
             url: url,
-            retryNanoseconds: 1_000_000
+            retryNanoseconds: 1_000_000,
+            contentionObserver: { contention.mark() }
         )
         let holder = try await lock.acquire(.exclusive)
         let probe = AdvisoryLockProbe()
@@ -54,7 +59,7 @@ struct POSIXAdvisoryFileLockTests {
             }
         }
 
-        try await Task.sleep(for: .milliseconds(20))
+        while !contention.observed { await Task.yield() }
         waiter.cancel()
         do {
             try await waiter.value
@@ -68,6 +73,33 @@ struct POSIXAdvisoryFileLockTests {
 
         holder.release()
         try await lock.withLock(.exclusive) {}
+    }
+
+    @Test("Contention observer reports retries and stays silent without contention")
+    func contentionObservation() async throws {
+        let url = try lockURL()
+        let contention = AdvisoryContentionProbe()
+        try await POSIXAdvisoryFileLock(
+            url: url,
+            contentionObserver: { contention.mark() }
+        ).withLock(.shared) {}
+        #expect(contention.count == 0)
+
+        let holder = try await POSIXAdvisoryFileLock(url: url).acquire(.exclusive)
+        let waiter = Task {
+            try await POSIXAdvisoryFileLock(
+                url: url,
+                retryNanoseconds: 1_000_000,
+                contentionObserver: { contention.mark() }
+            ).withLock(.exclusive) {}
+        }
+
+        while !contention.observed { await Task.yield() }
+        let previousContentionCount = contention.count
+        while contention.count <= previousContentionCount { await Task.yield() }
+        holder.release()
+        try await waiter.value
+        #expect(contention.count > previousContentionCount)
     }
 
     @Test("A symlink cannot substitute for a persistent lock file")
@@ -105,5 +137,17 @@ private actor AdvisoryLockProbe {
 
     func enter() {
         entered = true
+    }
+}
+
+private final class AdvisoryContentionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int { lock.withLock { value } }
+    var observed: Bool { count > 0 }
+
+    func mark() {
+        lock.withLock { value += 1 }
     }
 }

@@ -4,7 +4,8 @@ enum VaultMutationRecoveryEvidence: Sendable, Codable {
     case directoryMoveIntent(
         sourcePath: String,
         destinationPath: String,
-        identity: DirectoryTreeStore.Identity
+        identity: DirectoryTreeStore.Identity,
+        summary: DirectoryMoveSecurityPreflight.Manifest.Summary
     )
     /// Exact soft-deleted artifact that must still exist under vault trash.
     case softDeleted(path: String, revision: FileRevision)
@@ -12,7 +13,8 @@ enum VaultMutationRecoveryEvidence: Sendable, Codable {
     case movedDirectory(
         sourcePath: String,
         destinationPath: String,
-        identity: DirectoryTreeStore.Identity
+        identity: DirectoryTreeStore.Identity,
+        summary: DirectoryMoveSecurityPreflight.Manifest.Summary
     )
 }
 

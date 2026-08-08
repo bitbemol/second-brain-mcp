@@ -39,6 +39,7 @@ struct VaultSearchEngineTests {
     private func makeEngine(
         root: String,
         limits: SearchResourceLimits = .default,
+        pdfIndexConfiguration: PDFSearchIndex.Configuration = .production,
         admissionGate: AsyncExclusiveGate? = nil,
         processSearchLock: POSIXAdvisoryFileLock? = nil,
         semanticEmbedding: (any SearchSemanticEmbedding)? =
@@ -61,16 +62,7 @@ struct VaultSearchEngineTests {
                 url: dataDirectory.lockDirectoryURL
                     .appendingPathComponent("pdf-index-writer.lock")
             ),
-            maximumCandidatePages: min(
-                limits.maximumCandidates,
-                limits.maximumAggregateSections
-            ),
-            maximumCandidateTextBytes: limits.maximumAggregateProjectionBytes,
-            maximumSourceFileBytes: limits.maximumPDFFileBytes,
-            maximumPagesPerFile: limits.maximumPDFPagesPerFile,
-            maximumTextBytesPerFile: limits.maximumPDFTextBytesPerFile,
-            maximumMetadataCharacters: limits.maximumMetadataCharacters,
-            maximumMetadataBytes: limits.maximumMetadataBytes
+            configuration: pdfIndexConfiguration
         )
         return VaultSearchEngine(
             vaultPath: root,
@@ -1431,6 +1423,38 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
+    @Test("The bounded top-K selector replaces early weak hits with later strong hits")
+    func boundedTopKReplacement() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        for index in 0..<10 {
+            try write(
+                "needle",
+                to: String(format: "notes/low-%02d.md", index),
+                root: root
+            )
+        }
+        try write(
+            "---\ntitle: Needle\n---\nneedle "
+                + String(repeating: "padding ", count: 100),
+            to: "notes/z-strong.md",
+            root: root
+        )
+        let response = try await makeEngine(
+            root: root,
+            limits: searchTestLimits(maximumCandidates: 3)
+        ).search(VaultSearchRequest(
+            query: "needle",
+            strategy: .exact,
+            fields: [.title, .content],
+            limit: 3
+        ))
+
+        #expect(response.results.first?.path == "notes/z-strong.md")
+        #expect(response.results.count == 3)
+        #expect(response.moreResultsAvailable)
+    }
+
     @Test("An impossible empty-response ceiling fails instead of lying")
     func impossibleResponseByteLimit() async throws {
         let root = try makeVault()
@@ -1455,9 +1479,11 @@ struct VaultSearchEngineTests {
                 .appendingPathComponent(".test-support", isDirectory: true),
             migrateLegacyData: false
         )
+        let contention = SearchLockContentionProbe()
         let lock = POSIXAdvisoryFileLock(
             url: dataDirectory.lockDirectoryURL
-                .appendingPathComponent("search.lock")
+                .appendingPathComponent("search.lock"),
+            contentionObserver: { contention.mark() }
         )
         let completion = SearchCompletionProbe()
         let engine = try makeEngine(root: root, processSearchLock: lock)
@@ -1468,7 +1494,7 @@ struct VaultSearchEngineTests {
             return response
         }
 
-        try await Task.sleep(for: .milliseconds(40))
+        while !contention.observed { await Task.yield() }
         #expect(await !completion.completed)
         lease.release()
         #expect(try await task.value.results.map(\.path) == ["notes/a.md"])
@@ -1575,7 +1601,7 @@ struct VaultSearchEngineTests {
         try write(pdf, to: "references/oversized-reference.pdf", root: root)
         let engine = try makeEngine(
             root: root,
-            limits: searchTestLimits(maximumPDFFileBytes: 32)
+            pdfIndexConfiguration: .init(maximumIndexedSourceFileBytes: 32)
         )
 
         let metadata = try await engine.search(VaultSearchRequest(
@@ -1617,10 +1643,7 @@ struct VaultSearchEngineTests {
             to: "references/path-only-sentinel.pdf",
             root: root
         )
-        let response = try await makeEngine(
-            root: root,
-            limits: searchTestLimits(maximumPDFFileBytes: 0)
-        ).search(VaultSearchRequest(
+        let response = try await makeEngine(root: root).search(VaultSearchRequest(
             query: "path-only-sentinel",
             strategy: .exact,
             fields: [.path],
@@ -1636,10 +1659,7 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitedFileCount == 0)
         #expect(!response.coverageIncomplete)
 
-        let nonTextFields = try await makeEngine(
-            root: root,
-            limits: searchTestLimits(maximumPDFFileBytes: 0)
-        ).search(VaultSearchRequest(
+        let nonTextFields = try await makeEngine(root: root).search(VaultSearchRequest(
             query: "path-only-sentinel",
             strategy: .exact,
             fields: [.path, .tags],
@@ -1690,9 +1710,8 @@ struct VaultSearchEngineTests {
         )
         let response = try await makeEngine(
             root: root,
-            limits: searchTestLimits(
-                maximumPDFPagesPerFile: 0,
-                maximumPDFTextBytesPerFile: 0
+            pdfIndexConfiguration: .init(
+                extraction: .init(maximumPages: 0, maximumTextBytes: 0)
             )
         ).search(VaultSearchRequest(
             query: "Metadata Only Sentinel",
@@ -1725,7 +1744,10 @@ struct VaultSearchEngineTests {
 
         let response = try await makeEngine(
             root: root,
-            limits: searchTestLimits(maximumMetadataBytes: 8)
+            limits: searchTestLimits(maximumMetadataBytes: 8),
+            pdfIndexConfiguration: .init(
+                extraction: .init(maximumMetadataBytes: 8)
+            )
         ).search(VaultSearchRequest(
             query: "Hidden Sentinel",
             strategy: .exact,
@@ -1834,7 +1856,13 @@ struct VaultSearchEngineTests {
             root: root
         )
         let limits = searchTestLimits(maximumAggregateProjectionBytes: 512)
-        let response = try await makeEngine(root: root, limits: limits).search(
+        let response = try await makeEngine(
+            root: root,
+            limits: limits,
+            pdfIndexConfiguration: .init(
+                maximumHydratedTextBytesPerQuery: 512
+            )
+        ).search(
             VaultSearchRequest(
                 query: "unique projection sentinel",
                 strategy: .exact,
@@ -2301,4 +2329,15 @@ private actor SearchCompletionProbe {
     private(set) var completed = false
 
     func markCompleted() { completed = true }
+}
+
+private final class SearchLockContentionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var observed: Bool { lock.withLock { value } }
+
+    func mark() {
+        lock.withLock { value = true }
+    }
 }

@@ -8,8 +8,9 @@ struct SearchResourceLimits: Sendable {
     let maximumResults: Int
     let maximumDirectoryEntries: Int
     let maximumFiles: Int
+    /// Maximum source bytes snapshotted for one non-indexed live document.
+    /// PDF source ingestion is governed independently by PDFSearchIndex.Configuration.
     let maximumFileBytes: Int
-    let maximumPDFFileBytes: Int
     let maximumAggregateBytes: Int
     let maximumAggregateProjectionBytes: Int
     let maximumAggregateSections: Int
@@ -44,7 +45,6 @@ struct SearchResourceLimits: Sendable {
         maximumDirectoryEntries: 10_000,
         maximumFiles: 5_000,
         maximumFileBytes: 8 * 1024 * 1024,
-        maximumPDFFileBytes: 64 * 1024 * 1024,
         maximumAggregateBytes: 128 * 1024 * 1024,
         maximumAggregateProjectionBytes: 64 * 1024 * 1024,
         maximumAggregateSections: 100_000,

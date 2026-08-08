@@ -19,6 +19,7 @@ struct VaultMutationExecutorTests {
         )
 
         let identifier = MutationID()
+        let fingerprint = MutationRequestFingerprint(rawValue: "successful-create")
         let data = Data("body".utf8)
         let result = try await executor.executeIdempotent(
             plan: VaultMutationPlan(
@@ -27,7 +28,7 @@ struct VaultMutationExecutorTests {
                 handler: .markdown,
                 mutationID: identifier
             ),
-            fingerprint: MutationRequestFingerprint(rawValue: "successful-create"),
+            fingerprint: fingerprint,
             prepare: {
                 PreparedVaultMutation(
                     requiresCommit: true,
@@ -46,9 +47,139 @@ struct VaultMutationExecutorTests {
 
         #expect(result.metadata?.mutationID == identifier)
         #expect(try runGit(["log", "-1", "--pretty=%s"], at: root) ==
-            "[SecondBrainMCP] Created markdown: notes/transaction.md "
-                + "[mutation \(identifier.rawValue)]\n")
+            "[SecondBrainMCP] Created markdown: notes/transaction.md\n")
+        let body = try runGit(["log", "-1", "--pretty=%B"], at: root)
+        #expect(body.contains("SecondBrain-Mutation-ID: \(identifier.rawValue)\n"))
+        #expect(body.contains(
+            "SecondBrain-Request-Fingerprint: \(fingerprint.rawValue)\n"
+        ))
         #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+    }
+
+    @Test("A first attempt never trusts a spoofed Git marker")
+    func firstAttemptIgnoresSpoofedCommitMarker() async throws {
+        let root = try makeVault()
+        let git = GitRepository(repoPath: root)
+        try await git.ensureRepository()
+        let identifier = MutationID()
+        let fingerprint = MutationRequestFingerprint(rawValue: "spoofed-history")
+        let spoof = Data("spoof".utf8)
+        try spoof.write(
+            to: URL(fileURLWithPath: root + "/notes/spoof.md"),
+            options: .atomic
+        )
+        try await git.commitChange(
+            file: "notes/spoof.md",
+            expectedRevision: FileSnapshot(
+                data: spoof,
+                modifiedDate: nil
+            ).revision,
+            maximumBytes: FileFormat.markdown.maximumFileBytes,
+            message: "[mutation \(identifier.rawValue)] [request \(fingerprint.rawValue)]"
+        )
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let target = try WritableFileTarget.resolve(
+            path: "notes/real.md",
+            format: .markdown,
+            vaultPath: root
+        )
+        let data = Data("real mutation".utf8)
+        let store = VaultCRUDStore(vaultPath: root)
+        let executor = makeExecutor(git: git, dataDirectory: dataDirectory)
+
+        let result = try await executor.executeIdempotent(
+            plan: VaultMutationPlan(
+                kind: .create,
+                target: target,
+                handler: .markdown,
+                mutationID: identifier
+            ),
+            fingerprint: fingerprint,
+            prepare: {
+                PreparedVaultMutation(
+                    requiresCommit: true,
+                    perform: {
+                        try await store.create(target: target, data: data)
+                        return self.output(
+                            target: target,
+                            identifier: identifier,
+                            data: data,
+                            text: "created"
+                        )
+                    }
+                )
+            }
+        )
+
+        #expect(result.metadata?.replayed == false)
+        #expect(try String(contentsOf: target.url, encoding: .utf8)
+            == "real mutation")
+        #expect(try runGit(["show", "HEAD:\(target.relativePath)"], at: root)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            == "real mutation")
+    }
+
+    @Test("A persisted output revision mismatch cannot enter Git")
+    func persistedRevisionMismatchRefusesCommit() async throws {
+        let root = try makeVault()
+        let git = GitRepository(repoPath: root)
+        try await git.ensureRepository()
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let target = try WritableFileTarget.resolve(
+            path: "notes/revision-mismatch.md",
+            format: .markdown,
+            vaultPath: root
+        )
+        let identifier = MutationID()
+        let stored = Data("stored bytes".utf8)
+        let incorrectRevision = FileSnapshot(
+            data: Data("different bytes".utf8),
+            modifiedDate: nil
+        ).revision
+        let store = VaultCRUDStore(vaultPath: root)
+        let executor = makeExecutor(git: git, dataDirectory: dataDirectory)
+
+        do {
+            _ = try await executor.executeIdempotent(
+                plan: VaultMutationPlan(
+                    kind: .create,
+                    target: target,
+                    handler: .markdown,
+                    mutationID: identifier
+                ),
+                fingerprint: MutationRequestFingerprint(
+                    rawValue: "revision-mismatch"
+                ),
+                prepare: {
+                    PreparedVaultMutation(
+                        requiresCommit: true,
+                        perform: {
+                            try await store.create(target: target, data: stored)
+                            return FileOperationOutput.text("created")
+                                .withMetadata(FileOperationMetadata(
+                                    path: target.relativePath,
+                                    area: .notes,
+                                    revision: incorrectRevision,
+                                    mutationID: identifier,
+                                    replayed: false
+                                ))
+                        }
+                    )
+                }
+            )
+            Issue.record("Expected the isolated blob validation to fail")
+        } catch VaultMutationExecutor.ExecutionError.gitCommitFailed {
+            // Persistence is intentionally retained for exact commit-only retry.
+        } catch {
+            Issue.record("Unexpected mismatch error: \(error)")
+        }
+
+        #expect(try String(contentsOf: target.url, encoding: .utf8)
+            == "stored bytes")
+        #expect(try runGit(
+            ["ls-tree", "-r", "--name-only", "HEAD", "--", target.relativePath],
+            at: root
+        ).isEmpty)
     }
 
     @Test("Storage failures pass through without Git failure wrapping")
@@ -404,7 +535,7 @@ struct VaultMutationExecutorTests {
         let root = try makeVault()
         let git = GitRepository(repoPath: root)
         try await git.ensureRepository()
-        try installFailingCommitHook(at: root)
+        let commitLock = try installFailingCommitReferenceLock(at: root)
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
         let store = VaultCRUDStore(vaultPath: root)
@@ -463,7 +594,7 @@ struct VaultMutationExecutorTests {
 
         do {
             _ = try await execute()
-            Issue.record("Expected the commit hook to fail")
+            Issue.record("Expected the commit reference update to fail")
         } catch VaultMutationExecutor.ExecutionError.gitCommitFailed(
             let path,
             let receivedIdentifier,
@@ -511,7 +642,7 @@ struct VaultMutationExecutorTests {
         #expect(await blockedProbe.preparationCount == 0)
         #expect(!FileManager.default.fileExists(atPath: blockedTarget.url.path))
 
-        try removeFailingCommitHook(at: root)
+        try FileManager.default.removeItem(at: commitLock)
         let recovered = try await execute()
 
         #expect(recovered.metadata?.replayed == true)
@@ -774,25 +905,18 @@ struct VaultMutationExecutorTests {
         ) ?? ""
     }
 
-    private func installFailingCommitHook(at root: String) throws {
-        let hook = URL(fileURLWithPath: root)
-            .appendingPathComponent(".git/hooks/pre-commit")
-        try "#!/bin/sh\nexit 1\n".write(
-            to: hook,
-            atomically: true,
-            encoding: .utf8
+    private func installFailingCommitReferenceLock(at root: String) throws -> URL {
+        let reference = try runGit(["symbolic-ref", "HEAD"], at: root)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let lock = URL(fileURLWithPath: root)
+            .appendingPathComponent(".git")
+            .appendingPathComponent(reference + ".lock")
+        try FileManager.default.createDirectory(
+            at: lock.deletingLastPathComponent(),
+            withIntermediateDirectories: true
         )
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: hook.path
-        )
-    }
-
-    private func removeFailingCommitHook(at root: String) throws {
-        try FileManager.default.removeItem(
-            at: URL(fileURLWithPath: root)
-                .appendingPathComponent(".git/hooks/pre-commit")
-        )
+        try Data().write(to: lock, options: .withoutOverwriting)
+        return lock
     }
 
     private enum GitInspectionError: Error {

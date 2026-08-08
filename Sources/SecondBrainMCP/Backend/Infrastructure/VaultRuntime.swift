@@ -4,6 +4,9 @@
 /// while the frontend consumes only the routed file service and shared,
 /// transport-neutral capability and rejection boundaries.
 struct VaultRuntime: Sendable {
+    /// Production PDF index policy owned by the backend composition root.
+    static let pdfSearchIndexConfiguration = PDFSearchIndex.Configuration.production
+
     /// Routed generic file service.
     let files: any FileCRUDService
     /// Atomic recursive notes-directory moves.
@@ -128,7 +131,8 @@ struct VaultRuntime: Sendable {
             writerLock: POSIXAdvisoryFileLock(
                 url: dataDirectory.lockDirectoryURL
                     .appendingPathComponent("pdf-index-writer.lock")
-            )
+            ),
+            configuration: pdfSearchIndexConfiguration
         )
         // Schema preparation touches only derived process data and safely
         // rebuilds a corrupt/incompatible private cache. If it still cannot be

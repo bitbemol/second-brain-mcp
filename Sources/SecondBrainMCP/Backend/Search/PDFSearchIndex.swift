@@ -21,6 +21,54 @@ struct PDFIndexedSearchBatch: Sendable {
 /// advisory locks prevent independent MCP processes from extracting the same
 /// stale document concurrently.
 actor PDFSearchIndex {
+    /// Independent resource policy for persistent ingestion and query hydration.
+    ///
+    /// Production ingestion deliberately accepts every PDF supported by the
+    /// vault's 512 MiB file policy so large books remain searchable. A query
+    /// never loads that source wholesale from the index: candidate pages and
+    /// extracted text are hydrated under separate per-query ceilings, then the
+    /// live search corpus applies its own aggregate projection budget.
+    struct Configuration: Equatable, Sendable {
+        /// Maximum candidate pages materialized from SQLite for one search.
+        let maximumHydratedPagesPerQuery: Int
+        /// Maximum candidate page-text bytes materialized for one search.
+        let maximumHydratedTextBytesPerQuery: Int
+        /// Maximum SQLite progress callbacks spent selecting candidate pages.
+        let maximumCandidateQueryWorkCallbacks: Int
+        /// Maximum private derived-index storage before new extraction pauses.
+        let maximumDatabaseBytes: Int64
+        /// Maximum source PDF bytes admitted to persistent extraction.
+        let maximumIndexedSourceFileBytes: Int
+        /// Complete versioned projection policy for rows written to SQLite.
+        let extraction: PDFIndexExtractor.Configuration
+        /// Maximum SQLite progress callbacks spent expanding fuzzy vocabulary.
+        let maximumFuzzyVocabularyWorkCallbacks: Int
+
+        init(
+            maximumHydratedPagesPerQuery: Int = 10_000,
+            maximumHydratedTextBytesPerQuery: Int = 64 * 1_024 * 1_024,
+            maximumCandidateQueryWorkCallbacks: Int = 25_000,
+            maximumDatabaseBytes: Int64 = 4 * 1_024 * 1_024 * 1_024,
+            maximumIndexedSourceFileBytes: Int = FileFormat.pdf.maximumFileBytes,
+            extraction: PDFIndexExtractor.Configuration = .production,
+            maximumFuzzyVocabularyWorkCallbacks: Int = 10_000
+        ) {
+            self.maximumHydratedPagesPerQuery = maximumHydratedPagesPerQuery
+            self.maximumHydratedTextBytesPerQuery =
+                maximumHydratedTextBytesPerQuery
+            self.maximumCandidateQueryWorkCallbacks =
+                maximumCandidateQueryWorkCallbacks
+            self.maximumDatabaseBytes = maximumDatabaseBytes
+            self.maximumIndexedSourceFileBytes = maximumIndexedSourceFileBytes
+            self.extraction = extraction
+            self.maximumFuzzyVocabularyWorkCallbacks =
+                maximumFuzzyVocabularyWorkCallbacks
+        }
+
+        /// Production policy: full supported PDF ingestion with bounded queries.
+        static let production = Configuration()
+    }
+
     private struct IndexChangedDuringRequest: Error {}
 
     private struct FuzzyExpansion: Sendable {
@@ -43,16 +91,7 @@ actor PDFSearchIndex {
     private let vaultRoot: URL
     private let admission: PDFReadAdmission
     private let writerLock: POSIXAdvisoryFileLock?
-    private let maximumCandidatePages: Int
-    private let maximumCandidateTextBytes: Int
-    private let maximumCandidateWorkCallbacks: Int
-    private let maximumDatabaseBytes: Int64
-    private let maximumSourceFileBytes: Int
-    private let maximumPagesPerFile: Int
-    private let maximumTextBytesPerFile: Int
-    private let maximumMetadataCharacters: Int
-    private let maximumMetadataBytes: Int
-    private let maximumVocabularyWorkCallbacks: Int
+    private let configuration: Configuration
     private let extractionObserver: (@Sendable () -> Void)?
     private let candidateQueryObserver: (@Sendable () -> Void)?
     private var databaseStorage: PDFSearchIndexDatabase?
@@ -66,16 +105,7 @@ actor PDFSearchIndex {
         vaultPath: String,
         admission: PDFReadAdmission,
         writerLock: POSIXAdvisoryFileLock? = nil,
-        maximumCandidatePages: Int = 10_000,
-        maximumCandidateTextBytes: Int = 64 * 1_024 * 1_024,
-        maximumCandidateWorkCallbacks: Int = 25_000,
-        maximumDatabaseBytes: Int64 = 4 * 1_024 * 1_024 * 1_024,
-        maximumSourceFileBytes: Int = FileFormat.pdf.maximumFileBytes,
-        maximumPagesPerFile: Int = 20_000,
-        maximumTextBytesPerFile: Int = 64 * 1024 * 1024,
-        maximumMetadataCharacters: Int = 512,
-        maximumMetadataBytes: Int = 2_048,
-        maximumVocabularyWorkCallbacks: Int = 10_000,
+        configuration: Configuration,
         extractionObserver: (@Sendable () -> Void)? = nil,
         candidateQueryObserver: (@Sendable () -> Void)? = nil
     ) {
@@ -83,16 +113,7 @@ actor PDFSearchIndex {
         self.vaultRoot = URL(fileURLWithPath: vaultPath)
         self.admission = admission
         self.writerLock = writerLock
-        self.maximumCandidatePages = maximumCandidatePages
-        self.maximumCandidateTextBytes = maximumCandidateTextBytes
-        self.maximumCandidateWorkCallbacks = maximumCandidateWorkCallbacks
-        self.maximumDatabaseBytes = maximumDatabaseBytes
-        self.maximumSourceFileBytes = maximumSourceFileBytes
-        self.maximumPagesPerFile = maximumPagesPerFile
-        self.maximumTextBytesPerFile = maximumTextBytesPerFile
-        self.maximumMetadataCharacters = maximumMetadataCharacters
-        self.maximumMetadataBytes = maximumMetadataBytes
-        self.maximumVocabularyWorkCallbacks = maximumVocabularyWorkCallbacks
+        self.configuration = configuration
         self.extractionObserver = extractionObserver
         self.candidateQueryObserver = candidateQueryObserver
     }
@@ -379,15 +400,22 @@ actor PDFSearchIndex {
                 locale: Locale(identifier: "en_US_POSIX")
             )
             candidateQueryObserver?()
-            let remainingPages = max(maximumCandidatePages - hydratedPageCount, 0)
-            let remainingBytes = max(maximumCandidateTextBytes - hydratedTextBytes, 0)
+            let remainingPages = max(
+                configuration.maximumHydratedPagesPerQuery - hydratedPageCount,
+                0
+            )
+            let remainingBytes = max(
+                configuration.maximumHydratedTextBytesPerQuery - hydratedTextBytes,
+                0
+            )
             if remainingPages > 0, remainingBytes > 0 {
                 merge(try db.scopedExactPages(
                     documentIDs: documentIDs,
                     foldedQuery: folded,
                     maximum: remainingPages,
                     maximumTextBytes: remainingBytes,
-                    maximumWorkCallbacks: maximumCandidateWorkCallbacks
+                    maximumWorkCallbacks: configuration
+                        .maximumCandidateQueryWorkCallbacks
                 ))
             } else {
                 candidateLimited = true
@@ -410,15 +438,22 @@ actor PDFSearchIndex {
             ) {
                 candidateLimited = candidateLimited || expression.limited
                 candidateQueryObserver?()
-                let remainingPages = max(maximumCandidatePages - hydratedPageCount, 0)
-                let remainingBytes = max(maximumCandidateTextBytes - hydratedTextBytes, 0)
+                let remainingPages = max(
+                    configuration.maximumHydratedPagesPerQuery - hydratedPageCount,
+                    0
+                )
+                let remainingBytes = max(
+                    configuration.maximumHydratedTextBytesPerQuery - hydratedTextBytes,
+                    0
+                )
                 if remainingPages > 0, remainingBytes > 0 {
                     merge(try db.scopedFTSPages(
                         documentIDs: documentIDs,
                         expression: expression.value,
                         maximum: remainingPages,
                         maximumTextBytes: remainingBytes,
-                        maximumWorkCallbacks: maximumCandidateWorkCallbacks
+                        maximumWorkCallbacks: configuration
+                            .maximumCandidateQueryWorkCallbacks
                     ))
                 } else {
                     candidateLimited = true
@@ -438,11 +473,11 @@ actor PDFSearchIndex {
         existing: PDFIndexDocumentRecord?
     ) async throws -> PDFIndexDocumentRecord {
         var metadata = try VaultFileInspector.stableMetadata(target, vaultRoot: vaultRoot)
-        guard metadata.byteCount <= maximumSourceFileBytes else {
+        guard metadata.byteCount <= configuration.maximumIndexedSourceFileBytes else {
             throw FileResourcePolicy.Violation(
                 path: target.relativePath,
                 bytes: metadata.byteCount,
-                limit: maximumSourceFileBytes
+                limit: configuration.maximumIndexedSourceFileBytes
             )
         }
         var quick = PDFIndexQuickIdentity(metadata: metadata)
@@ -535,17 +570,15 @@ actor PDFSearchIndex {
                     self.extractionObserver?()
                     let snapshot = try VaultFileInspector.temporarySnapshot(
                         target,
-                        maximumBytes: self.maximumSourceFileBytes
+                        maximumBytes: self.configuration
+                            .maximumIndexedSourceFileBytes
                     )
                     defer { snapshot.remove() }
                     let extraction = try PDFIndexExtractor.extract(
                         snapshotURL: snapshot.url,
                         path: target.relativePath,
                         includePages: includePages,
-                        maximumPages: self.maximumPagesPerFile,
-                        maximumTextBytes: self.maximumTextBytesPerFile,
-                        maximumMetadataCharacters: self.maximumMetadataCharacters,
-                        maximumMetadataBytes: self.maximumMetadataBytes
+                        configuration: self.configuration.extraction
                     )
                     return (
                         snapshot.revision.rawValue,
@@ -669,7 +702,9 @@ actor PDFSearchIndex {
         for token in queryTokens {
             try Task.checkCancellation()
             let length = token.normalized.unicodeScalars.count
-            let maximumDistance = length < 3 ? 0 : (length <= 7 ? 1 : 2)
+            let maximumDistance = SearchFuzzyPolicy.maximumEditDistance(
+                for: token.normalized
+            )
             guard maximumDistance > 0 else { continue }
             let remainingComparisons = max(
                 maximumVocabularyComparisons - comparisonCount,
@@ -680,7 +715,7 @@ actor PDFSearchIndex {
                 break
             }
             let remainingWork = max(
-                maximumVocabularyWorkCallbacks - workCallbacks,
+                configuration.maximumFuzzyVocabularyWorkCallbacks - workCallbacks,
                 0
             )
             guard remainingWork > 0 else {
@@ -698,7 +733,7 @@ actor PDFSearchIndex {
             comparisonCount += vocabularyBatch.terms.count
             for (index, candidate) in vocabularyBatch.terms.enumerated() {
                 if index.isMultiple(of: 1_024) { try Task.checkCancellation() }
-                if boundedDistance(
+                if SearchFuzzyPolicy.boundedDistance(
                     token.normalized,
                     candidate,
                     maximum: maximumDistance
@@ -710,7 +745,8 @@ actor PDFSearchIndex {
                     }
                 }
             }
-            if result.count >= maximumExpandedTerms || workCallbacks >= maximumVocabularyWorkCallbacks {
+            if result.count >= maximumExpandedTerms
+                || workCallbacks >= configuration.maximumFuzzyVocabularyWorkCallbacks {
                 limited = true
                 break
             }
@@ -719,41 +755,6 @@ actor PDFSearchIndex {
         if fuzzyTermCache.count >= 64 { fuzzyTermCache.removeAll(keepingCapacity: true) }
         fuzzyTermCache[key] = value
         return value
-    }
-
-    private func boundedDistance(_ lhs: String, _ rhs: String, maximum: Int) -> Int? {
-        let left = Array(lhs.unicodeScalars)
-        let right = Array(rhs.unicodeScalars)
-        guard abs(left.count - right.count) <= maximum else { return nil }
-        var twoRowsBack: [Int]?
-        var previous = Array(0...right.count)
-        for row in left.indices {
-            var current = Array(repeating: 0, count: right.count + 1)
-            current[0] = row + 1
-            var minimum = current[0]
-            for column in right.indices {
-                current[column + 1] = min(
-                    previous[column + 1] + 1,
-                    current[column] + 1,
-                    previous[column] + (left[row] == right[column] ? 0 : 1)
-                )
-                if row > 0, column > 0,
-                   left[row] == right[column - 1],
-                   left[row - 1] == right[column],
-                   let twoRowsBack {
-                    current[column + 1] = min(
-                        current[column + 1],
-                        twoRowsBack[column - 1] + 1
-                    )
-                }
-                minimum = min(minimum, current[column + 1])
-            }
-            guard minimum <= maximum else { return nil }
-            twoRowsBack = previous
-            previous = current
-        }
-        let distance = previous[right.count]
-        return distance <= maximum ? distance : nil
     }
 
     private func orderedUnique(_ values: [String]) -> [String] {
@@ -772,7 +773,9 @@ actor PDFSearchIndex {
         observedDatabaseGeneration = nil
         let opened = try PDFSearchIndexDatabase(
             url: databaseURL,
-            maximumDatabaseBytes: maximumDatabaseBytes
+            maximumDatabaseBytes: configuration.maximumDatabaseBytes,
+            maximumPublicationRepresentationBytes:
+                configuration.extraction.retainedRepresentationByteLimit
         )
         databaseStorage = opened
         return opened

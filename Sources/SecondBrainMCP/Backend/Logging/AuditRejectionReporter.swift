@@ -9,7 +9,7 @@ struct AuditRejectionReporter: FileRequestRejectionReporting, Sendable {
         self.audit = audit
     }
 
-    /// Translates a rejected CRUD request into the existing audit vocabulary.
+    /// Translates a rejected vault request into the existing audit vocabulary.
     ///
     /// - Parameter rejection: Transport-neutral rejection event.
     func record(_ rejection: FileRequestRejection) async {
@@ -25,7 +25,9 @@ private extension FileRequestRejection {
     var auditDetails: String {
         switch reason {
         case .readOnly:
-            "\(operation.rawValue)_file rejected: read-only"
+            operation == .move
+                ? "move_directory rejected: read-only"
+                : "\(operation.rawValue)_file rejected: read-only"
         }
     }
 }

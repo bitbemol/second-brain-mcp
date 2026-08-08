@@ -67,8 +67,8 @@ struct VaultMutationRecoveryTests {
     @Test("A commit completed before a crash is finalized without another commit")
     func committedRecoveryFinalizesWithoutRecommit() async throws {
         let root = try makeVault()
-        let git = GitRepository(repoPath: root)
-        try await git.ensureRepository()
+        let initialGit = GitRepository(repoPath: root)
+        try await initialGit.ensureRepository()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
         let identifier = MutationID()
@@ -85,10 +85,31 @@ struct VaultMutationRecoveryTests {
             identifier: identifier,
             data: data
         )
-        try await git.commitChange(
-            files: [target.relativePath],
-            message: "[SecondBrainMCP] Created markdown: \(target.relativePath) [mutation \(identifier.rawValue)]"
+        try await initialGit.commitChange(
+            file: target.relativePath,
+            expectedRevision: FileSnapshot(
+                data: data,
+                modifiedDate: nil
+            ).revision,
+            maximumBytes: FileFormat.markdown.maximumFileBytes,
+            message: "[SecondBrainMCP] Created markdown: \(target.relativePath)",
+            identity: GitMutationIdentity(
+                identifier: identifier,
+                fingerprint: fingerprint
+            )
         )
+        // Simulate a crash after the immutable ref update but before the owned
+        // real-index path was reconciled, plus unrelated intentional staging.
+        _ = try runGit(
+            ["reset", "-q", "HEAD^", "--", target.relativePath],
+            at: root
+        )
+        try "unrelated".write(
+            toFile: root + "/notes/unrelated.md",
+            atomically: true,
+            encoding: .utf8
+        )
+        _ = try runGit(["add", "--", "notes/unrelated.md"], at: root)
         try receipts.saveActiveTransaction(
             identifier: identifier,
             fingerprint: fingerprint
@@ -99,7 +120,9 @@ struct VaultMutationRecoveryTests {
             output: output,
             failure: "simulated crash before receipt finalization"
         )
-        try installFailingCommitHook(at: root)
+        let git = GitRepository(repoPath: root) {
+            throw RecoveryGitInspectionError.commandFailed
+        }
         let probe = RecoveryAttemptProbe()
         let executor = makeExecutor(
             git: git,
@@ -127,6 +150,12 @@ struct VaultMutationRecoveryTests {
         #expect(recovered.metadata?.replayed == true)
         #expect(await probe.preparationCount == 0)
         #expect(try receipts.activeTransaction() == nil)
+        #expect(try runGit(["diff", "--cached", "--name-only"], at: root)
+            .contains("notes/unrelated.md"))
+        #expect(try !runGit(
+            ["diff", "--cached", "--name-only"],
+            at: root
+        ).contains(target.relativePath))
         #expect(
             try runGit(
                 ["rev-list", "--count", "HEAD", "--", target.relativePath],
@@ -420,20 +449,6 @@ struct VaultMutationRecoveryTests {
             withIntermediateDirectories: true
         )
         return root
-    }
-
-    private func installFailingCommitHook(at root: String) throws {
-        let hook = URL(fileURLWithPath: root)
-            .appendingPathComponent(".git/hooks/pre-commit")
-        try "#!/bin/sh\nexit 1\n".write(
-            to: hook,
-            atomically: true,
-            encoding: .utf8
-        )
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: hook.path
-        )
     }
 
     private func runGit(_ arguments: [String], at root: String) throws -> String {

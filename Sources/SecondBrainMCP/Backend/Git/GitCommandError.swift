@@ -6,6 +6,8 @@ enum GitCommandError: Error, CustomStringConvertible, Sendable {
     case launchFailed(command: String, reason: String)
     /// Git launched but exited unsuccessfully.
     case commandFailed(command: String, exitCode: Int32, stderr: String)
+    /// Git exceeded the bounded execution time allowed for repository work.
+    case timedOut(command: String)
 
     /// Human-readable command execution failure.
     var description: String {
@@ -16,6 +18,8 @@ enum GitCommandError: Error, CustomStringConvertible, Sendable {
             return "Could not launch Git command (\(command)): \(reason)"
         case .commandFailed(let command, let exitCode, let stderr):
             return "Git command failed (\(command), exit \(exitCode)): \(stderr)"
+        case .timedOut(let command):
+            return "Git command timed out (\(command))"
         }
     }
 }

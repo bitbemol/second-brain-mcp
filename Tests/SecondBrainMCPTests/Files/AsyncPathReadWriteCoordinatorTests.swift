@@ -138,6 +138,73 @@ struct AsyncPathReadWriteCoordinatorTests {
         try await holder.value
         #expect(await coordinator.activePathCount == 0)
     }
+
+    @Test("A saturated path queue rejects excess callers without losing queued work")
+    func boundedQueue() async throws {
+        let coordinator = AsyncPathReadWriteCoordinator(
+            maximumWaitersPerPath: 1,
+            maximumTotalWaiters: 1
+        )
+        let holderGate = PathHold()
+        let key = "notes/saturated.md"
+        let holder = Task {
+            try await coordinator.withAccess(key: key, access: .write) {
+                await holderGate.enterAndWait()
+            }
+        }
+        await holderGate.waitUntilEntered()
+        let queued = Task {
+            try await coordinator.withAccess(key: key, access: .read) { 42 }
+        }
+        while await coordinator.waitingCount(for: key) != 1 {
+            await Task.yield()
+        }
+
+        await #expect(throws: AsyncPathReadWriteCoordinator.CapacityExceeded.self) {
+            _ = try await coordinator.withAccess(key: key, access: .read) { 7 }
+        }
+        #expect(await coordinator.waitingCount(for: key) == 1)
+
+        await holderGate.release()
+        try await holder.value
+        #expect(try await queued.value == 42)
+        #expect(await coordinator.activePathCount == 0)
+    }
+
+    @Test("The reader holder cap queues excess readers without breaking progress")
+    func boundedReaderHolders() async throws {
+        let coordinator = AsyncPathReadWriteCoordinator(
+            maximumReadersPerPath: 1,
+            maximumWaitersPerPath: 1,
+            maximumTotalWaiters: 1
+        )
+        let firstHold = PathHold()
+        let secondProbe = PathCancellationProbe()
+        let key = "secondbrain://notes-tree"
+
+        let first = Task {
+            try await coordinator.withAccess(key: key, access: .read) {
+                await firstHold.enterAndWait()
+            }
+        }
+        await firstHold.waitUntilEntered()
+
+        let second = Task {
+            try await coordinator.withAccess(key: key, access: .read) {
+                await secondProbe.markStarted()
+            }
+        }
+        while await coordinator.waitingCount(for: key) != 1 {
+            await Task.yield()
+        }
+        #expect(await secondProbe.started == false)
+
+        await firstHold.release()
+        try await first.value
+        try await second.value
+        #expect(await secondProbe.started)
+        #expect(await coordinator.activePathCount == 0)
+    }
 }
 
 /// Tracks active operations and holds them until the test releases the cohort.

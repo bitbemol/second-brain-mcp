@@ -36,14 +36,14 @@ actor AuditLogger {
     /// Appends an operation with optional path and routing details.
     ///
     /// - Parameters:
-    ///   - operation: Transport-neutral CRUD operation to record.
+    ///   - operation: Transport-neutral vault operation to record.
     ///   - area: Vault area used to distinguish reference reads.
     ///   - path: Optional vault-relative request path.
     ///   - details: Optional handler or rejection context.
     ///
     /// Logging is best-effort: file-system failures do not fail the user operation.
     func log(
-        operation: FileCRUDOperation,
+        operation: VaultOperation,
         area: VaultArea = .notes,
         path: String? = nil,
         details: String? = nil

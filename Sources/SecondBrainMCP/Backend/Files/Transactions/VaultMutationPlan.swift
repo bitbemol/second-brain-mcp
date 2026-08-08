@@ -12,7 +12,7 @@ struct VaultMutationPlan: Sendable {
         /// Move an existing first-class file into recoverable trash.
         case delete
 
-        /// Transport-neutral CRUD operation corresponding to the mutation.
+        /// Transport-neutral file operation corresponding to the mutation.
         var fileOperation: FileCRUDOperation {
             switch self {
             case .create: .create
@@ -46,8 +46,7 @@ struct VaultMutationPlan: Sendable {
 
     /// Stable Git message carrying the required replay identity.
     var commitMessage: String {
-        "[SecondBrainMCP] \(kind.commitVerb) \(format.rawValue): \(path) "
-            + "[mutation \(mutationID.rawValue)]"
+        "[SecondBrainMCP] \(kind.commitVerb) \(format.rawValue): \(path)"
     }
 
     /// Stable audit context shared by normal execution and recovery.

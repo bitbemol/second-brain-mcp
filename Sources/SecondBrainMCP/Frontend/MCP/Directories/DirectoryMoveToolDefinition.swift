@@ -2,7 +2,7 @@ import MCP
 
 /// Public contract for one efficient recursive notes-directory rename.
 enum DirectoryMoveToolDefinition {
-    static let name = "move_directory"
+    static let name = MoveDirectoryRequest.operationIdentifier
 
     /// Builds the mutation tool unless the server is read-only.
     static func build(readOnly: Bool) -> Tool? {

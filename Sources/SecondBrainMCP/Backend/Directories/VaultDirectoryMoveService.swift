@@ -21,6 +21,11 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         case result(FileOperationOutput)
     }
 
+    private struct ValidatedMove: Sendable {
+        let identity: DirectoryTreeStore.Identity
+        let destinationManifest: DirectoryMoveSecurityPreflight.Manifest
+    }
+
     private let vaultPath: String
     private let store: DirectoryTreeStore
     private let git: GitRepository
@@ -29,7 +34,6 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
     private let receipts: MutationReceiptStore
     private let operations: VaultOperationCoordinator
     private let readOnly: Bool
-    private let gate = AsyncExclusiveGate()
 
     init(
         vaultPath: String,
@@ -75,7 +79,7 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
             destinationPath: destination.relativePath
         )
         let fingerprint = try MutationRequestFingerprint.make(
-            operationIdentifier: DirectoryMoveToolDefinition.name,
+            operationIdentifier: MoveDirectoryRequest.operationIdentifier,
             request: canonicalRequest
         )
         let operations = self.operations
@@ -101,44 +105,44 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
     ) async throws -> FileOperationOutput {
         let identifier = request.mutationID
         return try await receipts.withIdentityLock(identifier) {
-            try await self.gate.withPermit {
-                try await self.processMutationLock.withLock(.exclusive) {
-                    try Task.checkCancellation()
-                    let preflight = try await self.preflight(
+            try await self.processMutationLock.withLock(.exclusive) {
+                try Task.checkCancellation()
+                let preflight = try await self.preflight(
+                    request,
+                    source: source,
+                    destination: destination,
+                    fingerprint: fingerprint
+                )
+                if case .result(let output) = preflight { return output }
+
+                let validated = try self.validateFreshMove(
+                    source: source,
+                    destination: destination
+                )
+                try self.receipts.saveInProgress(
+                    identifier: identifier,
+                    fingerprint: fingerprint,
+                    recoveryEvidence: .directoryMoveIntent(
+                        sourcePath: source.relativePath,
+                        destinationPath: destination.relativePath,
+                        identity: validated.identity,
+                        summary: validated.destinationManifest.summary
+                    )
+                )
+                try self.receipts.saveActiveTransaction(
+                    identifier: identifier,
+                    fingerprint: fingerprint
+                )
+                return try await Task.detached {
+                    try await self.performCritical(
                         request,
                         source: source,
                         destination: destination,
-                        fingerprint: fingerprint
-                    )
-                    if case .result(let output) = preflight { return output }
-
-                    let sourceIdentity = try self.validateFreshMove(
-                        source: source,
-                        destination: destination
-                    )
-                    try self.receipts.saveInProgress(
-                        identifier: identifier,
                         fingerprint: fingerprint,
-                        recoveryEvidence: .directoryMoveIntent(
-                            sourcePath: source.relativePath,
-                            destinationPath: destination.relativePath,
-                            identity: sourceIdentity
-                        )
+                        expectedIdentity: validated.identity,
+                        destinationManifest: validated.destinationManifest
                     )
-                    try self.receipts.saveActiveTransaction(
-                        identifier: identifier,
-                        fingerprint: fingerprint
-                    )
-                    return try await Task.detached {
-                        try await self.performCritical(
-                            request,
-                            source: source,
-                            destination: destination,
-                            fingerprint: fingerprint,
-                            expectedIdentity: sourceIdentity
-                        )
-                    }.value
-                }
+                }.value
             }
         }
     }
@@ -163,6 +167,10 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         }
         switch lookup {
         case .completed(let output):
+            _ = try receipts.clearMatchingActiveTransaction(
+                identifier: identifier,
+                fingerprint: fingerprint
+            )
             return .result(output)
         case .failedAfterPersistence(let savedOutput, let evidence, _):
             guard let active,
@@ -171,7 +179,7 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
                   let savedOutput else {
                 throw DirectoryMoveError.recoveryRequired(identifier)
             }
-            let identity = try validatePersistedMove(
+            let validated = try validatePersistedMove(
                 source: source,
                 destination: destination,
                 evidence: evidence,
@@ -180,25 +188,36 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
             return .result(try await finishCommit(
                 request,
                 output: savedOutput,
-                identity: identity,
+                identity: validated.identity,
+                destinationManifest: validated.destinationManifest,
                 fingerprint: fingerprint,
                 active: active,
                 replayed: true
             ))
         case .prePersistenceWithEvidence(let evidence):
-            guard let active,
-                  active.identifier == identifier,
-                  active.fingerprint == fingerprint else {
-                throw DirectoryMoveError.recoveryRequired(identifier)
-            }
             guard case .directoryMoveIntent(
                 let sourcePath,
                 let destinationPath,
-                let expectedIdentity
+                let expectedIdentity,
+                let expectedSummary
             ) = evidence,
                   sourcePath == source.relativePath,
                   destinationPath == destination.relativePath else {
                 throw DirectoryMoveError.recoveryRequired(identifier)
+            }
+            guard let active else {
+                // Persistence cannot begin until the active marker is durable.
+                // A crash between the two intent writes is therefore safe to
+                // restart after removing the orphaned first record.
+                try receipts.clearPrePersistenceIntent(
+                    identifier: identifier,
+                    fingerprint: fingerprint
+                )
+                return .proceed
+            }
+            guard active.identifier == identifier,
+                  active.fingerprint == fingerprint else {
+                throw DirectoryMoveError.recoveryRequired(active.identifier)
             }
             let sourceState = try store.state(of: source)
             let destinationState = try store.state(of: destination)
@@ -211,11 +230,17 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
                 )
                 return .proceed
             case (.missing, .directory(let identity)) where identity == expectedIdentity:
+                let manifest = try validatedRecoveryManifest(
+                    destination,
+                    expectedSummary: expectedSummary,
+                    identifier: identifier
+                )
                 let output = makeOutput(request)
                 return .result(try await finishCommit(
                     request,
                     output: output,
                     identity: identity,
+                    destinationManifest: manifest,
                     fingerprint: fingerprint,
                     active: active,
                     replayed: true
@@ -231,7 +256,7 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
     private nonisolated func validateFreshMove(
         source: NotesDirectoryTarget,
         destination: NotesDirectoryTarget
-    ) throws -> DirectoryTreeStore.Identity {
+    ) throws -> ValidatedMove {
         let identity: DirectoryTreeStore.Identity
         switch try store.state(of: source) {
         case .missing: throw DirectoryMoveError.sourceNotFound(source.relativePath)
@@ -241,8 +266,13 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         guard try store.state(of: destination) == .missing else {
             throw DirectoryMoveError.destinationExists(destination.relativePath)
         }
-        try DirectoryMoveSecurityPreflight.validate(source)
-        return identity
+        let sourceManifest = try DirectoryMoveSecurityPreflight.validate(source)
+        return ValidatedMove(
+            identity: identity,
+            destinationManifest: try sourceManifest.rebased(
+                to: destination.relativePath
+            )
+        )
     }
 
     private nonisolated func makeOutput(
@@ -265,7 +295,8 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         source: NotesDirectoryTarget,
         destination: NotesDirectoryTarget,
         fingerprint: MutationRequestFingerprint,
-        expectedIdentity: DirectoryTreeStore.Identity
+        expectedIdentity: DirectoryTreeStore.Identity,
+        destinationManifest: DirectoryMoveSecurityPreflight.Manifest
     ) async throws -> FileOperationOutput {
         let identity: DirectoryTreeStore.Identity
         do {
@@ -302,6 +333,7 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
             request,
             output: makeOutput(request),
             identity: identity,
+            destinationManifest: destinationManifest,
             fingerprint: fingerprint,
             active: active,
             replayed: false
@@ -312,20 +344,31 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         _ request: MoveDirectoryRequest,
         output: FileOperationOutput,
         identity: DirectoryTreeStore.Identity,
+        destinationManifest: DirectoryMoveSecurityPreflight.Manifest,
         fingerprint: MutationRequestFingerprint,
         active: MutationReceiptStore.ActiveTransaction,
         replayed: Bool
     ) async throws -> FileOperationOutput {
-        let alreadyCommitted = try await git.containsMutationCommit(
-            identifier: request.mutationID,
-            paths: [request.sourcePath, request.destinationPath]
-        )
+        let alreadyCommitted: Bool
+        if replayed {
+            alreadyCommitted = try await git.containsMutationCommit(
+                identifier: request.mutationID,
+                fingerprint: fingerprint
+            )
+        } else {
+            alreadyCommitted = false
+        }
         if !alreadyCommitted {
             do {
                 try await git.commitMove(
                     sourcePath: request.sourcePath,
                     destinationPath: request.destinationPath,
-                    message: "[SecondBrainMCP] Moved directory: \(request.sourcePath) to \(request.destinationPath) [mutation \(request.mutationID.rawValue)]"
+                    manifest: destinationManifest,
+                    message: "[SecondBrainMCP] Moved directory: \(request.sourcePath) to \(request.destinationPath)",
+                    identity: GitMutationIdentity(
+                        identifier: request.mutationID,
+                        fingerprint: fingerprint
+                    )
                 )
             } catch {
                 let failure = VaultMutationFailureText.bounded(error)
@@ -336,7 +379,8 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
                     recoveryEvidence: .movedDirectory(
                         sourcePath: request.sourcePath,
                         destinationPath: request.destinationPath,
-                        identity: identity
+                        identity: identity,
+                        summary: destinationManifest.summary
                     ),
                     failure: failure
                 )
@@ -347,6 +391,11 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
                 )
                 throw ExecutionError.gitCommitFailed(request.mutationID, failure)
             }
+        } else {
+            try await git.reconcileCommittedMove(
+                sourcePath: request.sourcePath,
+                destinationPath: request.destinationPath
+            )
         }
 
         await audit.log(
@@ -373,11 +422,12 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         destination: NotesDirectoryTarget,
         evidence: VaultMutationRecoveryEvidence?,
         identifier: MutationID
-    ) throws -> DirectoryTreeStore.Identity {
+    ) throws -> ValidatedMove {
         guard case .movedDirectory(
             let sourcePath,
             let destinationPath,
-            let expectedIdentity
+            let expectedIdentity,
+            let expectedSummary
         ) = evidence,
               sourcePath == source.relativePath,
               destinationPath == destination.relativePath,
@@ -386,6 +436,25 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
               actualIdentity == expectedIdentity else {
             throw DirectoryMoveError.recoveryRequired(identifier)
         }
-        return expectedIdentity
+        return ValidatedMove(
+            identity: expectedIdentity,
+            destinationManifest: try validatedRecoveryManifest(
+                destination,
+                expectedSummary: expectedSummary,
+                identifier: identifier
+            )
+        )
+    }
+
+    private func validatedRecoveryManifest(
+        _ destination: NotesDirectoryTarget,
+        expectedSummary: DirectoryMoveSecurityPreflight.Manifest.Summary,
+        identifier: MutationID
+    ) throws -> DirectoryMoveSecurityPreflight.Manifest {
+        let manifest = try DirectoryMoveSecurityPreflight.validate(destination)
+        guard manifest.summary == expectedSummary else {
+            throw DirectoryMoveError.recoveryRequired(identifier)
+        }
+        return manifest
     }
 }

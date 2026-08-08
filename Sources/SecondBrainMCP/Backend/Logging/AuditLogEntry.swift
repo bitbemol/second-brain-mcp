@@ -5,8 +5,8 @@ struct AuditLogEntry: Sendable {
     /// ISO-8601 timestamp supplied by the logger.
     let timestamp: String
 
-    /// Transport-neutral CRUD operation being recorded.
-    let operation: FileCRUDOperation
+    /// Transport-neutral vault operation being recorded.
+    let operation: VaultOperation
 
     /// Vault area used to distinguish ordinary and reference reads.
     let area: VaultArea
@@ -21,13 +21,13 @@ struct AuditLogEntry: Sendable {
     ///
     /// - Parameters:
     ///   - timestamp: Preformatted ISO-8601 timestamp.
-    ///   - operation: CRUD operation being recorded.
+    ///   - operation: Vault operation being recorded.
     ///   - area: Vault area associated with the operation.
     ///   - path: Optional caller-controlled path.
     ///   - details: Optional handler or rejection context.
     init(
         timestamp: String,
-        operation: FileCRUDOperation,
+        operation: VaultOperation,
         area: VaultArea,
         path: String?,
         details: String?
@@ -84,7 +84,7 @@ struct AuditLogEntry: Sendable {
         case move = "MOVE"
         case readReference = "READ_REF"
 
-        init(operation: FileCRUDOperation, area: VaultArea) {
+        init(operation: VaultOperation, area: VaultArea) {
             switch operation {
             case .create: self = .create
             case .read: self = area == .references ? .readReference : .read

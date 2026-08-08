@@ -142,7 +142,10 @@ struct VaultMutationRecovery: Sendable {
     ) async throws -> FileOperationOutput {
         let alreadyCommitted: Bool
         do {
-            alreadyCommitted = try await committer.alreadyCommitted(plan)
+            alreadyCommitted = try await committer.alreadyCommitted(
+                plan,
+                fingerprint: active.fingerprint
+            )
             // Finalization is allowed only while the public outcome still
             // describes the vault, even if Git already committed before a crash.
             try validateRecoveryState(
@@ -155,8 +158,14 @@ struct VaultMutationRecovery: Sendable {
                 // Recovery is past persistence. Keep Git alive if the MCP caller
                 // cancels while awaiting the commit-only attempt.
                 try await Task.detached {
-                    try await committer.commit(plan)
+                    try await committer.commit(
+                        plan,
+                        output: output,
+                        fingerprint: active.fingerprint
+                    )
                 }.value
+            } else {
+                try await committer.reconcileCommitted(plan)
             }
         } catch let error as VaultMutationExecutor.ExecutionError {
             throw error
@@ -172,7 +181,7 @@ struct VaultMutationRecovery: Sendable {
                 )
             } catch {
                 await audit.log(
-                    operation: plan.kind.fileOperation,
+                    operation: VaultOperation(plan.kind.fileOperation),
                     path: plan.path,
                     details: "\(plan.auditDetails); recovery state persistence failed: \(error)"
                 )
@@ -183,7 +192,7 @@ struct VaultMutationRecovery: Sendable {
                     )
             }
             await audit.log(
-                operation: plan.kind.fileOperation,
+                operation: VaultOperation(plan.kind.fileOperation),
                 path: plan.path,
                 details: "\(plan.auditDetails); recovery git commit failed: \(failure)"
             )
@@ -195,7 +204,7 @@ struct VaultMutationRecovery: Sendable {
         }
 
         await audit.log(
-            operation: plan.kind.fileOperation,
+            operation: VaultOperation(plan.kind.fileOperation),
             path: plan.path,
             details: alreadyCommitted
                 ? "\(plan.auditDetails); finalized previously recovered git commit"

@@ -52,11 +52,17 @@ struct POSIXAdvisoryFileLock: Sendable {
 
     private let url: URL
     private let retryNanoseconds: UInt64
+    private let contentionObserver: (@Sendable () -> Void)?
 
     /// Creates a lock adapter for one persistent process-owned file.
-    init(url: URL, retryNanoseconds: UInt64 = 20_000_000) {
+    init(
+        url: URL,
+        retryNanoseconds: UInt64 = 20_000_000,
+        contentionObserver: (@Sendable () -> Void)? = nil
+    ) {
         self.url = url
         self.retryNanoseconds = retryNanoseconds
+        self.contentionObserver = contentionObserver
     }
 
     /// Acquires a shared or exclusive lease without blocking an executor thread.
@@ -84,6 +90,7 @@ struct POSIXAdvisoryFileLock: Sendable {
                 guard code == EWOULDBLOCK || code == EAGAIN || code == EACCES else {
                     throw LockError(path: url.path, operation: "acquire", code: code)
                 }
+                contentionObserver?()
                 try Task.checkCancellation()
                 try await Task.sleep(nanoseconds: retryNanoseconds)
             }

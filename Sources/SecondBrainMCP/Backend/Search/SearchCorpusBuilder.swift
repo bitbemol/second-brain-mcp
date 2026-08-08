@@ -399,8 +399,9 @@ struct SearchCorpusBuilder: Sendable {
             }
 
             let remaining = max(limits.maximumAggregateBytes - aggregateBytes, 0)
-            let searchFileLimit = candidate.format == .pdf
-                ? limits.maximumPDFFileBytes : limits.maximumFileBytes
+            // PDF title/content projections are served by the persistent index
+            // above. This live snapshot path handles non-indexed formats only.
+            let searchFileLimit = limits.maximumFileBytes
             let perFileLimit = min(remaining, searchFileLimit)
             let snapshot: FileSnapshot
             do {

@@ -30,7 +30,7 @@ struct FileToolController: Sendable {
 
         if readOnly, tool.operation.isMutation {
             await rejections.record(FileRequestRejection(
-                operation: tool.operation,
+                operation: VaultOperation(tool.operation),
                 path: FileToolRequestDecoder.path(from: params),
                 reason: .readOnly
             ))

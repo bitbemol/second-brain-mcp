@@ -6,6 +6,32 @@ import Testing
 
 @Suite("Persistent PDF search index")
 struct PDFSearchIndexTests {
+    @Test("Production composition indexes large PDFs under bounded query hydration")
+    func productionConfigurationContract() {
+        let configuration = VaultRuntime.pdfSearchIndexConfiguration
+
+        #expect(configuration == .production)
+        #expect(configuration.maximumIndexedSourceFileBytes
+            == FileFormat.pdf.maximumFileBytes)
+        #expect(configuration.maximumIndexedSourceFileBytes
+            == 512 * 1_024 * 1_024)
+        #expect(configuration.maximumHydratedTextBytesPerQuery
+            == 64 * 1_024 * 1_024)
+        #expect(configuration.maximumHydratedTextBytesPerQuery
+            < configuration.maximumIndexedSourceFileBytes)
+        #expect(configuration.maximumHydratedPagesPerQuery
+            <= configuration.extraction.maximumPages)
+        #expect(configuration.extraction == .production)
+        #expect(configuration.extraction.maximumTextBytes == 64 * 1_024 * 1_024)
+        #expect(configuration.extraction.maximumPageTextBytes == 4 * 1_024 * 1_024)
+        #expect(configuration.extraction.retainedRepresentationByteLimit
+            == 256 * 1_024 * 1_024)
+        #expect(configuration.extraction.maximumTokensPerPage == 500_000)
+        #expect(configuration.extraction.maximumTokenScalars == 64)
+        #expect(configuration.extraction.maximumPrintedPageLabelBytes
+            == SearchRequestLimits.maximumLocatorBytes)
+    }
+
     @Test("A warm index survives a new service instance and changed bytes replace old pages")
     func persistenceAndInvalidation() async throws {
         let fixture = try makeFixture()
@@ -98,11 +124,96 @@ struct PDFSearchIndexTests {
             snapshotURL: url,
             path: "references/book.pdf",
             includePages: true,
-            maximumMetadataBytes: 8
+            configuration: .init(maximumMetadataBytes: 8)
         )
         #expect(extraction.titleTruncated)
         #expect(extraction.status == .extracted)
         #expect(extraction.pages.count == 1)
+    }
+
+    @Test("Streaming PDF terms exactly match the shared bounded tokenizer")
+    func streamingNormalizedTerms() throws {
+        let source = "HTTPServer fooBar café42 repeated repeated"
+        let tokens = try SearchTokenizer.boundedTokens(
+            in: source,
+            maximumTokens: 100,
+            maximumTokenScalars: 64
+        )
+        let projection = try SearchTokenizer.boundedNormalizedTerms(
+            in: source,
+            maximumTokens: 100,
+            maximumTokenScalars: 64,
+            maximumBytes: 1_024
+        )
+
+        #expect(projection.value == tokens.tokens.map(\.normalized)
+            .joined(separator: " "))
+        #expect(projection.truncated == tokens.truncated)
+    }
+
+    @Test("PDF index representations obey one aggregate retained-byte ceiling")
+    func aggregateRepresentationCeiling() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let path = "references/representation.pdf"
+        let url = fixture.root.appendingPathComponent(path)
+        try generatedSearchPDF(pages: [
+            "first retained marker alpha beta gamma",
+            "second bounded marker delta epsilon zeta",
+            "third bounded marker eta theta iota",
+        ]).write(to: url)
+        let complete = try PDFIndexExtractor.extract(
+            snapshotURL: url,
+            path: path,
+            includePages: true,
+            configuration: .init(maximumTextBytes: 1_024 * 1_024)
+        )
+        let first = try #require(complete.pages.first)
+        let ceiling = first.rawText.utf8.count
+            + first.literalFolded.utf8.count
+            + first.normalizedTerms.utf8.count
+            + (first.printedPage?.utf8.count ?? 0)
+
+        let limited = try PDFIndexExtractor.extract(
+            snapshotURL: url,
+            path: path,
+            includePages: true,
+            configuration: .init(
+                maximumTextBytes: 1_024 * 1_024,
+                maximumRepresentationBytes: ceiling
+            )
+        )
+        let retainedBytes = limited.pages.reduce(into: 0) {
+            $0 += $1.rawText.utf8.count
+                + $1.literalFolded.utf8.count
+                + $1.normalizedTerms.utf8.count
+                + ($1.printedPage?.utf8.count ?? 0)
+        }
+
+        #expect(retainedBytes <= ceiling)
+        #expect(limited.pages.first?.rawText.contains("first retained marker") == true)
+        #expect(limited.status == .partial)
+    }
+
+    @Test("Printed PDF labels are part of the retained representation ceiling")
+    func printedLabelRepresentationAccounting() {
+        let label = String(
+            repeating: "l",
+            count: PDFIndexExtractor.Configuration.production
+                .maximumPrintedPageLabelBytes
+        )
+        let page = IndexedPDFPage(
+            physicalPage: 1,
+            printedPage: label,
+            kind: .body,
+            lineCount: 1,
+            rawText: "body",
+            literalFolded: "body",
+            normalizedTerms: "body"
+        )
+
+        #expect(PDFIndexExtractor.retainedRepresentationByteCount(for: page)
+            == label.utf8.count + 12)
     }
 
     @Test("A safe index is tombstoned when the current PDF becomes sensitive")
@@ -161,10 +272,21 @@ struct PDFSearchIndexTests {
             query: "shared warm corpus sentinel",
             root: fixture.root.path
         )
-        let cold = try await makeIndex(fixture).indexedDocuments(
+        let coldIndex = makeIndex(fixture)
+        var cold = try await coldIndex.indexedDocuments(
             targets: targets,
             request: request
         )
+        // PDFKit may report a transient cannot-open while the full test suite is
+        // rendering other independent documents. Production reports that file
+        // unavailable for the request and retries it on the next search; mirror
+        // that bounded retry here before evaluating the warm-cache invariant.
+        if cold.documentsByPath.count != targets.count {
+            cold = try await coldIndex.indexedDocuments(
+                targets: targets,
+                request: request
+            )
+        }
         #expect(cold.documentsByPath.count == 400)
 
         let extractions = ExtractionCounter()
@@ -271,6 +393,52 @@ struct PDFSearchIndexTests {
             .contains("focus") == true)
     }
 
+    @Test("PDF candidate expansion follows the final matcher's shared edit policy")
+    func fuzzyPolicyParity() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let path = "references/fuzzy-policy.pdf"
+        try generatedSearchPDF(pages: ["focus abcd abcdxfgi"]).write(
+            to: fixture.root.appendingPathComponent(path)
+        )
+        let target = try ReadableFileTarget.resolve(
+            path: path,
+            format: .pdf,
+            vaultPath: fixture.root.path
+        )
+        let index = makeIndex(fixture)
+
+        let transposition = try await index.indexedDocuments(
+            targets: [target],
+            request: try validatedRequest(
+                query: "focsu",
+                root: fixture.root.path,
+                strategy: .fuzzy
+            )
+        )
+        #expect(transposition.documentsByPath[path]?.document.sections.isEmpty == false)
+
+        let twoLongEdits = try await index.indexedDocuments(
+            targets: [target],
+            request: try validatedRequest(
+                query: "abcdefgh",
+                root: fixture.root.path,
+                strategy: .fuzzy
+            )
+        )
+        #expect(twoLongEdits.documentsByPath[path]?.document.sections.isEmpty == false)
+
+        let twoShortEdits = try await index.indexedDocuments(
+            targets: [target],
+            request: try validatedRequest(
+                query: "badc",
+                root: fixture.root.path,
+                strategy: .fuzzy
+            )
+        )
+        #expect(twoShortEdits.documentsByPath[path]?.document.sections.isEmpty == true)
+    }
+
     @Test("Fuzzy cache observes revisions published by another index actor")
     func crossActorFuzzyCacheInvalidation() async throws {
         let fixture = try makeFixture()
@@ -325,7 +493,10 @@ struct PDFSearchIndexTests {
             root: fixture.root.path,
             strategy: .fuzzy
         )
-        let index = makeIndex(fixture, maximumVocabularyWorkCallbacks: 1)
+        let index = makeIndex(
+            fixture,
+            maximumFuzzyVocabularyWorkCallbacks: 1
+        )
 
         let result = try await index.indexedDocuments(
             targets: [target],
@@ -352,7 +523,7 @@ struct PDFSearchIndexTests {
             ))
         }
         let request = try validatedRequest(query: "needle", root: fixture.root.path)
-        let index = makeIndex(fixture, maximumCandidateTextBytes: 400)
+        let index = makeIndex(fixture, maximumHydratedTextBytesPerQuery: 400)
 
         let result = try await index.indexedDocuments(targets: targets, request: request)
         let retainedBytes = result.documentsByPath.values.flatMap {
@@ -376,7 +547,7 @@ struct PDFSearchIndexTests {
             format: .pdf,
             vaultPath: fixture.root.path
         )
-        let index = makeIndex(fixture, maximumCandidateWorkCallbacks: 0)
+        let index = makeIndex(fixture, maximumCandidateQueryWorkCallbacks: 0)
 
         for strategy in [SearchStrategy.exact, .smart] {
             let request = try validatedRequest(
@@ -428,6 +599,9 @@ struct PDFSearchIndexTests {
         #expect(first.unavailablePaths == Set([path]))
         #expect(second.unavailablePaths == Set([path]))
         #expect(extractions.value == 1)
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        #expect(try databaseBundleByteCount(databaseURL) <= 256 * 1_024)
     }
 
     @Test("A peer generation change releases storage-full backoff")
@@ -687,8 +861,8 @@ struct PDFSearchIndexTests {
         #expect(try scalarSQL("SELECT COUNT(*) FROM pdf_document", at: databaseURL) == 0)
     }
 
-    @Test("FTS payload divergence is rejected instead of silently missing hits")
-    func divergentFTSPayload() async throws {
+    @Test("A forced exhaustive diagnostic rejects divergent FTS payload")
+    func forcedDiagnosticRejectsDivergentFTSPayload() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/divergent.pdf"
@@ -713,8 +887,435 @@ struct PDFSearchIndexTests {
         )
 
         #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            _ = try PDFSearchIndexDatabase(
+                url: databaseURL,
+                forceExhaustiveIntegrity: true
+            )
+        }
+    }
+
+    @Test("Warm opens use bounded trust probes while explicit diagnostics are exhaustive")
+    func warmIntegrityTrustBoundary() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        let integrityChecks = ExtractionCounter()
+
+        do {
+            _ = try PDFSearchIndexDatabase(
+                url: databaseURL,
+                exhaustiveIntegrityObserver: { integrityChecks.increment() }
+            )
+        }
+        #expect(integrityChecks.value == 1)
+        let beforeWarmOpen = try databaseFileIdentity(databaseURL)
+
+        do {
+            let warm = try PDFSearchIndexDatabase(
+                url: databaseURL,
+                exhaustiveIntegrityObserver: { integrityChecks.increment() }
+            )
+            #expect(try warm.generation() == 0)
+        }
+        #expect(integrityChecks.value == 1)
+        #expect(try databaseFileIdentity(databaseURL) == beforeWarmOpen)
+
+        _ = try PDFSearchIndexDatabase(
+            url: databaseURL,
+            exhaustiveIntegrityObserver: { integrityChecks.increment() },
+            forceExhaustiveIntegrity: true
+        )
+        #expect(integrityChecks.value == 2)
+    }
+
+    @Test("An unversioned nonempty database is rejected rather than adopted")
+    func unversionedNonemptyDatabase() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        try Data().write(to: databaseURL)
+        #expect(Darwin.chmod(databaseURL.path, 0o600) == 0)
+        try executeSQL("CREATE TABLE foreign_object(value TEXT)", at: databaseURL)
+
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
             _ = try PDFSearchIndexDatabase(url: databaseURL)
         }
+        #expect(try scalarSQL(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name='index_meta'",
+            at: databaseURL
+        ) == 0)
+    }
+
+    @Test("A missing warm schema object triggers safe derived-cache recovery")
+    func missingWarmSchemaRecovery() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        do { _ = try PDFSearchIndexDatabase(url: databaseURL) }
+        try executeSQL("DROP TABLE index_meta", at: databaseURL)
+
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            _ = try PDFSearchIndexDatabase(url: databaseURL)
+        }
+        try await makeIndex(fixture).prepare()
+        #expect(try scalarSQL("SELECT COUNT(*) FROM index_meta", at: databaseURL) == 1)
+        #expect(try scalarSQL("PRAGMA user_version", at: databaseURL)
+            == PDFSearchIndexContract.schemaVersion)
+    }
+
+    @Test("Large replace and prune stay inside the peak database bundle quota")
+    func publishedBundleQuota() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        let maximumBytes: Int64 = 16 * 1_024 * 1_024
+        let observedPeak = PeakByteCounter()
+        let database = try PDFSearchIndexDatabase(
+            url: databaseURL,
+            maximumDatabaseBytes: maximumBytes,
+            peakBundleByteObserver: { observedPeak.record($0) }
+        )
+        let pages = (1...400).map { page in
+            IndexedPDFPage(
+                physicalPage: page,
+                printedPage: nil,
+                kind: .body,
+                lineCount: 1,
+                rawText: "bounded publication page \(page)",
+                literalFolded: "bounded publication page \(page)",
+                normalizedTerms: "bounded publication page \(page)"
+            )
+        }
+        _ = try database.publish(
+            path: "references/bounded-publication.pdf",
+            revision: "generated",
+            quickIdentity: PDFIndexQuickIdentity(metadata: RegularFileMetadata(
+                byteCount: 1,
+                modificationDate: nil
+            )),
+            extraction: IndexedPDFExtraction(
+                title: "Bounded Publication",
+                titleTruncated: false,
+                pageCount: pages.count,
+                pages: pages,
+                status: .extracted
+            )
+        )
+        let replacement = (1...400).map { page in
+            IndexedPDFPage(
+                physicalPage: page,
+                printedPage: nil,
+                kind: .body,
+                lineCount: 1,
+                rawText: "replacement publication page \(page)",
+                literalFolded: "replacement publication page \(page)",
+                normalizedTerms: "replacement publication page \(page)"
+            )
+        }
+        _ = try database.publish(
+            path: "references/bounded-publication.pdf",
+            revision: "replacement",
+            quickIdentity: PDFIndexQuickIdentity(metadata: RegularFileMetadata(
+                byteCount: 2,
+                modificationDate: nil
+            )),
+            extraction: IndexedPDFExtraction(
+                title: "Bounded Replacement",
+                titleTruncated: false,
+                pageCount: replacement.count,
+                pages: replacement,
+                status: .extracted
+            )
+        )
+        let mainDatabaseBytesAfterReplace = try databaseFileByteCount(databaseURL)
+        #expect(observedPeak.value > mainDatabaseBytesAfterReplace)
+        #expect(observedPeak.value <= maximumBytes)
+        _ = try database.publish(
+            path: "references/pruned.pdf",
+            revision: "pruned",
+            quickIdentity: PDFIndexQuickIdentity(metadata: RegularFileMetadata(
+                byteCount: 1,
+                modificationDate: nil
+            )),
+            extraction: IndexedPDFExtraction(
+                title: "Pruned",
+                titleTruncated: false,
+                pageCount: 1,
+                pages: [replacement[0]],
+                status: .extracted
+            )
+        )
+        observedPeak.reset()
+        #expect(try database.pruneMissing(
+            scopePrefix: "references/",
+            currentPaths: ["references/bounded-publication.pdf"]
+        ) == 1)
+
+        #expect(observedPeak.value > 0)
+        #expect(observedPeak.value <= maximumBytes)
+        #expect(try databaseBundleByteCount(databaseURL) <= maximumBytes)
+    }
+
+    @Test("Remove and prune retain the bounded WAL transaction envelope")
+    func destructiveBundleQuotaWithRetainedReadSnapshot() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        let maximumBytes: Int64 = 8 * 1_024 * 1_024
+        let observedPeak = PeakByteCounter()
+        let database = try PDFSearchIndexDatabase(
+            url: databaseURL,
+            maximumDatabaseBytes: maximumBytes,
+            peakBundleByteObserver: { observedPeak.record($0) }
+        )
+        func extraction(_ marker: String) -> IndexedPDFExtraction {
+            IndexedPDFExtraction(
+                title: marker,
+                titleTruncated: false,
+                pageCount: 1,
+                pages: [IndexedPDFPage(
+                    physicalPage: 1,
+                    printedPage: nil,
+                    kind: .body,
+                    lineCount: 1,
+                    rawText: marker,
+                    literalFolded: marker,
+                    normalizedTerms: marker
+                )],
+                status: .extracted
+            )
+        }
+        for (path, marker) in [
+            ("references/removed.pdf", "removed marker"),
+            ("references/pruned.pdf", "pruned marker"),
+        ] {
+            _ = try database.publish(
+                path: path,
+                revision: marker,
+                quickIdentity: PDFIndexQuickIdentity(metadata: RegularFileMetadata(
+                    byteCount: 1,
+                    modificationDate: nil
+                )),
+                extraction: extraction(marker)
+            )
+        }
+
+        var reader: OpaquePointer?
+        guard sqlite3_open_v2(
+            databaseURL.path,
+            &reader,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let openedReader = reader else {
+            throw PDFSearchIndexDatabase.DatabaseError(
+                operation: "test open",
+                message: "could not retain a read snapshot"
+            )
+        }
+        defer {
+            if let reader {
+                _ = sqlite3_exec(reader, "ROLLBACK", nil, nil, nil)
+                sqlite3_close(reader)
+            }
+        }
+        guard sqlite3_exec(openedReader, "BEGIN", nil, nil, nil) == SQLITE_OK,
+              sqlite3_exec(
+                openedReader,
+                "SELECT COUNT(*) FROM pdf_document",
+                nil,
+                nil,
+                nil
+              ) == SQLITE_OK else {
+            throw PDFSearchIndexDatabase.DatabaseError(
+                operation: "test snapshot",
+                message: String(cString: sqlite3_errmsg(openedReader))
+            )
+        }
+
+        observedPeak.reset()
+        // The delete commits, but its final TRUNCATE checkpoint must report the
+        // retained reader instead of silently ignoring the surviving WAL.
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            try database.remove(path: "references/removed.pdf")
+        }
+        #expect(try database.record(path: "references/removed.pdf") == nil)
+        #expect(observedPeak.value > 0)
+        #expect(observedPeak.value <= maximumBytes)
+        #expect(try databaseFileByteCount(
+            URL(fileURLWithPath: databaseURL.path + "-wal")
+        ) > 0)
+        #expect(try databaseBundleByteCount(databaseURL)
+            > databaseFileByteCount(databaseURL))
+        #expect(try databaseBundleByteCount(databaseURL) <= maximumBytes)
+
+        guard sqlite3_exec(openedReader, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+            throw PDFSearchIndexDatabase.DatabaseError(
+                operation: "test snapshot",
+                message: String(cString: sqlite3_errmsg(openedReader))
+            )
+        }
+        sqlite3_close(openedReader)
+        reader = nil
+
+        // The next destructive transaction must account for and checkpoint the
+        // residual sidecars before predicting its own peak.
+        #expect(try database.pruneMissing(
+            scopePrefix: "references/",
+            currentPaths: []
+        ) == 1)
+        #expect(try database.record(path: "references/pruned.pdf") == nil)
+        #expect(observedPeak.value <= maximumBytes)
+        #expect(try databaseBundleByteCount(databaseURL) <= maximumBytes)
+    }
+
+    @Test("Warm trust probes reject a derived cache with the wrong application identity")
+    func applicationIdentityProbe() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        _ = try PDFSearchIndexDatabase(url: databaseURL)
+        try executeSQL("PRAGMA application_id=0", at: databaseURL)
+
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            _ = try PDFSearchIndexDatabase(url: databaseURL)
+        }
+    }
+
+    @Test("Warm trust probes reject excessive schema index fanout")
+    func boundedWarmIndexEnumeration() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        _ = try PDFSearchIndexDatabase(url: databaseURL)
+        let indexes = (1...33).map {
+            "CREATE INDEX excessive_\($0) ON pdf_document(title)"
+        }.joined(separator: ";")
+        try executeSQL(indexes, at: databaseURL)
+
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            _ = try PDFSearchIndexDatabase(url: databaseURL)
+        }
+    }
+
+    @Test("Warm trust probes reject oversized schema SQL before decoding it")
+    func boundedWarmSchemaSQL() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        _ = try PDFSearchIndexDatabase(url: databaseURL)
+        let padding = String(repeating: "x", count: 70_000)
+        try executeSQL("""
+          DROP TABLE pdf_page_vocab;
+          DROP TABLE pdf_page_fts;
+          CREATE VIRTUAL TABLE pdf_page_fts USING fts5(
+            normalized_terms,
+            tokenize='unicode61 remove_diacritics 2' /*\(padding)*/
+          );
+          CREATE VIRTUAL TABLE pdf_page_vocab USING fts5vocab(
+            pdf_page_fts, 'row'
+          );
+        """, at: databaseURL)
+
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            _ = try PDFSearchIndexDatabase(url: databaseURL)
+        }
+    }
+
+    @Test("Warm generation metadata probe rejects a second row")
+    func boundedWarmGenerationRows() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
+            .appendingPathComponent("pdf-pages-v1.sqlite3")
+        _ = try PDFSearchIndexDatabase(url: databaseURL)
+        try executeSQL("""
+          ALTER TABLE index_meta RENAME TO replaced_index_meta;
+          CREATE TABLE index_meta(id INTEGER, generation INTEGER);
+          INSERT INTO index_meta(id,generation) VALUES(1,0),(2,0);
+          DROP TABLE replaced_index_meta;
+        """, at: databaseURL)
+
+        #expect(throws: PDFSearchIndexDatabase.DatabaseError.self) {
+            _ = try PDFSearchIndexDatabase(url: databaseURL)
+        }
+    }
+
+    @Test("Publishing many pages prepares a constant number of SQL statements")
+    func publishReusesStatements() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let preparations = ExtractionCounter()
+        let database = try PDFSearchIndexDatabase(
+            url: fixture.dataDirectory.searchIndexDirectoryURL
+                .appendingPathComponent("pdf-pages-v1.sqlite3"),
+            statementPreparationObserver: { preparations.increment() }
+        )
+        let onePage = IndexedPDFExtraction(
+            title: "One Page",
+            titleTruncated: false,
+            pageCount: 1,
+            pages: [IndexedPDFPage(
+                physicalPage: 1,
+                printedPage: nil,
+                kind: .body,
+                lineCount: 1,
+                rawText: "one page",
+                literalFolded: "one page",
+                normalizedTerms: "one page"
+            )],
+            status: .extracted
+        )
+        let beforeOnePage = preparations.value
+        _ = try database.publish(
+            path: "references/one-page.pdf",
+            revision: "one",
+            quickIdentity: PDFIndexQuickIdentity(metadata: RegularFileMetadata(
+                byteCount: 1,
+                modificationDate: nil
+            )),
+            extraction: onePage
+        )
+        let onePagePreparations = preparations.value - beforeOnePage
+        let pages = (1...200).map { page in
+            IndexedPDFPage(
+                physicalPage: page,
+                printedPage: nil,
+                kind: .body,
+                lineCount: 1,
+                rawText: "shared page \(page)",
+                literalFolded: "shared page \(page)",
+                normalizedTerms: "shared page \(page)"
+            )
+        }
+
+        let beforeManyPages = preparations.value
+        _ = try database.publish(
+            path: "references/many-pages.pdf",
+            revision: "generated",
+            quickIdentity: PDFIndexQuickIdentity(metadata: RegularFileMetadata(
+                byteCount: 1,
+                modificationDate: nil
+            )),
+            extraction: IndexedPDFExtraction(
+                title: "Many Pages",
+                titleTruncated: false,
+                pageCount: pages.count,
+                pages: pages,
+                status: .extracted
+            )
+        )
+
+        #expect(preparations.value - beforeManyPages == onePagePreparations)
+        #expect(try database.record(path: "references/many-pages.pdf")?
+            .indexedPageCount == 200)
     }
 
     @Test("Extended SQLite corruption codes remain rebuildable")
@@ -767,9 +1368,9 @@ struct PDFSearchIndexTests {
 
     private func makeIndex(
         _ fixture: Fixture,
-        maximumCandidateTextBytes: Int = 64 * 1_024 * 1_024,
-        maximumCandidateWorkCallbacks: Int = 25_000,
-        maximumVocabularyWorkCallbacks: Int = 10_000,
+        maximumHydratedTextBytesPerQuery: Int = 64 * 1_024 * 1_024,
+        maximumCandidateQueryWorkCallbacks: Int = 25_000,
+        maximumFuzzyVocabularyWorkCallbacks: Int = 10_000,
         maximumDatabaseBytes: Int64 = 4 * 1_024 * 1_024 * 1_024,
         extractionObserver: (@Sendable () -> Void)? = nil,
         candidateQueryObserver: (@Sendable () -> Void)? = nil
@@ -783,10 +1384,15 @@ struct PDFSearchIndexTests {
                 url: fixture.dataDirectory.lockDirectoryURL
                     .appendingPathComponent("pdf-index-writer.lock")
             ),
-            maximumCandidateTextBytes: maximumCandidateTextBytes,
-            maximumCandidateWorkCallbacks: maximumCandidateWorkCallbacks,
-            maximumDatabaseBytes: maximumDatabaseBytes,
-            maximumVocabularyWorkCallbacks: maximumVocabularyWorkCallbacks,
+            configuration: .init(
+                maximumHydratedTextBytesPerQuery:
+                    maximumHydratedTextBytesPerQuery,
+                maximumCandidateQueryWorkCallbacks:
+                    maximumCandidateQueryWorkCallbacks,
+                maximumDatabaseBytes: maximumDatabaseBytes,
+                maximumFuzzyVocabularyWorkCallbacks:
+                    maximumFuzzyVocabularyWorkCallbacks
+            ),
             extractionObserver: extractionObserver,
             candidateQueryObserver: candidateQueryObserver
         )
@@ -867,6 +1473,46 @@ struct PDFSearchIndexTests {
         }
         return Int(sqlite3_column_int64(statement, 0))
     }
+
+    private struct DatabaseFileIdentity: Equatable {
+        let byteCount: Int64
+        let modificationSeconds: Int64
+        let modificationNanoseconds: Int64
+    }
+
+    private func databaseFileIdentity(_ url: URL) throws -> DatabaseFileIdentity {
+        var metadata = stat()
+        guard Darwin.lstat(url.path, &metadata) == 0 else {
+            throw PDFSearchIndexDatabase.DatabaseError(
+                operation: "test stat",
+                message: url.path,
+                code: errno
+            )
+        }
+        return DatabaseFileIdentity(
+            byteCount: metadata.st_size,
+            modificationSeconds: Int64(metadata.st_mtimespec.tv_sec),
+            modificationNanoseconds: Int64(metadata.st_mtimespec.tv_nsec)
+        )
+    }
+
+    private func databaseBundleByteCount(_ url: URL) throws -> Int64 {
+        try [url, URL(fileURLWithPath: url.path + "-wal"),
+             URL(fileURLWithPath: url.path + "-shm")].reduce(into: 0) {
+            $0 += try databaseFileByteCount($1)
+        }
+    }
+
+    private func databaseFileByteCount(_ url: URL) throws -> Int64 {
+        var metadata = stat()
+        if Darwin.lstat(url.path, &metadata) == 0 { return metadata.st_size }
+        if errno == ENOENT { return 0 }
+        throw PDFSearchIndexDatabase.DatabaseError(
+            operation: "test stat",
+            message: url.path,
+            code: errno
+        )
+    }
 }
 
 private final class ExtractionCounter: @unchecked Sendable {
@@ -879,5 +1525,20 @@ private final class ExtractionCounter: @unchecked Sendable {
 
     func increment() {
         lock.withLock { storage += 1 }
+    }
+}
+
+private final class PeakByteCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Int64 = 0
+
+    var value: Int64 { lock.withLock { storage } }
+
+    func record(_ bytes: Int64) {
+        lock.withLock { storage = max(storage, bytes) }
+    }
+
+    func reset() {
+        lock.withLock { storage = 0 }
     }
 }

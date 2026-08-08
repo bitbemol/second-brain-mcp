@@ -159,7 +159,7 @@ actor VaultMutationExecutor {
             persisted = try await mutation.perform()
         } catch {
             await audit.log(
-                operation: plan.kind.fileOperation,
+                operation: VaultOperation(plan.kind.fileOperation),
                 path: plan.path,
                 details: "\(plan.auditDetails); persistence outcome unknown: \(error)"
             )
@@ -171,7 +171,11 @@ actor VaultMutationExecutor {
             do {
                 let committer = VaultMutationCommitter(git: git)
                 try await Task.detached {
-                    try await committer.commit(plan)
+                    try await committer.commit(
+                        plan,
+                        output: output,
+                        fingerprint: receiptContext.fingerprint
+                    )
                 }.value
             } catch {
                 let failure = VaultMutationFailureText.bounded(error)
@@ -185,7 +189,7 @@ actor VaultMutationExecutor {
                     )
                 } catch {
                     await audit.log(
-                        operation: plan.kind.fileOperation,
+                        operation: VaultOperation(plan.kind.fileOperation),
                         path: plan.path,
                         details: "\(plan.auditDetails); recovery state persistence failed: \(error)"
                     )
@@ -195,7 +199,7 @@ actor VaultMutationExecutor {
                     )
                 }
                 await audit.log(
-                    operation: plan.kind.fileOperation,
+                    operation: VaultOperation(plan.kind.fileOperation),
                     path: plan.path,
                     details: "\(plan.auditDetails); git commit failed: \(failure)"
                 )
@@ -208,7 +212,7 @@ actor VaultMutationExecutor {
         }
 
         await audit.log(
-            operation: plan.kind.fileOperation,
+            operation: VaultOperation(plan.kind.fileOperation),
             path: plan.path,
             details: mutation.requiresCommit
                 ? plan.auditDetails

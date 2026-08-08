@@ -9,13 +9,6 @@ import Foundation
 struct VaultSearchEngine: VaultSearchService, Sendable {
     enum EngineError: Error, Sendable { case responseLimitTooSmall }
 
-    private struct RankedResult: Sendable {
-        let result: VaultSearchResult
-        var score: Double
-        let hasWholeLiteral: Bool
-        let coveredTerms: Set<String>
-    }
-
     private struct FieldMatch: Sendable {
         let field: SearchField
         let text: String
@@ -23,20 +16,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     }
 
     private struct SemanticFallbackOutcome {
-        let candidates: [RankedResult]
+        let candidates: [RankedSearchResult]
         let limitations: [String: VaultSearchResourceLimitImpact]
-    }
-
-    /// Deduplication key that shares result strings instead of joining a second
-    /// potentially multi-kilobyte identity allocation for every candidate.
-    private struct ResultIdentity: Hashable {
-        let path: String
-        let lineStart: Int
-        let lineEnd: Int
-        let nodeID: String?
-        let field: String?
-        let heading: String?
-        let physicalPage: Int?
     }
 
     /// Remaining relaxed-matching work, shared fairly instead of allowing one
@@ -169,7 +150,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
            expected != corpus.revisionFingerprint {
             throw VaultSearchRequestError.invalidCursor
         }
-        var ranked: [RankedResult] = []
+        var selection = BoundedRankedSelection()
         var moreResultsAvailable = false
         var coverageIncomplete = corpus.coverageIncomplete
         var resourceLimitedFiles = corpus.resourceLimitedFileCount
@@ -179,8 +160,6 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         let pdfSummary = makePDFSummary(corpus.documents)
         var skippedSensitive = corpus.skippedSensitiveFileCount
         var exactHitPaths = Set<String>()
-        var acceptedIdentities = Set<ResultIdentity>()
-        var acceptedHitsByPath: [String: Int] = [:]
 
         // Smart first performs a corpus-wide literal pass. This work is not
         // charged to fuzzy/lexical budgets, so smart can never lose an exact
@@ -223,9 +202,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                         candidate,
                         strategy: .smart,
                         minimumRelevance: validated.request.minimumRelevance,
-                        ranked: &ranked,
-                        acceptedIdentities: &acceptedIdentities,
-                        acceptedHitsByPath: &acceptedHitsByPath,
+                        selection: &selection,
                         maximumHitsPerFile: validated.request.maxHitsPerFile,
                         moreResultsAvailable: &moreResultsAvailable,
                         skippedSensitive: &skippedSensitive,
@@ -276,9 +253,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                     candidate,
                     strategy: strategy,
                     minimumRelevance: validated.request.minimumRelevance,
-                    ranked: &ranked,
-                    acceptedIdentities: &acceptedIdentities,
-                    acceptedHitsByPath: &acceptedHitsByPath,
+                    selection: &selection,
                     maximumHitsPerFile: validated.request.maxHitsPerFile,
                     moreResultsAvailable: &moreResultsAvailable,
                     skippedSensitive: &skippedSensitive,
@@ -290,7 +265,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         // Semantic work is a conservative hybrid fallback for conversational
         // note queries. Strong literal/lexical evidence avoids model latency,
         // while weak generic-term hits do not suppress a real paraphrase.
-        let strongestOrdinaryRelevance = ranked.map(\.result.relevance).max() ?? 0
+        let strongestOrdinaryRelevance = selection.values
+            .map(\.result.relevance).max() ?? 0
         if strongestOrdinaryRelevance < Self.semanticFallbackStrongResultFloor,
            shouldRunSemanticFallback(validated),
            let semanticEmbedding {
@@ -320,9 +296,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                     candidate,
                     strategy: .smart,
                     minimumRelevance: validated.request.minimumRelevance,
-                    ranked: &ranked,
-                    acceptedIdentities: &acceptedIdentities,
-                    acceptedHitsByPath: &acceptedHitsByPath,
+                    selection: &selection,
                     maximumHitsPerFile: validated.request.maxHitsPerFile,
                     moreResultsAvailable: &moreResultsAvailable,
                     skippedSensitive: &skippedSensitive,
@@ -331,7 +305,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             }
         }
 
-        applyRarityTieBreak(to: &ranked)
+        var ranked = selection.values
         ranked.sort { isBetter($0, than: $1) }
         let offset = validated.cursorOffset
         let available = offset < ranked.count
@@ -347,7 +321,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         )
         for candidate in available {
             guard results.count < validated.request.limit else { break }
-            let individualBytes = try encodedResultsByteCount([candidate.result])
+            let individualBytes = try VaultSearchJSONEncoding.resultsByteCount(
+                [candidate.result]
+            )
             if individualBytes > resultPayloadLimit {
                 // Consume an unrepresentable candidate so its continuation
                 // cursor always advances to later bounded results.
@@ -369,8 +345,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 }
                 continue
             }
-            guard try encodedResultsByteCount(results + [candidate.result])
-                    <= resultPayloadLimit else {
+            guard try VaultSearchJSONEncoding.resultsByteCount(
+                results + [candidate.result]
+            ) <= resultPayloadLimit else {
                 moreResultsAvailable = true
                 break
             }
@@ -407,12 +384,13 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         var response = makeResponse()
         // Samples are explanatory and explicitly non-exhaustive. Preserve the
         // strategy-independent result payload before shedding diagnostics.
-        while try encodedResponseByteCount(response) > limits.maximumResponseBytes,
+        while try VaultSearchJSONEncoding.responseByteCount(response)
+            > limits.maximumResponseBytes,
               !resourceLimitSamples.isEmpty {
             resourceLimitSamples.removeLast()
             response = makeResponse()
         }
-        guard try encodedResponseByteCount(response)
+        guard try VaultSearchJSONEncoding.responseByteCount(response)
             <= limits.maximumResponseBytes else {
             throw EngineError.responseLimitTooSmall
         }
@@ -420,12 +398,10 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     }
 
     private func accept(
-        _ candidate: RankedResult,
+        _ candidate: RankedSearchResult,
         strategy: SearchStrategy,
         minimumRelevance: Double,
-        ranked: inout [RankedResult],
-        acceptedIdentities: inout Set<ResultIdentity>,
-        acceptedHitsByPath: inout [String: Int],
+        selection: inout BoundedRankedSelection,
         maximumHitsPerFile: Int,
         moreResultsAvailable: inout Bool,
         skippedSensitive: inout Int,
@@ -433,103 +409,21 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     ) throws {
         if strategy == .fuzzy, candidate.result.termCoverage < 1 { return }
         guard candidate.result.relevance >= minimumRelevance else { return }
-        let candidateIdentity = identity(of: candidate.result)
-        if let existing = ranked.firstIndex(where: {
-            identity(of: $0.result) == candidateIdentity
-        }) {
-            guard isBetter(candidate, than: ranked[existing]) else { return }
-            do {
-                try validateProjection(candidate.result)
-            } catch is SensitiveContentPolicy.Violation {
-                skippedSensitive += 1
-                coverageIncomplete = true
-                return
-            }
-            ranked[existing] = candidate
-            return
-        }
-
-        if acceptedHitsByPath[candidate.result.path, default: 0]
-            >= maximumHitsPerFile {
-            let samePath = ranked.indices.filter {
-                ranked[$0].result.path == candidate.result.path
-            }
-            guard let worstForPath = samePath.max(by: {
-                isBetter(ranked[$0], than: ranked[$1])
-            }), isBetter(candidate, than: ranked[worstForPath]) else { return }
-            do {
-                try validateProjection(candidate.result)
-            } catch is SensitiveContentPolicy.Violation {
-                skippedSensitive += 1
-                coverageIncomplete = true
-                return
-            }
-            acceptedIdentities.remove(identity(of: ranked[worstForPath].result))
-            acceptedIdentities.insert(candidateIdentity)
-            ranked[worstForPath] = candidate
-            return
-        }
+        let admission: BoundedRankedSelection.Admission
         do {
-            try validateProjection(candidate.result)
+            admission = try selection.admit(
+                candidate,
+                maximumCount: limits.maximumCandidates,
+                maximumPerPath: maximumHitsPerFile
+            ) {
+                try validateProjection(candidate.result)
+            }
         } catch is SensitiveContentPolicy.Violation {
             skippedSensitive += 1
             coverageIncomplete = true
             return
         }
-        if ranked.count < limits.maximumCandidates {
-            acceptedIdentities.insert(candidateIdentity)
-            acceptedHitsByPath[candidate.result.path, default: 0] += 1
-            ranked.append(candidate)
-            return
-        }
-        moreResultsAvailable = true
-        var worst = ranked.startIndex
-        for index in ranked.indices.dropFirst()
-        where isBetter(ranked[worst], than: ranked[index]) {
-            worst = index
-        }
-        if isBetter(candidate, than: ranked[worst]) {
-            let removed = ranked[worst].result
-            acceptedIdentities.remove(identity(of: removed))
-            acceptedHitsByPath[removed.path, default: 1] -= 1
-            acceptedIdentities.insert(candidateIdentity)
-            acceptedHitsByPath[candidate.result.path, default: 0] += 1
-            ranked[worst] = candidate
-        }
-    }
-
-    private func identity(of result: VaultSearchResult) -> ResultIdentity {
-        ResultIdentity(
-            path: result.path,
-            lineStart: result.lineStart,
-            lineEnd: result.lineEnd,
-            nodeID: result.location?.nodeID,
-            field: result.location?.field,
-            heading: result.heading,
-            physicalPage: result.physicalPage
-        )
-    }
-
-    private func encodedResponseByteCount(
-        _ response: VaultSearchResponse
-    ) throws -> Int {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [
-            .prettyPrinted,
-            .sortedKeys,
-            .withoutEscapingSlashes,
-        ]
-        return try encoder.encode(response).count
-    }
-
-    private func encodedResultsByteCount(
-        _ results: [VaultSearchResult]
-    ) throws -> Int {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(results).count
+        if admission.encounteredGlobalLimit { moreResultsAvailable = true }
     }
 
     private func bestResults(
@@ -538,8 +432,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         strategy: SearchStrategy,
         allowsExact: Bool,
         work: inout SearchWorkBudget
-    ) throws -> [RankedResult] {
-        var candidates: [RankedResult] = []
+    ) throws -> [RankedSearchResult] {
+        var candidates: [RankedSearchResult] = []
         let metadataValues: [(SearchField, String)] = [
             (.title, document.title),
             (.tags, document.tags.joined(separator: " ")),
@@ -660,7 +554,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         physicalPage: Int? = nil,
         printedPage: String? = nil,
         pdfPageKind: PDFSearchPageKind? = nil
-    ) -> RankedResult {
+    ) -> RankedSearchResult {
         let queryTerms = Set(queryTokens.map(\.normalized))
         let coveredTerms = matches.reduce(into: Set<String>()) {
             $0.formUnion($1.match.coveredTerms)
@@ -770,11 +664,10 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             pdfPageKind: pdfPageKind,
             pdfTextExtractionStatus: document.pdfTextExtractionStatus
         )
-        return RankedResult(
+        return RankedSearchResult(
             result: result,
             score: (relevance * 1_000_000) + primary + secondary,
-            hasWholeLiteral: matches.contains { $0.match.kind == .literalWhole },
-            coveredTerms: coveredTerms
+            hasWholeLiteral: matches.contains { $0.match.kind == .literalWhole }
         )
     }
 
@@ -832,7 +725,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
 
         let maximumEvaluatedSections = 512
         var evaluatedSections = 0
-        var candidates: [RankedResult] = []
+        var candidates: [RankedSearchResult] = []
         var limitations: [String: VaultSearchResourceLimitImpact] = [:]
         for document in documents {
             try Task.checkCancellation()
@@ -925,10 +818,10 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     }
 
     private func bestSemanticCandidates(
-        _ candidates: [RankedResult],
+        _ candidates: [RankedSearchResult],
         request: SearchResourcePolicy.ValidatedRequest
-    ) -> [RankedResult] {
-        var bestByPath: [String: [RankedResult]] = [:]
+    ) -> [RankedSearchResult] {
+        var bestByPath: [String: [RankedSearchResult]] = [:]
         for candidate in candidates {
             bestByPath[candidate.result.path, default: []].append(candidate)
         }
@@ -1002,36 +895,11 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         (value * 1_000).rounded() / 1_000
     }
 
-    /// Adds a bounded corpus-local rarity tie-break without changing the public
-    /// relevance value or making it depend on unrelated nonmatching files.
-    private func applyRarityTieBreak(to ranked: inout [RankedResult]) {
-        var pathsByTerm: [String: Set<String>] = [:]
-        for candidate in ranked {
-            for term in candidate.coveredTerms {
-                pathsByTerm[term, default: []].insert(candidate.result.path)
-            }
-        }
-        for index in ranked.indices {
-            let frequencies = ranked[index].coveredTerms.compactMap {
-                pathsByTerm[$0]?.count
-            }
-            guard !frequencies.isEmpty else { continue }
-            let rarity = frequencies.map { 1 / sqrt(Double($0)) }
-                .reduce(0, +) / Double(frequencies.count)
-            ranked[index].score += rarity * 2_500
-        }
-    }
-
-    private func isBetter(_ lhs: RankedResult, than rhs: RankedResult) -> Bool {
-        if lhs.score != rhs.score { return lhs.score > rhs.score }
-        if lhs.result.path != rhs.result.path {
-            return lhs.result.path < rhs.result.path
-        }
-        if lhs.result.physicalPage != rhs.result.physicalPage {
-            return (lhs.result.physicalPage ?? 0)
-                < (rhs.result.physicalPage ?? 0)
-        }
-        return lhs.result.lineStart < rhs.result.lineStart
+    private func isBetter(
+        _ lhs: RankedSearchResult,
+        than rhs: RankedSearchResult
+    ) -> Bool {
+        BoundedRankedSelection.isBetter(lhs, than: rhs)
     }
 
     private func validateProjection(_ result: VaultSearchResult) throws {

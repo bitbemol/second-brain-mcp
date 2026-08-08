@@ -5,7 +5,6 @@ func searchTestLimits(
     maximumDirectoryEntries: Int? = nil,
     maximumFiles: Int? = nil,
     maximumFileBytes: Int? = nil,
-    maximumPDFFileBytes: Int? = nil,
     maximumAggregateBytes: Int? = nil,
     maximumAggregateProjectionBytes: Int? = nil,
     maximumAggregateSections: Int? = nil,
@@ -14,6 +13,7 @@ func searchTestLimits(
     maximumFrontMatterLines: Int? = nil,
     maximumTags: Int? = nil,
     maximumAggregateTagBytes: Int? = nil,
+    maximumCandidates: Int? = nil,
     maximumMetadataCharacters: Int? = nil,
     maximumMetadataBytes: Int? = nil,
     maximumSnippetCharacters: Int? = nil,
@@ -40,7 +40,6 @@ func searchTestLimits(
             ?? base.maximumDirectoryEntries,
         maximumFiles: maximumFiles ?? base.maximumFiles,
         maximumFileBytes: maximumFileBytes ?? base.maximumFileBytes,
-        maximumPDFFileBytes: maximumPDFFileBytes ?? base.maximumPDFFileBytes,
         maximumAggregateBytes: maximumAggregateBytes
             ?? base.maximumAggregateBytes,
         maximumAggregateProjectionBytes: maximumAggregateProjectionBytes
@@ -56,7 +55,7 @@ func searchTestLimits(
         maximumTags: maximumTags ?? base.maximumTags,
         maximumAggregateTagBytes: maximumAggregateTagBytes
             ?? base.maximumAggregateTagBytes,
-        maximumCandidates: base.maximumCandidates,
+        maximumCandidates: maximumCandidates ?? base.maximumCandidates,
         maximumMetadataCharacters: maximumMetadataCharacters
             ?? base.maximumMetadataCharacters,
         maximumMetadataBytes: maximumMetadataBytes

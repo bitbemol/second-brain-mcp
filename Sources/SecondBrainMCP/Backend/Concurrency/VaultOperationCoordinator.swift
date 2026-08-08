@@ -8,12 +8,33 @@ import Foundation
 /// resource lock derived from the canonical target path. OS record-lock
 /// scheduling provides exclusion, but not strict FIFO order between processes.
 struct VaultOperationCoordinator: Sendable {
-    private let local = AsyncPathReadWriteCoordinator()
+    /// The bounded in-process coordination queue cannot retain another caller.
+    struct CapacityExceeded: Error, CustomStringConvertible, Sendable {
+        var description: String {
+            "Vault file operations are at capacity; retry after an active operation finishes"
+        }
+    }
+
+    private let local: AsyncPathReadWriteCoordinator
     private let pathLocksURL: URL
     private let treeLockURL: URL
+    private let pathLockStripeCount: Int
+    private let contentionObserver: (@Sendable () -> Void)?
 
     /// Creates a coordinator in an already prepared vault lock directory.
-    init(lockDirectoryURL: URL) {
+    init(
+        lockDirectoryURL: URL,
+        pathLockStripeCount: Int = 256,
+        maximumConcurrentReaders: Int = 128,
+        maximumWaitersPerPath: Int = 256,
+        maximumTotalWaiters: Int = 1_024,
+        contentionObserver: (@Sendable () -> Void)? = nil
+    ) {
+        self.local = AsyncPathReadWriteCoordinator(
+            maximumReadersPerPath: maximumConcurrentReaders,
+            maximumWaitersPerPath: maximumWaitersPerPath,
+            maximumTotalWaiters: maximumTotalWaiters
+        )
         self.pathLocksURL = lockDirectoryURL.appendingPathComponent(
             "paths",
             isDirectory: true
@@ -21,6 +42,8 @@ struct VaultOperationCoordinator: Sendable {
         self.treeLockURL = lockDirectoryURL.appendingPathComponent(
             "notes-tree.resource"
         )
+        self.pathLockStripeCount = max(pathLockStripeCount, 1)
+        self.contentionObserver = contentionObserver
     }
 
     /// Runs a notes read concurrently with readers but never a same-path writer.
@@ -69,15 +92,22 @@ struct VaultOperationCoordinator: Sendable {
         _ access: AsyncPathReadWriteCoordinator.Access,
         operation: @escaping @Sendable () async throws -> Result
     ) async throws -> Result {
-        try await local.withAccess(
-            key: "secondbrain://notes-tree",
-            access: access
-        ) {
-            let tree = POSIXAdvisoryFileLock(url: treeLockURL)
-            return try await tree.withLock(
-                access == .read ? .shared : .exclusive,
-                operation: operation
-            )
+        do {
+            return try await local.withAccess(
+                key: "secondbrain://notes-tree",
+                access: access
+            ) {
+                let tree = POSIXAdvisoryFileLock(
+                    url: treeLockURL,
+                    contentionObserver: contentionObserver
+                )
+                return try await tree.withLock(
+                    access == .read ? .shared : .exclusive,
+                    operation: operation
+                )
+            }
+        } catch is AsyncPathReadWriteCoordinator.CapacityExceeded {
+            throw CapacityExceeded()
         }
     }
 
@@ -86,34 +116,40 @@ struct VaultOperationCoordinator: Sendable {
         access: AsyncPathReadWriteCoordinator.Access,
         operation: @escaping @Sendable () async throws -> Result
     ) async throws -> Result {
-        try await local.withAccess(
-            key: canonicalPath,
-            access: access
-        ) {
-            let lockStem = lockName(for: canonicalPath)
-            let queue = POSIXAdvisoryFileLock(
-                url: pathLocksURL.appendingPathComponent(lockStem + ".queue")
-            )
-            let resource = POSIXAdvisoryFileLock(
-                url: pathLocksURL.appendingPathComponent(lockStem + ".resource")
-            )
-
-            // Once a contender owns the turnstile, holding it while acquiring
-            // the resource prevents new cross-process readers from entering.
-            let queueLease = try await queue.acquire(.exclusive)
-            let resourceLease: POSIXAdvisoryFileLock.Lease
-            do {
-                resourceLease = try await resource.acquire(
-                    access == .read ? .shared : .exclusive
+        do {
+            return try await local.withAccess(
+                key: canonicalPath,
+                access: access
+            ) {
+                let lockStem = lockStripeName(for: canonicalPath)
+                let queue = POSIXAdvisoryFileLock(
+                    url: pathLocksURL.appendingPathComponent(lockStem + ".queue"),
+                    contentionObserver: contentionObserver
                 )
-            } catch {
+                let resource = POSIXAdvisoryFileLock(
+                    url: pathLocksURL.appendingPathComponent(lockStem + ".resource"),
+                    contentionObserver: contentionObserver
+                )
+
+                // Once a contender owns the turnstile, holding it while acquiring
+                // the resource prevents new cross-process readers from entering.
+                let queueLease = try await queue.acquire(.exclusive)
+                let resourceLease: POSIXAdvisoryFileLock.Lease
+                do {
+                    resourceLease = try await resource.acquire(
+                        access == .read ? .shared : .exclusive
+                    )
+                } catch {
+                    queueLease.release()
+                    throw error
+                }
                 queueLease.release()
-                throw error
+                defer { resourceLease.release() }
+                try Task.checkCancellation()
+                return try await operation()
             }
-            queueLease.release()
-            defer { resourceLease.release() }
-            try Task.checkCancellation()
-            return try await operation()
+        } catch is AsyncPathReadWriteCoordinator.CapacityExceeded {
+            throw CapacityExceeded()
         }
     }
 
@@ -127,9 +163,16 @@ struct VaultOperationCoordinator: Sendable {
             .lowercased()
     }
 
-    private func lockName(for canonicalPath: String) -> String {
-        SHA256.hash(data: Data(canonicalPath.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+    private func lockStripeName(for canonicalPath: String) -> String {
+        let prefix = SHA256.hash(data: Data(canonicalPath.utf8)).prefix(8)
+        let hashValue = prefix.reduce(UInt64(0)) {
+            ($0 << 8) | UInt64($1)
+        }
+        let stripe = hashValue % UInt64(pathLockStripeCount)
+        let digits = String(stripe)
+        return "stripe-" + String(
+            repeating: "0",
+            count: max(4 - digits.count, 0)
+        ) + digits
     }
 }

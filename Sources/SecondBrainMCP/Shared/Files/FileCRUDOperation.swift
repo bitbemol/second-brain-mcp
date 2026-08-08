@@ -1,4 +1,4 @@
-/// Operations recorded by the vault file and directory boundaries.
+/// Format-aware operations supported by the generic file boundary.
 enum FileCRUDOperation: String, CaseIterable, Codable, Equatable, Sendable {
     /// Persist a new file at an unused destination.
     case create
@@ -8,13 +8,10 @@ enum FileCRUDOperation: String, CaseIterable, Codable, Equatable, Sendable {
     case update
     /// Move an existing file into the vault trash.
     case delete
-    /// Atomically rename a complete notes directory subtree.
-    case move
-
     /// Whether the operation can change stored vault content.
     var isMutation: Bool {
         switch self {
-        case .create, .update, .delete, .move:
+        case .create, .update, .delete:
             true
         case .read:
             false

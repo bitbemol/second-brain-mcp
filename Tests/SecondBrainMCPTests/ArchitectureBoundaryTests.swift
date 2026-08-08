@@ -36,6 +36,38 @@ struct ArchitectureBoundaryTests {
         #expect(forbiddenImports.isEmpty, "Forbidden imports: \(forbiddenImports)")
     }
 
+    @Test("Backend does not depend on Frontend MCP adapter types")
+    func backendDoesNotReferenceFrontendAdapters() throws {
+        let forbidden = [
+            "ToolController",
+            "ToolDefinition",
+            "ToolRequestDecoder",
+            "ToolResultMapper",
+            "MCPServerSetup",
+        ]
+        var occurrences: [String] = []
+        let backend = sourceRoot.appendingPathComponent("Backend", isDirectory: true)
+
+        for fileURL in try swiftFiles(under: backend) {
+            let lines = try String(contentsOf: fileURL, encoding: .utf8)
+                .split(separator: "\n", omittingEmptySubsequences: false)
+            for (index, line) in lines.enumerated() {
+                for token in forbidden where line.contains(token) {
+                    let relativePath = fileURL.path.replacingOccurrences(
+                        of: sourceRoot.path + "/",
+                        with: ""
+                    )
+                    occurrences.append("\(relativePath):\(index + 1): \(token)")
+                }
+            }
+        }
+
+        #expect(
+            occurrences.isEmpty,
+            "Frontend MCP adapters leaked into Backend: \(occurrences)"
+        )
+    }
+
     @Test("Shared remains free of feature frameworks")
     func sharedHasNoFeatureFrameworkDependencies() throws {
         let forbiddenImports = try forbiddenImportOccurrences(
@@ -58,6 +90,7 @@ struct ArchitectureBoundaryTests {
             "FileFormat.swift": "enum FileFormat",
             "VaultArea.swift": "enum VaultArea",
             "FileCRUDOperation.swift": "enum FileCRUDOperation",
+            "VaultOperation.swift": "enum VaultOperation",
             "FileUpdateMode.swift": "enum FileUpdateMode",
             "FileCreateTransform.swift": "enum FileCreateTransform",
             "FileRoutingError.swift": "enum FileRoutingError",

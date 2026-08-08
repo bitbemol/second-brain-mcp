@@ -17,6 +17,11 @@ struct AuditRejectionReporterTests {
             path: "notes/blocked.md",
             reason: .readOnly
         ))
+        await reporter.record(FileRequestRejection(
+            operation: .move,
+            path: "notes/in-progress/ticket-123",
+            reason: .readOnly
+        ))
 
         let contents = try String(
             contentsOf: dataDirectory.auditLogURL,
@@ -25,5 +30,7 @@ struct AuditRejectionReporterTests {
         #expect(contents.contains("UPDATE"))
         #expect(contents.contains("notes/blocked.md"))
         #expect(contents.contains("update_file rejected: read-only"))
+        #expect(contents.contains("MOVE"))
+        #expect(contents.contains("move_directory rejected: read-only"))
     }
 }

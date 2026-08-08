@@ -6,6 +6,8 @@ struct DirectoryTreeStore: Sendable {
     struct Identity: Codable, Equatable, Sendable {
         let device: UInt64
         let inode: UInt64
+        let birthSeconds: Int64
+        let birthNanoseconds: Int64
     }
 
     enum State: Equatable, Sendable {
@@ -15,12 +17,17 @@ struct DirectoryTreeStore: Sendable {
     }
 
     private let notesRoot: URL
+    private let beforeRename: (@Sendable () throws -> Void)?
 
-    init(vaultPath: String) {
+    init(
+        vaultPath: String,
+        beforeRename: (@Sendable () throws -> Void)? = nil
+    ) {
         notesRoot = URL(fileURLWithPath: vaultPath)
             .standardized
             .resolvingSymlinksInPath()
             .appendingPathComponent(VaultArea.notes.rawValue, isDirectory: true)
+        self.beforeRename = beforeRename
     }
 
     func state(of target: NotesDirectoryTarget) throws -> State {
@@ -33,10 +40,7 @@ struct DirectoryTreeStore: Sendable {
         guard metadata.st_flags & UInt32(UF_HIDDEN) == 0 else {
             throw DirectoryMoveError.hiddenDirectory(target.relativePath)
         }
-        return .directory(Identity(
-            device: UInt64(metadata.st_dev),
-            inode: UInt64(metadata.st_ino)
-        ))
+        return .directory(identity(metadata))
     }
 
     /// Atomically renames without following any notes-descendant symbolic link.
@@ -70,6 +74,7 @@ struct DirectoryTreeStore: Sendable {
             displayPath: source.relativePath
         )
         defer { Darwin.close(sourceParent.descriptor) }
+        defer { release(sourceParent.createdDirectories) }
         let destinationParent = try openDirectory(
             from: root,
             components: Array(destinationParts.dropLast()),
@@ -77,6 +82,7 @@ struct DirectoryTreeStore: Sendable {
             displayPath: destination.relativePath
         )
         defer { Darwin.close(destinationParent.descriptor) }
+        defer { release(destinationParent.createdDirectories) }
 
         do {
             let sourceDescriptor = try openChildDirectory(
@@ -92,10 +98,7 @@ struct DirectoryTreeStore: Sendable {
             guard sourceMetadata.st_flags & UInt32(UF_HIDDEN) == 0 else {
                 throw DirectoryMoveError.hiddenDirectory(source.relativePath)
             }
-            let identity = Identity(
-                device: UInt64(sourceMetadata.st_dev),
-                inode: UInt64(sourceMetadata.st_ino)
-            )
+            let identity = identity(sourceMetadata)
             guard identity == expectedIdentity else {
                 throw DirectoryMoveError.unsafeFilesystemOperation(
                     "verify unchanged source identity"
@@ -112,6 +115,7 @@ struct DirectoryTreeStore: Sendable {
                 throw DirectoryMoveError.unsafeFilesystemOperation("inspect destination")
             }
 
+            try beforeRename?()
             let result = sourceName.withCString { sourcePointer in
                 destinationName.withCString { destinationPointer in
                     Darwin.renameatx_np(
@@ -134,8 +138,7 @@ struct DirectoryTreeStore: Sendable {
                 Darwin.fstatat(destinationParent.descriptor, $0, &moved, AT_SYMLINK_NOFOLLOW)
             }) == 0,
                   moved.st_mode & S_IFMT == S_IFDIR,
-                  UInt64(moved.st_dev) == identity.device,
-                  UInt64(moved.st_ino) == identity.inode else {
+                  self.identity(moved) == identity else {
                 throw DirectoryMoveError.unsafeFilesystemOperation("verify destination")
             }
             guard Darwin.fsync(sourceParent.descriptor) == 0 else {
@@ -147,16 +150,20 @@ struct DirectoryTreeStore: Sendable {
             }
             return identity
         } catch {
-            for path in destinationParent.createdPaths.reversed() {
-                _ = Darwin.rmdir(path)
-            }
+            cleanup(destinationParent.createdDirectories)
             throw error
         }
     }
 
+    private struct CreatedDirectory {
+        let parentDescriptor: Int32
+        let name: String
+        let identity: Identity
+    }
+
     private struct OpenedDirectory {
         let descriptor: Int32
-        let createdPaths: [String]
+        let createdDirectories: [CreatedDirectory]
     }
 
     private func openDirectory(
@@ -169,12 +176,11 @@ struct DirectoryTreeStore: Sendable {
         guard current >= 0 else {
             throw DirectoryMoveError.unsafeFilesystemOperation("duplicate notes descriptor")
         }
-        var created: [String] = []
-        var accumulated = notesRoot
+        var created: [CreatedDirectory] = []
         do {
             for component in components {
                 try Task.checkCancellation()
-                accumulated.appendPathComponent(component, isDirectory: true)
+                var wasCreated = false
                 var next = component.withCString {
                     Darwin.openat(
                         current,
@@ -187,7 +193,7 @@ struct DirectoryTreeStore: Sendable {
                     guard made == 0 || errno == EEXIST else {
                         throw DirectoryMoveError.unsafeFilesystemOperation("create destination parent")
                     }
-                    if made == 0 { created.append(accumulated.path) }
+                    wasCreated = made == 0
                     next = component.withCString {
                         Darwin.openat(
                             current,
@@ -212,13 +218,34 @@ struct DirectoryTreeStore: Sendable {
                     Darwin.close(next)
                     throw DirectoryMoveError.hiddenDirectory(displayPath)
                 }
+                if wasCreated {
+                    let cleanupParent = Darwin.dup(current)
+                    guard cleanupParent >= 0 else {
+                        Darwin.close(next)
+                        _ = component.withCString {
+                            Darwin.unlinkat(current, $0, AT_REMOVEDIR)
+                        }
+                        throw DirectoryMoveError.unsafeFilesystemOperation(
+                            "retain destination parent descriptor"
+                        )
+                    }
+                    created.append(CreatedDirectory(
+                        parentDescriptor: cleanupParent,
+                        name: component,
+                        identity: identity(metadata)
+                    ))
+                }
                 Darwin.close(current)
                 current = next
             }
-            return OpenedDirectory(descriptor: current, createdPaths: created)
+            return OpenedDirectory(
+                descriptor: current,
+                createdDirectories: created
+            )
         } catch {
             Darwin.close(current)
-            for path in created.reversed() { _ = Darwin.rmdir(path) }
+            cleanup(created)
+            release(created)
             throw error
         }
     }
@@ -241,5 +268,40 @@ struct DirectoryTreeStore: Sendable {
             throw DirectoryMoveError.unsafeFilesystemOperation("open source directory")
         }
         return descriptor
+    }
+
+    private func cleanup(_ created: [CreatedDirectory]) {
+        for directory in created.reversed() {
+            var current = stat()
+            let inspected = directory.name.withCString {
+                Darwin.fstatat(
+                    directory.parentDescriptor,
+                    $0,
+                    &current,
+                    AT_SYMLINK_NOFOLLOW
+                )
+            }
+            guard inspected == 0,
+                  current.st_mode & S_IFMT == S_IFDIR,
+                  identity(current) == directory.identity else { continue }
+            _ = directory.name.withCString {
+                Darwin.unlinkat(directory.parentDescriptor, $0, AT_REMOVEDIR)
+            }
+        }
+    }
+
+    private func release(_ created: [CreatedDirectory]) {
+        for directory in created {
+            Darwin.close(directory.parentDescriptor)
+        }
+    }
+
+    private func identity(_ metadata: stat) -> Identity {
+        Identity(
+            device: UInt64(metadata.st_dev),
+            inode: UInt64(metadata.st_ino),
+            birthSeconds: Int64(metadata.st_birthtimespec.tv_sec),
+            birthNanoseconds: Int64(metadata.st_birthtimespec.tv_nsec)
+        )
     }
 }

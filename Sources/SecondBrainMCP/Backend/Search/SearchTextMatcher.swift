@@ -390,7 +390,7 @@ enum SearchTextMatcher {
         for term in required {
             try Task.checkCancellation()
             let length = term.unicodeScalars.count
-            let maximumDistance = length < 3 ? 0 : (length <= 7 ? 1 : 2)
+            let maximumDistance = SearchFuzzyPolicy.maximumEditDistance(for: term)
             var optionsByDistance = Array(
                 repeating: [FuzzyOption](),
                 count: maximumDistance + 1
@@ -434,12 +434,22 @@ enum SearchTextMatcher {
                     budget.exhausted = true
                     return nil
                 }
-                if let distance = boundedEditDistance(
+                if let distance = SearchFuzzyPolicy.boundedDistance(
                     term,
                     candidate.normalized,
                     maximum: maximumDistance,
-                    budget: &budget,
-                    limits: limits
+                    consumingCell: {
+                        budget.editDistanceCells += 1
+                        let maximumCells = min(
+                            limits.maximumEditDistanceCells,
+                            budget.maximumEditDistanceCells
+                        )
+                        guard budget.editDistanceCells <= maximumCells else {
+                            budget.exhausted = true
+                            return false
+                        }
+                        return true
+                    }
                 ) {
                     retain(FuzzyOption(
                         sourceIndex: index,
@@ -605,60 +615,6 @@ enum SearchTextMatcher {
             return false
         }
         return true
-    }
-
-    private static func boundedEditDistance(
-        _ lhs: String,
-        _ rhs: String,
-        maximum: Int,
-        budget: inout SearchWorkBudget,
-        limits: SearchResourceLimits
-    ) -> Int? {
-        let left = lhs.unicodeScalars.map(\.value)
-        let right = rhs.unicodeScalars.map(\.value)
-        guard abs(left.count - right.count) <= maximum else { return nil }
-
-        var twoRowsBack: [Int]?
-        var previous = Array(0...right.count)
-        for leftIndex in left.indices {
-            var current = Array(repeating: 0, count: right.count + 1)
-            current[0] = leftIndex + 1
-            var rowMinimum = current[0]
-            for rightIndex in right.indices {
-                budget.editDistanceCells += 1
-                let maximumCells = min(
-                    limits.maximumEditDistanceCells,
-                    budget.maximumEditDistanceCells
-                )
-                if budget.editDistanceCells > maximumCells {
-                    budget.exhausted = true
-                    return nil
-                }
-                let substitution = previous[rightIndex]
-                    + (left[leftIndex] == right[rightIndex] ? 0 : 1)
-                current[rightIndex + 1] = min(
-                    previous[rightIndex + 1] + 1,
-                    current[rightIndex] + 1,
-                    substitution
-                )
-                if leftIndex > 0,
-                   rightIndex > 0,
-                   left[leftIndex] == right[rightIndex - 1],
-                   left[leftIndex - 1] == right[rightIndex],
-                   let twoRowsBack {
-                    current[rightIndex + 1] = min(
-                        current[rightIndex + 1],
-                        twoRowsBack[rightIndex - 1] + 1
-                    )
-                }
-                rowMinimum = min(rowMinimum, current[rightIndex + 1])
-            }
-            guard rowMinimum <= maximum else { return nil }
-            twoRowsBack = previous
-            previous = current
-        }
-        let distance = previous[right.count]
-        return distance <= maximum ? distance : nil
     }
 
     private static func uniqueTerms(_ tokens: [SearchToken]) -> [String] {

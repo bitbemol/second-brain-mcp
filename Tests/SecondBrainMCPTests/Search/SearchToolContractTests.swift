@@ -382,6 +382,8 @@ struct SearchToolControllerTests {
             Issue.record("Expected one JSON text block")
             return
         }
+        let canonicalText = try VaultSearchJSONEncoding.responseText(response)
+        #expect(text == canonicalText)
         let json = try #require(
             JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
         )

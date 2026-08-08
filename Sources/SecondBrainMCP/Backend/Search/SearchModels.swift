@@ -139,6 +139,12 @@ struct SearchTokenization: Sendable {
     let truncated: Bool
 }
 
+/// Space-delimited normalized terms produced without retaining source ranges.
+struct SearchNormalizedTermProjection: Sendable {
+    let value: String
+    let truncated: Bool
+}
+
 /// Tokenization that never reuses indices from folded text against source text.
 enum SearchTokenizer {
     private static let tokenScalars = CharacterSet.letters
@@ -244,6 +250,88 @@ enum SearchTokenizer {
             return SearchTokenization(tokens: tokens, truncated: true)
         }
         return SearchTokenization(tokens: tokens, truncated: omitted)
+    }
+
+    /// Produces the same normalized identifier components as `boundedTokens`
+    /// without allocating one range-bearing object per corpus token.
+    static func boundedNormalizedTerms(
+        in text: String,
+        maximumTokens: Int,
+        maximumTokenScalars: Int,
+        maximumBytes: Int
+    ) throws -> SearchNormalizedTermProjection {
+        guard maximumTokens > 0, maximumTokenScalars > 0, maximumBytes > 0 else {
+            return SearchNormalizedTermProjection(
+                value: "",
+                truncated: !text.isEmpty
+            )
+        }
+
+        var result = ""
+        result.reserveCapacity(min(text.utf8.count, maximumBytes))
+        var resultBytes = 0
+        var tokenCount = 0
+        var start: String.Index?
+        var scalarCount = 0
+        var oversized = false
+        var omitted = false
+        var index = text.startIndex
+        var visited = 0
+
+        func finish(at end: String.Index) -> Bool {
+            guard let tokenStart = start else { return true }
+            defer {
+                start = nil
+                scalarCount = 0
+                oversized = false
+            }
+            guard !oversized else {
+                omitted = true
+                return true
+            }
+            for range in identifierComponentRanges(
+                in: text,
+                range: tokenStart..<end
+            ) {
+                guard tokenCount < maximumTokens else { return false }
+                let normalized = normalize(String(text[range]))
+                guard !normalized.isEmpty else { continue }
+                let separatorBytes = result.isEmpty ? 0 : 1
+                let addedBytes = separatorBytes + normalized.utf8.count
+                guard addedBytes <= maximumBytes - resultBytes else {
+                    return false
+                }
+                if separatorBytes > 0 { result.append(" ") }
+                result.append(normalized)
+                resultBytes += addedBytes
+                tokenCount += 1
+            }
+            return true
+        }
+
+        while index < text.endIndex {
+            if visited.isMultiple(of: 1_024) { try Task.checkCancellation() }
+            visited += 1
+            let character = text[index]
+            let isToken = character.unicodeScalars.allSatisfy {
+                tokenScalars.contains($0)
+            }
+            if isToken {
+                if start == nil { start = index }
+                scalarCount += character.unicodeScalars.count
+                if scalarCount > maximumTokenScalars { oversized = true }
+            } else if !finish(at: index) {
+                return SearchNormalizedTermProjection(
+                    value: result,
+                    truncated: true
+                )
+            }
+            index = text.index(after: index)
+        }
+        guard finish(at: text.endIndex) else {
+            return SearchNormalizedTermProjection(value: result, truncated: true)
+        }
+        return SearchNormalizedTermProjection(value: result, truncated: omitted)
     }
 
     static func normalize(_ text: String) -> String {

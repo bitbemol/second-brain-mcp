@@ -2,7 +2,9 @@ import Foundation
 import Testing
 @testable import SecondBrainMCP
 
-@Suite("GitCommandRunner")
+// Process-group and pipe lifecycle probes intentionally manipulate signals and
+// inherited descriptors; serialize them so one probe cannot perturb another.
+@Suite("GitCommandRunner", .serialized)
 struct GitCommandRunnerTests {
     @Test("Removes inherited Git repository redirection variables")
     func sanitizesGitEnvironment() {
@@ -120,5 +122,97 @@ struct GitCommandRunnerTests {
         } catch is CancellationError {
             // Expected.
         }
+    }
+
+    @Test("Deadline kills a TERM-resistant process group holding output pipes")
+    func deadlineKillsTermResistantDescendants() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitCommandRunnerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("resists-term")
+        try """
+        #!/bin/sh
+        (
+          trap '' TERM
+          while true; do
+            printf x
+            /bin/sleep 1
+          done
+        ) &
+        exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+        let runner = GitCommandRunner(
+            executableURL: executable,
+            timeout: .milliseconds(80),
+            terminationGrace: .milliseconds(50)
+        )
+        do {
+            _ = try await runner.run([], in: directory)
+            Issue.record("Expected the injected command to time out")
+        } catch let error as GitCommandError {
+            guard case .timedOut = error else {
+                Issue.record("Expected timeout, received \(error)")
+                return
+            }
+        }
+
+    }
+
+    @Test("Deadline wakes drains retained by a setsid-escaped descendant")
+    func deadlineClosesEscapedSessionPipes() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitCommandRunnerSetsid-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("child.pid")
+        let program = #"""
+        use POSIX qw(setsid);
+        my $pidfile = shift;
+        my $child = fork();
+        die "fork" unless defined $child;
+        if ($child == 0) {
+          setsid();
+          $SIG{TERM} = 'IGNORE';
+          open(my $fh, '>', $pidfile) or die "pidfile";
+          print $fh $$;
+          close($fh);
+          while (1) { print "x"; select(undef, undef, undef, 0.05); }
+        }
+        exit 0;
+        """#
+        let runner = GitCommandRunner(
+            executableURL: URL(fileURLWithPath: "/usr/bin/perl"),
+            timeout: .milliseconds(80),
+            terminationGrace: .milliseconds(50)
+        )
+        defer {
+            if let raw = try? String(contentsOf: pidFile, encoding: .utf8),
+               let pid = Int32(raw) {
+                _ = Darwin.kill(pid, SIGKILL)
+            }
+        }
+
+        do {
+            _ = try await runner.run(["-e", program, pidFile.path], in: directory)
+            Issue.record("Expected the escaped pipe holder to time out")
+        } catch let error as GitCommandError {
+            guard case .timedOut = error else {
+                Issue.record("Expected timeout, received \(error)")
+                return
+            }
+        }
+
+        #expect(FileManager.default.fileExists(atPath: pidFile.path))
     }
 }

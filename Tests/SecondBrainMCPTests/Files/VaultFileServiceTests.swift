@@ -440,7 +440,7 @@ struct VaultFileServiceTests {
                         format: .markdown,
                         path: path
                     ))
-                case .create, .read, .move:
+                case .create, .read:
                     Issue.record("Unexpected test operation")
                 }
                 Issue.record("Expected a revision conflict")

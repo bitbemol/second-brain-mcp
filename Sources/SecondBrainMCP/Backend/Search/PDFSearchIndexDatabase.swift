@@ -114,16 +114,35 @@ final class PDFSearchIndexDatabase {
         -1,
         to: sqlite3_destructor_type.self
     )
+    private static let applicationID = 0x5342_5044 // "SBPD"
+    private static let maximumWarmSchemaObjects = 64
+    private static let maximumWarmIndexesPerTable = 32
+    private static let maximumWarmIndexColumns = 16
+    private static let maximumWarmSchemaSQLBytes = 64 * 1_024
 
     private let canonicalURL: URL
     private let progressState = SQLiteProgressState()
+    private let statementPreparationObserver: (() -> Void)?
+    private let exhaustiveIntegrityObserver: (() -> Void)?
+    private let forceExhaustiveIntegrity: Bool
+    private let maximumBundleBytes: Int64
+    private let maximumMainDatabaseBytes: Int64
+    private let sidecarReserveBytes: Int64
+    private let maximumPublicationRepresentationBytes: Int
+    private let peakBundleByteObserver: ((Int64) -> Void)?
     private var handle: OpaquePointer?
     private var openedDeviceID: UInt64 = 0
     private var openedInode: UInt64 = 0
 
     init(
         url: URL,
-        maximumDatabaseBytes: Int64 = 4 * 1_024 * 1_024 * 1_024
+        maximumDatabaseBytes: Int64 = 4 * 1_024 * 1_024 * 1_024,
+        statementPreparationObserver: (() -> Void)? = nil,
+        exhaustiveIntegrityObserver: (() -> Void)? = nil,
+        forceExhaustiveIntegrity: Bool = false,
+        maximumPublicationRepresentationBytes: Int =
+            PDFIndexExtractor.Configuration.production.retainedRepresentationByteLimit,
+        peakBundleByteObserver: ((Int64) -> Void)? = nil
     ) throws {
         // Resolve only the trusted private parent. Resolving the final
         // component would follow an attacker-controlled database symlink and
@@ -131,6 +150,26 @@ final class PDFSearchIndexDatabase {
         // /private/var are safe to canonicalize at the parent boundary.
         let canonicalURL = try Self.resolvingRootOwnedAlias(url.standardized)
         self.canonicalURL = canonicalURL
+        self.statementPreparationObserver = statementPreparationObserver
+        self.exhaustiveIntegrityObserver = exhaustiveIntegrityObserver
+        self.forceExhaustiveIntegrity = forceExhaustiveIntegrity
+        self.maximumPublicationRepresentationBytes = max(
+            maximumPublicationRepresentationBytes,
+            0
+        )
+        self.peakBundleByteObserver = peakBundleByteObserver
+        let maximumBundleBytes = max(maximumDatabaseBytes, 0)
+        self.maximumBundleBytes = maximumBundleBytes
+        // A WAL transaction may temporarily retain changed versions of every
+        // database page next to the main file. Keep the main database to one
+        // third of the aggregate ceiling; the remaining two thirds cover WAL
+        // frames, the WAL index, frame headers, and conservative publication
+        // growth. Per-transaction preflight below applies the tighter bound
+        // derived from the actual publication payload.
+        let maximumMainDatabaseBytes = maximumBundleBytes / 3
+        let sidecarReserve = maximumBundleBytes - maximumMainDatabaseBytes
+        self.sidecarReserveBytes = sidecarReserve
+        self.maximumMainDatabaseBytes = maximumMainDatabaseBytes
         try Self.validateDatabasePath(canonicalURL)
         var opened: OpaquePointer?
         let result = sqlite3_open_v2(
@@ -166,23 +205,55 @@ final class PDFSearchIndexDatabase {
         do {
             try execute("PRAGMA trusted_schema=OFF")
             try execute("PRAGMA foreign_keys=ON")
+            try execute("PRAGMA busy_timeout=5000")
             let pageSize = max(try scalarInt("PRAGMA page_size"), 1)
             let pageCount = max(try scalarInt("PRAGMA page_count"), 0)
-            guard Int64(pageSize) * Int64(pageCount) <= maximumDatabaseBytes else {
+            guard Int64(pageSize) * Int64(pageCount) <= maximumMainDatabaseBytes else {
                 throw DatabaseError(
                     operation: "quota",
                     message: "existing index exceeds its private size ceiling"
                 )
             }
-            let maximumPageCount = max(
-                Int(maximumDatabaseBytes / Int64(pageSize)),
-                pageCount
+            let maximumPageCount = Int(min(
+                maximumMainDatabaseBytes / Int64(pageSize),
+                Int64(Int.max)
+            ))
+            guard maximumPageCount > 0, maximumPageCount >= pageCount else {
+                throw DatabaseError(
+                    operation: "quota",
+                    message: "existing index leaves no room for private sidecars"
+                )
+            }
+
+            switch try schemaDisposition() {
+            case .new:
+                _ = try scalarInt("PRAGMA max_page_count=\(maximumPageCount)")
+                try execute("PRAGMA journal_mode=WAL")
+                try configureWAL(pageSize: pageSize)
+                try createNewSchema()
+                try validateExhaustiveIntegrity()
+            case .warm:
+                // Warm validation is deliberately read-only: no schema DDL,
+                // metadata insertion, header assignment, or FTS maintenance.
+                // The derived bundle is rebuilt if any required object is absent.
+                try validateWarmSchema()
+                guard try scalarText("PRAGMA journal_mode").lowercased() == "wal" else {
+                    throw DatabaseError(
+                        operation: "schema",
+                        message: "derived cache does not use the required WAL protocol"
+                    )
+                }
+                _ = try scalarInt("PRAGMA max_page_count=\(maximumPageCount)")
+                try configureWAL(pageSize: pageSize)
+                if forceExhaustiveIntegrity {
+                    try validateExhaustiveIntegrity()
+                }
+            }
+            try checkpointWAL()
+            try ensureBundleWithinQuota(
+                operation: "quota",
+                code: nil
             )
-            try execute("PRAGMA max_page_count=\(maximumPageCount)")
-            try execute("PRAGMA journal_mode=WAL")
-            try execute("PRAGMA synchronous=NORMAL")
-            try execute("PRAGMA busy_timeout=5000")
-            try createSchema()
             try Self.hardenDatabaseFiles(canonicalURL)
             var identity = stat()
             guard Darwin.lstat(canonicalURL.path, &identity) == 0,
@@ -301,88 +372,105 @@ final class PDFSearchIndexDatabase {
         quickIdentity: PDFIndexQuickIdentity,
         extraction: IndexedPDFExtraction
     ) throws -> PDFIndexDocumentRecord {
-        try transaction {
-            let upsert = try prepare("""
-            INSERT INTO pdf_document(
-              path,content_sha256,byte_count,mtime_sec,mtime_nsec,ctime_sec,
-              ctime_nsec,device_id,inode,title,page_count,status,indexed_page_count,
-              title_truncated,extractor_version,normalizer_version,classifier_version,
-              sensitive_policy_version
-            ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
-            ON CONFLICT(path) DO UPDATE SET
-              content_sha256=excluded.content_sha256,
-              byte_count=excluded.byte_count,mtime_sec=excluded.mtime_sec,
-              mtime_nsec=excluded.mtime_nsec,ctime_sec=excluded.ctime_sec,
-              ctime_nsec=excluded.ctime_nsec,device_id=excluded.device_id,
-              inode=excluded.inode,title=excluded.title,page_count=excluded.page_count,
-              status=excluded.status,indexed_page_count=excluded.indexed_page_count,
-              title_truncated=excluded.title_truncated,
-              extractor_version=excluded.extractor_version,
-              normalizer_version=excluded.normalizer_version,
-              classifier_version=excluded.classifier_version,
-              sensitive_policy_version=excluded.sensitive_policy_version
-            """)
-            defer { sqlite3_finalize(upsert) }
-            try bind(path, at: 1, to: upsert)
-            try bind(revision, at: 2, to: upsert)
-            bind(quickIdentity.byteCount, at: 3, to: upsert)
-            bind(quickIdentity.modificationSeconds, at: 4, to: upsert)
-            bind(quickIdentity.modificationNanoseconds, at: 5, to: upsert)
-            bind(quickIdentity.changeSeconds, at: 6, to: upsert)
-            bind(quickIdentity.changeNanoseconds, at: 7, to: upsert)
-            bind(Int64(bitPattern: quickIdentity.deviceID), at: 8, to: upsert)
-            bind(Int64(bitPattern: quickIdentity.inode), at: 9, to: upsert)
-            try bind(extraction.title, at: 10, to: upsert)
-            bind(Int64(extraction.pageCount), at: 11, to: upsert)
-            try bind(extraction.status.rawValue, at: 12, to: upsert)
-            bind(Int64(extraction.pages.count), at: 13, to: upsert)
-            bind(Int64(extraction.titleTruncated ? 1 : 0), at: 14, to: upsert)
-            bind(Int64(PDFSearchIndexContract.extractorVersion), at: 15, to: upsert)
-            bind(Int64(PDFSearchIndexContract.normalizerVersion), at: 16, to: upsert)
-            bind(Int64(PDFSearchIndexContract.classifierVersion), at: 17, to: upsert)
-            bind(Int64(PDFSearchIndexContract.sensitivePolicyVersion), at: 18, to: upsert)
-            try stepDone(upsert, operation: "publish document")
-
-            let documentID = try requiredDocumentID(path: path)
-            let deleteFTS = try prepare("""
-              DELETE FROM pdf_page_fts
-               WHERE rowid IN (SELECT id FROM pdf_page WHERE document_id=?1)
-            """)
-            defer { sqlite3_finalize(deleteFTS) }
-            bind(documentID, at: 1, to: deleteFTS)
-            try stepDone(deleteFTS, operation: "delete old FTS pages")
-            let deletePages = try prepare("DELETE FROM pdf_page WHERE document_id=?1")
-            defer { sqlite3_finalize(deletePages) }
-            bind(documentID, at: 1, to: deletePages)
-            try stepDone(deletePages, operation: "delete old pages")
-
-            for page in extraction.pages {
-                let insert = try prepare("""
-                INSERT INTO pdf_page(
-                  document_id,physical_page,printed_page,page_kind,line_count,
-                  raw_text,literal_folded,normalized_terms
-                ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+        try withBundleTransactionEnvelope(
+            operation: "publish",
+            preflight: {
+                try preflightPublication(
+                    path: path,
+                    revision: revision,
+                    extraction: extraction
+                )
+            }
+        ) {
+                let upsert = try prepare("""
+                INSERT INTO pdf_document(
+                  path,content_sha256,byte_count,mtime_sec,mtime_nsec,ctime_sec,
+                  ctime_nsec,device_id,inode,title,page_count,status,indexed_page_count,
+                  title_truncated,extractor_version,normalizer_version,classifier_version,
+                  sensitive_policy_version
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+                ON CONFLICT(path) DO UPDATE SET
+                  content_sha256=excluded.content_sha256,
+                  byte_count=excluded.byte_count,mtime_sec=excluded.mtime_sec,
+                  mtime_nsec=excluded.mtime_nsec,ctime_sec=excluded.ctime_sec,
+                  ctime_nsec=excluded.ctime_nsec,device_id=excluded.device_id,
+                  inode=excluded.inode,title=excluded.title,page_count=excluded.page_count,
+                  status=excluded.status,indexed_page_count=excluded.indexed_page_count,
+                  title_truncated=excluded.title_truncated,
+                  extractor_version=excluded.extractor_version,
+                  normalizer_version=excluded.normalizer_version,
+                  classifier_version=excluded.classifier_version,
+                  sensitive_policy_version=excluded.sensitive_policy_version
                 """)
+                defer { sqlite3_finalize(upsert) }
+                try bind(path, at: 1, to: upsert)
+                try bind(revision, at: 2, to: upsert)
+                bind(quickIdentity.byteCount, at: 3, to: upsert)
+                bind(quickIdentity.modificationSeconds, at: 4, to: upsert)
+                bind(quickIdentity.modificationNanoseconds, at: 5, to: upsert)
+                bind(quickIdentity.changeSeconds, at: 6, to: upsert)
+                bind(quickIdentity.changeNanoseconds, at: 7, to: upsert)
+                bind(Int64(bitPattern: quickIdentity.deviceID), at: 8, to: upsert)
+                bind(Int64(bitPattern: quickIdentity.inode), at: 9, to: upsert)
+                try bind(extraction.title, at: 10, to: upsert)
+                bind(Int64(extraction.pageCount), at: 11, to: upsert)
+                try bind(extraction.status.rawValue, at: 12, to: upsert)
+                bind(Int64(extraction.pages.count), at: 13, to: upsert)
+                bind(Int64(extraction.titleTruncated ? 1 : 0), at: 14, to: upsert)
+                bind(Int64(PDFSearchIndexContract.extractorVersion), at: 15, to: upsert)
+                bind(Int64(PDFSearchIndexContract.normalizerVersion), at: 16, to: upsert)
+                bind(Int64(PDFSearchIndexContract.classifierVersion), at: 17, to: upsert)
+                bind(Int64(PDFSearchIndexContract.sensitivePolicyVersion), at: 18, to: upsert)
+                try stepDone(upsert, operation: "publish document")
+
+                let documentID = try requiredDocumentID(path: path)
+                let deleteFTS = try prepare("""
+                  DELETE FROM pdf_page_fts
+                   WHERE rowid IN (SELECT id FROM pdf_page WHERE document_id=?1)
+                """)
+                defer { sqlite3_finalize(deleteFTS) }
+                bind(documentID, at: 1, to: deleteFTS)
+                try stepDone(deleteFTS, operation: "delete old FTS pages")
+                let deletePages = try prepare(
+                    "DELETE FROM pdf_page WHERE document_id=?1"
+                )
+                defer { sqlite3_finalize(deletePages) }
+                bind(documentID, at: 1, to: deletePages)
+                try stepDone(deletePages, operation: "delete old pages")
+                observePeakBundleBytes()
+
+                let insert = try prepare("""
+                    INSERT INTO pdf_page(
+                      document_id,physical_page,printed_page,page_kind,line_count,
+                      raw_text,literal_folded,normalized_terms
+                    ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+                    """)
                 defer { sqlite3_finalize(insert) }
-                bind(documentID, at: 1, to: insert)
-                bind(Int64(page.physicalPage), at: 2, to: insert)
-                try bindOptional(page.printedPage, at: 3, to: insert)
-                try bind(page.kind.rawValue, at: 4, to: insert)
-                bind(Int64(page.lineCount), at: 5, to: insert)
-                try bind(page.rawText, at: 6, to: insert)
-                try bind(page.literalFolded, at: 7, to: insert)
-                try bind(page.normalizedTerms, at: 8, to: insert)
-                try stepDone(insert, operation: "insert page")
-                let pageID = sqlite3_last_insert_rowid(requiredHandle())
                 let fts = try prepare(
                     "INSERT INTO pdf_page_fts(rowid,normalized_terms) VALUES(?1,?2)"
                 )
                 defer { sqlite3_finalize(fts) }
-                bind(pageID, at: 1, to: fts)
-                try bind(page.normalizedTerms, at: 2, to: fts)
-                try stepDone(fts, operation: "insert FTS page")
-            }
-            try execute("UPDATE index_meta SET generation=generation+1 WHERE id=1")
+                for page in extraction.pages {
+                    try reset(insert, operation: "reset page insertion")
+                    bind(documentID, at: 1, to: insert)
+                    bind(Int64(page.physicalPage), at: 2, to: insert)
+                    try bindOptional(page.printedPage, at: 3, to: insert)
+                    try bind(page.kind.rawValue, at: 4, to: insert)
+                    bind(Int64(page.lineCount), at: 5, to: insert)
+                    try bind(page.rawText, at: 6, to: insert)
+                    try bind(page.literalFolded, at: 7, to: insert)
+                    try bind(page.normalizedTerms, at: 8, to: insert)
+                    try stepDone(insert, operation: "insert page")
+                    let pageID = sqlite3_last_insert_rowid(requiredHandle())
+                    try reset(fts, operation: "reset FTS insertion")
+                    bind(pageID, at: 1, to: fts)
+                    try bind(page.normalizedTerms, at: 2, to: fts)
+                    try stepDone(fts, operation: "insert FTS page")
+                    observePeakBundleBytes()
+                }
+                try execute("""
+                  UPDATE index_meta SET generation=generation+1 WHERE id=1
+                """)
         }
         return try record(path: path) ?? {
             throw DatabaseError(operation: "publish", message: "record disappeared")
@@ -391,7 +479,16 @@ final class PDFSearchIndexDatabase {
 
     func remove(path: String) throws {
         guard let documentID = try rawDocumentID(path: path) else { return }
-        try transaction {
+        try withBundleTransactionEnvelope(
+            operation: "remove",
+            preflight: {
+                try preflightTransaction(
+                    additionalPayloadBytes: 0,
+                    additionalRows: 0,
+                    operation: "remove"
+                )
+            }
+        ) {
             let deleteFTS = try prepare("""
               DELETE FROM pdf_page_fts
                WHERE rowid IN (SELECT id FROM pdf_page WHERE document_id=?1)
@@ -404,6 +501,7 @@ final class PDFSearchIndexDatabase {
             bind(documentID, at: 1, to: deleteDocument)
             try stepDone(deleteDocument, operation: "remove document")
             try execute("UPDATE index_meta SET generation=generation+1 WHERE id=1")
+            observePeakBundleBytes()
         }
     }
 
@@ -448,7 +546,16 @@ final class PDFSearchIndexDatabase {
             upperBound: upperBound
         )
         guard staleCount > 0 else { return 0 }
-        try transaction {
+        try withBundleTransactionEnvelope(
+            operation: "prune",
+            preflight: {
+                try preflightTransaction(
+                    additionalPayloadBytes: 0,
+                    additionalRows: 0,
+                    operation: "prune"
+                )
+            }
+        ) {
             let deleteFTS = try prepare("""
               DELETE FROM pdf_page_fts WHERE rowid IN (
                 SELECT p.id FROM pdf_page p
@@ -477,6 +584,7 @@ final class PDFSearchIndexDatabase {
             try bind(upperBound, at: 2, to: deleteDocuments)
             try stepDone(deleteDocuments, operation: "prune documents")
             try execute("UPDATE index_meta SET generation=generation+1 WHERE id=1")
+            observePeakBundleBytes()
         }
         return staleCount
     }
@@ -748,62 +856,641 @@ final class PDFSearchIndexDatabase {
         return (Array(rows.prefix(max(maximum, 0))), limited)
     }
 
-    private func createSchema() throws {
-        let existingVersion = try scalarInt("PRAGMA user_version")
-        guard existingVersion == 0
-                || existingVersion == PDFSearchIndexContract.schemaVersion else {
+    private enum SchemaDisposition {
+        case new
+        case warm
+    }
+
+    /// Version zero is accepted only for a genuinely empty SQLite catalog.
+    /// This prevents schema creation from silently repairing or adopting an
+    /// unversioned database supplied at the private cache path.
+    private func schemaDisposition() throws -> SchemaDisposition {
+        let version = try scalarInt("PRAGMA user_version")
+        let applicationID = try scalarInt("PRAGMA application_id")
+        let objectStatement = try prepare("""
+          SELECT name FROM sqlite_schema
+           WHERE name NOT LIKE 'sqlite_%'
+           LIMIT \(Self.maximumWarmSchemaObjects + 1)
+        """)
+        defer { sqlite3_finalize(objectStatement) }
+        var objectCount = 0
+        while true {
+            let result = sqlite3_step(objectStatement)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else { throw error("read schema catalog") }
+            objectCount += 1
+            guard objectCount <= Self.maximumWarmSchemaObjects else {
+                throw DatabaseError(
+                    operation: "schema",
+                    message: "derived-cache schema contains too many objects"
+                )
+            }
+        }
+        if version == 0, applicationID == 0, objectCount == 0 {
+            return .new
+        }
+        guard version == PDFSearchIndexContract.schemaVersion else {
             throw DatabaseError(operation: "schema", message: "unsupported version")
         }
-        try execute("""
-        CREATE TABLE IF NOT EXISTS index_meta(
-          id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL
-        );
-        INSERT OR IGNORE INTO index_meta(id,generation) VALUES(1,0);
-        CREATE TABLE IF NOT EXISTS pdf_document(
-          id INTEGER PRIMARY KEY,
-          path TEXT NOT NULL UNIQUE,
-          content_sha256 TEXT NOT NULL,
-          byte_count INTEGER NOT NULL,
-          mtime_sec INTEGER NOT NULL, mtime_nsec INTEGER NOT NULL,
-          ctime_sec INTEGER NOT NULL, ctime_nsec INTEGER NOT NULL,
-          device_id INTEGER NOT NULL, inode INTEGER NOT NULL,
-          title TEXT NOT NULL, page_count INTEGER NOT NULL,
+        guard applicationID == Self.applicationID else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "derived-cache application identity mismatch"
+            )
+        }
+        return .warm
+    }
+
+    private func createNewSchema() throws {
+        try transaction {
+            try execute("""
+            CREATE TABLE index_meta(
+              id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL
+            );
+            INSERT INTO index_meta(id,generation) VALUES(1,0);
+            CREATE TABLE pdf_document(
+              id INTEGER PRIMARY KEY,
+              path TEXT NOT NULL UNIQUE,
+              content_sha256 TEXT NOT NULL,
+              byte_count INTEGER NOT NULL,
+              mtime_sec INTEGER NOT NULL, mtime_nsec INTEGER NOT NULL,
+              ctime_sec INTEGER NOT NULL, ctime_nsec INTEGER NOT NULL,
+              device_id INTEGER NOT NULL, inode INTEGER NOT NULL,
+              title TEXT NOT NULL, page_count INTEGER NOT NULL,
               status TEXT NOT NULL, indexed_page_count INTEGER NOT NULL,
               title_truncated INTEGER NOT NULL DEFAULT 0,
-          extractor_version INTEGER NOT NULL,
-          normalizer_version INTEGER NOT NULL,
-          classifier_version INTEGER NOT NULL,
-          sensitive_policy_version INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS pdf_page(
-          id INTEGER PRIMARY KEY,
-          document_id INTEGER NOT NULL REFERENCES pdf_document(id) ON DELETE CASCADE,
-          physical_page INTEGER NOT NULL,
-          printed_page TEXT,
-          page_kind TEXT NOT NULL,
-          line_count INTEGER NOT NULL,
-          raw_text TEXT NOT NULL,
-          literal_folded TEXT NOT NULL,
-          normalized_terms TEXT NOT NULL,
-          UNIQUE(document_id,physical_page)
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS pdf_page_fts USING fts5(
-          normalized_terms, tokenize='unicode61 remove_diacritics 2'
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS pdf_page_vocab USING fts5vocab(
-          pdf_page_fts, 'row'
-        );
-        PRAGMA user_version=1;
+              extractor_version INTEGER NOT NULL,
+              normalizer_version INTEGER NOT NULL,
+              classifier_version INTEGER NOT NULL,
+              sensitive_policy_version INTEGER NOT NULL
+            );
+            CREATE TABLE pdf_page(
+              id INTEGER PRIMARY KEY,
+              document_id INTEGER NOT NULL REFERENCES pdf_document(id) ON DELETE CASCADE,
+              physical_page INTEGER NOT NULL,
+              printed_page TEXT,
+              page_kind TEXT NOT NULL,
+              line_count INTEGER NOT NULL,
+              raw_text TEXT NOT NULL,
+              literal_folded TEXT NOT NULL,
+              normalized_terms TEXT NOT NULL,
+              UNIQUE(document_id,physical_page)
+            );
+            CREATE VIRTUAL TABLE pdf_page_fts USING fts5(
+              normalized_terms, tokenize='unicode61 remove_diacritics 2'
+            );
+            CREATE VIRTUAL TABLE pdf_page_vocab USING fts5vocab(
+              pdf_page_fts, 'row'
+            );
+            """)
+            try execute("PRAGMA application_id=\(Self.applicationID)")
+            try execute("PRAGMA user_version=\(PDFSearchIndexContract.schemaVersion)")
+        }
+    }
+
+    /// Performs only bounded reads and statement probes on a warm, private
+    /// derived cache. It intentionally contains no repair DDL or FTS writes.
+    private func validateWarmSchema() throws {
+        guard try scalarInt("PRAGMA application_id") == Self.applicationID,
+              try scalarInt("PRAGMA user_version")
+                == PDFSearchIndexContract.schemaVersion else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "derived-cache identity mismatch"
+            )
+        }
+        _ = try scalarInt("PRAGMA schema_version")
+
+        let requiredObjects: [String: String] = [
+            "index_meta": "table",
+            "pdf_document": "table",
+            "pdf_page": "table",
+            "pdf_page_fts": "table",
+            "pdf_page_vocab": "table",
+        ]
+        let objectStatement = try prepare("""
+          SELECT name,type FROM sqlite_schema
+           WHERE name IN ('index_meta','pdf_document','pdf_page',
+                          'pdf_page_fts','pdf_page_vocab')
         """)
-        let requiredColumns = Set([
-            "path", "content_sha256", "byte_count", "title", "title_truncated",
-            "status", "extractor_version", "normalizer_version",
+        defer { sqlite3_finalize(objectStatement) }
+        var observedObjects: [String: String] = [:]
+        while true {
+            let result = sqlite3_step(objectStatement)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else { throw error("read schema objects") }
+            observedObjects[text(objectStatement, 0)] = text(objectStatement, 1)
+        }
+        guard observedObjects == requiredObjects else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "required derived-cache objects are missing or incompatible"
+            )
+        }
+
+        try validateColumns(table: "index_meta", expected: ["id", "generation"])
+        try validateColumns(table: "pdf_document", expected: [
+            "id", "path", "content_sha256", "byte_count", "mtime_sec",
+            "mtime_nsec", "ctime_sec", "ctime_nsec", "device_id", "inode",
+            "title", "page_count", "status", "indexed_page_count",
+            "title_truncated", "extractor_version", "normalizer_version",
             "classifier_version", "sensitive_policy_version",
         ])
-        let columns = try columnNames(table: "pdf_document")
-        guard requiredColumns.isSubset(of: columns) else {
-            throw DatabaseError(operation: "schema", message: "incompatible columns")
+        try validateColumns(table: "pdf_page", expected: [
+            "id", "document_id", "physical_page", "printed_page", "page_kind",
+            "line_count", "raw_text", "literal_folded", "normalized_terms",
+        ])
+        try validateColumns(table: "pdf_page_fts", expected: ["normalized_terms"])
+        try validateColumns(table: "pdf_page_vocab", expected: ["term", "doc", "cnt"])
+        guard try hasUniqueIndex(table: "pdf_document", columns: ["path"]),
+              try hasUniqueIndex(
+                table: "pdf_page",
+                columns: ["document_id", "physical_page"]
+              ),
+              try hasRequiredPageForeignKey() else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "required derived-cache constraints are missing"
+            )
         }
+
+        let metadataProbe = try prepare(
+            "SELECT id,generation FROM index_meta LIMIT 2"
+        )
+        defer { sqlite3_finalize(metadataProbe) }
+        guard sqlite3_step(metadataProbe) == SQLITE_ROW,
+              int(metadataProbe, 0) == 1,
+              int(metadataProbe, 1) >= 0,
+              sqlite3_step(metadataProbe) == SQLITE_DONE else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "invalid generation metadata"
+            )
+        }
+        let ftsSQL = try schemaSQL(name: "pdf_page_fts").lowercased()
+        let vocabSQL = try schemaSQL(name: "pdf_page_vocab").lowercased()
+        guard ftsSQL.contains("using fts5"),
+              ftsSQL.contains("tokenize='unicode61 remove_diacritics 2'"),
+              vocabSQL.contains("using fts5vocab"),
+              vocabSQL.contains("pdf_page_fts, 'row'") else {
+            throw DatabaseError(operation: "schema", message: "invalid FTS objects")
+        }
+
+        let ftsProbe = try prepare("""
+          SELECT rowid FROM pdf_page_fts
+           WHERE pdf_page_fts MATCH ?1 LIMIT 1
+        """)
+        defer { sqlite3_finalize(ftsProbe) }
+        try bind("secondbrainwarmprobe", at: 1, to: ftsProbe)
+        let ftsResult = sqlite3_step(ftsProbe)
+        guard ftsResult == SQLITE_ROW || ftsResult == SQLITE_DONE else {
+            throw error("probe FTS query")
+        }
+        let vocabProbe = try prepare("SELECT term FROM pdf_page_vocab LIMIT 1")
+        defer { sqlite3_finalize(vocabProbe) }
+        let vocabResult = sqlite3_step(vocabProbe)
+        guard vocabResult == SQLITE_ROW || vocabResult == SQLITE_DONE else {
+            throw error("probe FTS vocabulary")
+        }
+    }
+
+    private func validateColumns(table: String, expected: Set<String>) throws {
+        guard try columnNames(table: table) == expected else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "incompatible columns for \(table)"
+            )
+        }
+    }
+
+    private func schemaSQL(name: String) throws -> String {
+        let statement = try prepare(
+            "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(name, at: 1, to: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw DatabaseError(operation: "schema", message: "missing \(name)")
+        }
+        let byteCount = Int(sqlite3_column_bytes(statement, 0))
+        guard byteCount <= Self.maximumWarmSchemaSQLBytes else {
+            throw DatabaseError(
+                operation: "schema",
+                message: "schema SQL for \(name) exceeds its bounded probe ceiling"
+            )
+        }
+        return text(statement, 0)
+    }
+
+    private func hasUniqueIndex(table: String, columns: [String]) throws -> Bool {
+        let list = try prepare("PRAGMA index_list(\(table))")
+        defer { sqlite3_finalize(list) }
+        var candidateNames: [String] = []
+        var observedIndexes = 0
+        while true {
+            let result = sqlite3_step(list)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else {
+                throw error("read schema indexes")
+            }
+            observedIndexes += 1
+            guard observedIndexes <= Self.maximumWarmIndexesPerTable else {
+                throw DatabaseError(
+                    operation: "schema",
+                    message: "derived-cache table contains too many indexes"
+                )
+            }
+            if int(list, 2) == 1, int(list, 4) == 0 {
+                candidateNames.append(text(list, 1))
+            }
+        }
+        for name in candidateNames {
+            if try indexColumns(name: name) == columns { return true }
+        }
+        return false
+    }
+
+    private func indexColumns(name: String) throws -> [String] {
+        let statement = try prepare("PRAGMA index_info(\(name))")
+        defer { sqlite3_finalize(statement) }
+        var observed: [String] = []
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else { throw error("read schema index") }
+            observed.append(text(statement, 2))
+            guard observed.count <= Self.maximumWarmIndexColumns else {
+                throw DatabaseError(
+                    operation: "schema",
+                    message: "derived-cache index contains too many columns"
+                )
+            }
+        }
+        return observed
+    }
+
+    private func hasRequiredPageForeignKey() throws -> Bool {
+        let statement = try prepare("PRAGMA foreign_key_list(pdf_page)")
+        defer { sqlite3_finalize(statement) }
+        var observed = 0
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { break }
+            guard result == SQLITE_ROW else { throw error("read schema foreign keys") }
+            guard text(statement, 2) == "pdf_document",
+                  text(statement, 3) == "document_id",
+                  text(statement, 4) == "id",
+                  text(statement, 6).uppercased() == "CASCADE" else {
+                return false
+            }
+            observed += 1
+        }
+        return observed == 1
+    }
+
+    /// Refuses a publication before `BEGIN` unless its bounded input and a
+    /// conservative SQLite allocation envelope fit beside the current main
+    /// database. The envelope reserves two complete dirty generations of the
+    /// current database plus input-derived B-tree/FTS write amplification and
+    /// the corresponding WAL-index growth.
+    private func preflightPublication(
+        path: String,
+        revision: String,
+        extraction: IndexedPDFExtraction
+    ) throws {
+        var representationBytes: Int64 = 0
+        for page in extraction.pages {
+            let pageBytes = PDFIndexExtractor.retainedRepresentationByteCount(
+                for: page
+            )
+            representationBytes = try checkedAdd(
+                representationBytes,
+                Int64(pageBytes),
+                operation: "publish"
+            )
+        }
+        guard representationBytes <= Int64(maximumPublicationRepresentationBytes) else {
+            throw DatabaseError(
+                operation: "publish",
+                message: "publication exceeds its retained representation ceiling",
+                code: SQLITE_FULL
+            )
+        }
+        var payloadBytes = representationBytes
+        for value in [path, revision, extraction.title] {
+            payloadBytes = try checkedAdd(
+                payloadBytes,
+                Int64(value.utf8.count),
+                operation: "publish"
+            )
+        }
+        // `normalized_terms` is retained once more by FTS. The allocation
+        // multiplier below covers B-tree cells, FTS segments, and sparse pages.
+        for page in extraction.pages {
+            payloadBytes = try checkedAdd(
+                payloadBytes,
+                Int64(page.normalizedTerms.utf8.count),
+                operation: "publish"
+            )
+        }
+        let rowCount = try checkedAdd(
+            try checkedMultiply(
+                Int64(extraction.pages.count),
+                2,
+                operation: "publish"
+            ),
+            1,
+            operation: "publish"
+        )
+        try preflightTransaction(
+            additionalPayloadBytes: payloadBytes,
+            additionalRows: rowCount,
+            operation: "publish"
+        )
+    }
+
+    /// Applies one storage envelope to every persistent write transaction.
+    /// The initial checkpoint makes the bundle facts used by preflight current;
+    /// a failed transaction is rolled back by `transaction` and checkpointed so
+    /// repeated failures cannot retain growing WAL frames. Post-commit failures
+    /// are deliberately non-retryable capacity failures because the disposable
+    /// derived cache has already changed and must be reopened or rebuilt.
+    private func withBundleTransactionEnvelope<Result>(
+        operation: String,
+        preflight: () throws -> Void,
+        transactionBody: () throws -> Result
+    ) throws -> Result {
+        try checkpointWAL()
+        try ensureBundleWithinQuota(operation: operation, code: SQLITE_FULL)
+        try preflight()
+        observePeakBundleBytes()
+
+        let result: Result
+        do {
+            result = try transaction(transactionBody)
+        } catch {
+            try? checkpointWAL()
+            throw error
+        }
+
+        try checkpointWAL()
+        try ensureBundleWithinQuota(operation: "quota", code: nil)
+        return result
+    }
+
+    private func preflightTransaction(
+        additionalPayloadBytes: Int64,
+        additionalRows: Int64,
+        operation: String
+    ) throws {
+        let pageSize = Int64(max(try scalarInt("PRAGMA page_size"), 1))
+        let pageCount = Int64(max(try scalarInt("PRAGMA page_count"), 0))
+        let currentMainBytes = try checkedMultiply(
+            pageSize,
+            pageCount,
+            operation: operation
+        )
+        let payloadAllocation = try checkedMultiply(
+            additionalPayloadBytes,
+            2,
+            operation: operation
+        )
+        let rowAllocation = try checkedMultiply(
+            additionalRows,
+            pageSize,
+            operation: operation
+        )
+        let projectedMainBytes = try checkedAdd(
+            currentMainBytes,
+            try checkedAdd(
+                64 * 1_024,
+                try checkedAdd(
+                    payloadAllocation,
+                    rowAllocation,
+                    operation: operation
+                ),
+                operation: operation
+            ),
+            operation: operation
+        )
+        guard projectedMainBytes <= maximumMainDatabaseBytes else {
+            throw DatabaseError(
+                operation: operation,
+                message: "publication cannot fit inside the peak database envelope",
+                code: SQLITE_FULL
+            )
+        }
+
+        let walDirtyBytes = try checkedAdd(
+            try checkedMultiply(currentMainBytes, 2, operation: operation),
+            try checkedAdd(
+                try checkedMultiply(
+                    payloadAllocation,
+                    2,
+                    operation: operation
+                ),
+                try checkedAdd(
+                    try checkedMultiply(
+                        rowAllocation,
+                        2,
+                        operation: operation
+                    ),
+                    128 * 1_024,
+                    operation: operation
+                ),
+                operation: operation
+            ),
+            operation: operation
+        )
+        let projectedFrames = (walDirtyBytes / pageSize)
+            + (walDirtyBytes % pageSize == 0 ? 0 : 1)
+        let walFrameBytes = try checkedMultiply(
+            projectedFrames,
+            pageSize + 24,
+            operation: operation
+        )
+        let walBytes = try checkedAdd(32, walFrameBytes, operation: operation)
+        let walIndexBytes = try checkedAdd(
+            64 * 1_024,
+            try checkedMultiply(
+                projectedFrames,
+                32,
+                operation: operation
+            ),
+            operation: operation
+        )
+        // TRUNCATE normally reduces WAL to zero, but an already allocated WAL
+        // index may remain. Model the peak as the larger of each existing
+        // sidecar and the transaction-derived requirement so warm sidecar bytes
+        // can never disappear from the prediction.
+        let existingMainBytes = try bundleComponentByteCount(
+            canonicalURL,
+            operation: operation
+        )
+        let existingWALBytes = try bundleComponentByteCount(
+            URL(fileURLWithPath: canonicalURL.path + "-wal"),
+            operation: operation
+        )
+        let existingSHMBytes = try bundleComponentByteCount(
+            URL(fileURLWithPath: canonicalURL.path + "-shm"),
+            operation: operation
+        )
+        let peakBytes = try checkedAdd(
+            max(currentMainBytes, existingMainBytes),
+            try checkedAdd(
+                max(walBytes, existingWALBytes),
+                max(walIndexBytes, existingSHMBytes),
+                operation: operation
+            ),
+            operation: operation
+        )
+        guard peakBytes <= maximumBundleBytes else {
+            throw DatabaseError(
+                operation: operation,
+                message: "transaction cannot fit inside the peak database bundle ceiling",
+                code: SQLITE_FULL
+            )
+        }
+    }
+
+    private func bundleComponentByteCount(
+        _ url: URL,
+        operation: String
+    ) throws -> Int64 {
+        var metadata = stat()
+        guard Darwin.lstat(url.path, &metadata) == 0 else {
+            if errno == ENOENT { return 0 }
+            throw DatabaseError(operation: "inspect file", message: url.path)
+        }
+        guard metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_size >= 0 else {
+            throw DatabaseError(operation: operation, message: "unsafe bundle file")
+        }
+        return metadata.st_size
+    }
+
+    private func checkedAdd(
+        _ lhs: Int64,
+        _ rhs: Int64,
+        operation: String
+    ) throws -> Int64 {
+        let result = lhs.addingReportingOverflow(rhs)
+        guard !result.overflow else {
+            throw DatabaseError(
+                operation: operation,
+                message: "database transaction size overflow",
+                code: SQLITE_FULL
+            )
+        }
+        return result.partialValue
+    }
+
+    private func checkedMultiply(
+        _ lhs: Int64,
+        _ rhs: Int64,
+        operation: String
+    ) throws -> Int64 {
+        let result = lhs.multipliedReportingOverflow(by: rhs)
+        guard !result.overflow else {
+            throw DatabaseError(
+                operation: operation,
+                message: "database transaction size overflow",
+                code: SQLITE_FULL
+            )
+        }
+        return result.partialValue
+    }
+
+    private func observePeakBundleBytes() {
+        guard let peakBundleByteObserver else { return }
+        var total: Int64 = 0
+        for candidate in Self.databaseBundleURLs(canonicalURL) {
+            var metadata = stat()
+            if Darwin.lstat(candidate.path, &metadata) == 0,
+               metadata.st_mode & S_IFMT == S_IFREG,
+               metadata.st_size >= 0 {
+                let next = total.addingReportingOverflow(metadata.st_size)
+                guard !next.overflow else { return }
+                total = next.partialValue
+            }
+        }
+        peakBundleByteObserver(total)
+    }
+
+    private func configureWAL(pageSize: Int) throws {
+        try execute("PRAGMA synchronous=NORMAL")
+        let journalLimit = max(
+            min(sidecarReserveBytes / 4, 1 * 1_024 * 1_024),
+            Int64(pageSize)
+        )
+        _ = try scalarInt("PRAGMA journal_size_limit=\(journalLimit)")
+        let checkpointPages = max(
+            1,
+            min(Int(journalLimit / Int64(pageSize)), 1_000)
+        )
+        _ = try scalarInt("PRAGMA wal_autocheckpoint=\(checkpointPages)")
+    }
+
+    /// Truncates committed WAL frames while the owning index holds its
+    /// cross-process writer lease. A busy result is not treated as success.
+    private func checkpointWAL() throws {
+        var logFrames: Int32 = 0
+        var checkpointedFrames: Int32 = 0
+        let result = sqlite3_wal_checkpoint_v2(
+            requiredHandle(),
+            nil,
+            SQLITE_CHECKPOINT_TRUNCATE,
+            &logFrames,
+            &checkpointedFrames
+        )
+        guard result == SQLITE_OK else {
+            throw DatabaseError(
+                operation: "checkpoint",
+                message: "another connection retained the private WAL",
+                code: result
+            )
+        }
+    }
+
+    private func ensureBundleWithinQuota(
+        operation: String,
+        code: Int32?
+    ) throws {
+        var total: Int64 = 0
+        for candidate in Self.databaseBundleURLs(canonicalURL) {
+            var metadata = stat()
+            if Darwin.lstat(candidate.path, &metadata) == 0 {
+                guard metadata.st_mode & S_IFMT == S_IFREG,
+                      metadata.st_size >= 0 else {
+                    throw DatabaseError(
+                        operation: "validate file",
+                        message: candidate.path
+                    )
+                }
+                let (next, overflow) = total.addingReportingOverflow(metadata.st_size)
+                guard !overflow else {
+                    throw DatabaseError(
+                        operation: operation,
+                        message: "private index bundle size overflow",
+                        code: code
+                    )
+                }
+                total = next
+            } else if errno != ENOENT {
+                throw DatabaseError(operation: "inspect file", message: candidate.path)
+            }
+        }
+        guard total <= maximumBundleBytes else {
+            throw DatabaseError(
+                operation: operation,
+                message: "private index bundle exceeds its storage ceiling",
+                code: code
+            )
+        }
+    }
+
+    private func validateExhaustiveIntegrity() throws {
+        exhaustiveIntegrityObserver?()
         guard try scalarText("PRAGMA quick_check(1)") == "ok" else {
             throw DatabaseError(operation: "integrity", message: "quick check failed")
         }
@@ -889,11 +1576,13 @@ final class PDFSearchIndexDatabase {
         return sqlite3_column_int64(statement, 0)
     }
 
-    private func transaction(_ body: () throws -> Void) throws {
+    private func transaction<Result>(_ body: () throws -> Result) throws -> Result {
         try execute("BEGIN IMMEDIATE")
         do {
-            try body()
+            let result = try body()
             try execute("COMMIT")
+            observePeakBundleBytes()
+            return result
         } catch {
             try? execute("ROLLBACK")
             throw error
@@ -901,6 +1590,7 @@ final class PDFSearchIndexDatabase {
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {
+        statementPreparationObserver?()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(requiredHandle(), sql, -1, &statement, nil) == SQLITE_OK,
               let statement else {
@@ -928,6 +1618,13 @@ final class PDFSearchIndexDatabase {
 
     private func stepDone(_ statement: OpaquePointer, operation: String) throws {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw error(operation) }
+    }
+
+    private func reset(_ statement: OpaquePointer, operation: String) throws {
+        guard sqlite3_reset(statement) == SQLITE_OK,
+              sqlite3_clear_bindings(statement) == SQLITE_OK else {
+            throw error(operation)
+        }
     }
 
     private func bind(_ value: String, at index: Int32, to statement: OpaquePointer) throws {
@@ -1092,8 +1789,10 @@ final class PDFSearchIndexDatabase {
                   value.st_uid == geteuid(), value.st_nlink == 1 else {
                 throw DatabaseError(operation: "validate file", message: candidate.path)
             }
-            guard Darwin.chmod(candidate.path, 0o600) == 0 else {
-                throw DatabaseError(operation: "harden file", message: candidate.path)
+            if value.st_mode & 0o777 != 0o600 {
+                guard Darwin.chmod(candidate.path, 0o600) == 0 else {
+                    throw DatabaseError(operation: "harden file", message: candidate.path)
+                }
             }
         }
     }

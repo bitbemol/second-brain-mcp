@@ -7,7 +7,7 @@ enum SearchToolResultMapper {
 
     static func success(_ response: VaultSearchResponse) throws -> CallTool.Result {
         var bounded = response
-        while try encodedResultsByteCount(bounded.results)
+        while try VaultSearchJSONEncoding.resultsByteCount(bounded.results)
                 > SearchRequestLimits.maximumWireResultPayloadBytes {
             // Production already uses this exact result budget. A custom
             // service must not advance a cursor over a result removed here.
@@ -23,15 +23,7 @@ enum SearchToolResultMapper {
             )
         }
         while true {
-            let encoder = JSONEncoder()
-            encoder.keyEncodingStrategy = .convertToSnakeCase
-            encoder.outputFormatting = [
-                .prettyPrinted, .sortedKeys, .withoutEscapingSlashes,
-            ]
-            let json = String(
-                decoding: try encoder.encode(bounded),
-                as: UTF8.self
-            )
+            let json = try VaultSearchJSONEncoding.responseText(bounded)
             let result = try CallTool.Result(
                 content: [.text(text: json, annotations: nil, _meta: nil)],
                 structuredContent: structuredContent(bounded)
@@ -74,15 +66,6 @@ enum SearchToolResultMapper {
                 + max(response.results.count - results.count, 0),
             pdfSummary: response.pdfSummary
         )
-    }
-
-    private static func encodedResultsByteCount(
-        _ results: [VaultSearchResult]
-    ) throws -> Int {
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(results).count
     }
 
     static func failure(_ message: String) -> CallTool.Result {
