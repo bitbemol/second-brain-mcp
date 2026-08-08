@@ -23,6 +23,8 @@ struct MutationReceiptStore: Sendable {
         case completed(FileOperationOutput)
         /// Intent was recorded by the active-marker protocol before persistence.
         case prePersistence
+        /// Intent includes stable evidence that can disambiguate a directory rename.
+        case prePersistenceWithEvidence(VaultMutationRecoveryEvidence)
         /// A process stopped after recording intent but before a final outcome.
         case outcomeUnknown
         /// Persistence succeeded but Git failed; retry may commit the saved outcome.
@@ -126,7 +128,11 @@ struct MutationReceiptStore: Sendable {
         }
         switch receipt.state {
         case .inProgress:
-            return receipt.version >= 2 ? .prePersistence : .outcomeUnknown
+            guard receipt.version >= 2 else { return .outcomeUnknown }
+            if let evidence = receipt.recoveryEvidence {
+                return .prePersistenceWithEvidence(evidence)
+            }
+            return .prePersistence
         case .completed:
             guard let output = receipt.output,
                   let metadata = output.metadata,
@@ -261,7 +267,8 @@ struct MutationReceiptStore: Sendable {
     /// append, replacement, creation, or deletion.
     func saveInProgress(
         identifier: MutationID,
-        fingerprint: MutationRequestFingerprint
+        fingerprint: MutationRequestFingerprint,
+        recoveryEvidence: VaultMutationRecoveryEvidence? = nil
     ) throws {
         try write(
             Receipt(
@@ -269,7 +276,7 @@ struct MutationReceiptStore: Sendable {
                 mutationID: identifier,
                 fingerprint: fingerprint,
                 output: nil,
-                recoveryEvidence: nil,
+                recoveryEvidence: recoveryEvidence,
                 state: .inProgress,
                 failure: nil
             ),

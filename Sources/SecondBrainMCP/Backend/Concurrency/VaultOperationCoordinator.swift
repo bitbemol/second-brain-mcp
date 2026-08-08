@@ -10,12 +10,16 @@ import Foundation
 struct VaultOperationCoordinator: Sendable {
     private let local = AsyncPathReadWriteCoordinator()
     private let pathLocksURL: URL
+    private let treeLockURL: URL
 
     /// Creates a coordinator in an already prepared vault lock directory.
     init(lockDirectoryURL: URL) {
         self.pathLocksURL = lockDirectoryURL.appendingPathComponent(
             "paths",
             isDirectory: true
+        )
+        self.treeLockURL = lockDirectoryURL.appendingPathComponent(
+            "notes-tree.resource"
         )
     }
 
@@ -24,11 +28,13 @@ struct VaultOperationCoordinator: Sendable {
         target: ReadableFileTarget,
         operation: @escaping @Sendable () async throws -> Result
     ) async throws -> Result {
-        try await withAccess(
-            canonicalPath: canonicalPath(for: target.url),
-            access: .read,
-            operation: operation
-        )
+        try await withTreeAccess(.read) {
+            try await withAccess(
+                canonicalPath: canonicalPath(for: target.url),
+                access: .read,
+                operation: operation
+            )
+        }
     }
 
     /// Runs a complete notes mutation with exclusive same-path access.
@@ -36,11 +42,43 @@ struct VaultOperationCoordinator: Sendable {
         target: WritableFileTarget,
         operation: @escaping @Sendable () async throws -> Result
     ) async throws -> Result {
-        try await withAccess(
-            canonicalPath: canonicalPath(for: target.url),
-            access: .write,
-            operation: operation
-        )
+        try await withTreeAccess(.read) {
+            try await withAccess(
+                canonicalPath: canonicalPath(for: target.url),
+                access: .write,
+                operation: operation
+            )
+        }
+    }
+
+    /// Excludes every cooperating note read/write while a subtree path changes.
+    func withTreeWrite<Result: Sendable>(
+        operation: @escaping @Sendable () async throws -> Result
+    ) async throws -> Result {
+        try await withTreeAccess(.write, operation: operation)
+    }
+
+    /// Queued whole-tree leases, exposed for deterministic concurrency tests.
+    var waitingTreeOperationCount: Int {
+        get async {
+            await local.waitingCount(for: "secondbrain://notes-tree")
+        }
+    }
+
+    private func withTreeAccess<Result: Sendable>(
+        _ access: AsyncPathReadWriteCoordinator.Access,
+        operation: @escaping @Sendable () async throws -> Result
+    ) async throws -> Result {
+        try await local.withAccess(
+            key: "secondbrain://notes-tree",
+            access: access
+        ) {
+            let tree = POSIXAdvisoryFileLock(url: treeLockURL)
+            return try await tree.withLock(
+                access == .read ? .shared : .exclusive,
+                operation: operation
+            )
+        }
     }
 
     private func withAccess<Result: Sendable>(

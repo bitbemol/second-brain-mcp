@@ -4,6 +4,28 @@ import Testing
 
 @Suite("Vault search engine")
 struct VaultSearchEngineTests {
+    private final class SemanticEmbeddingStub: SearchSemanticEmbedding,
+        @unchecked Sendable {
+        private let lock = NSLock()
+        private var callCount = 0
+
+        func embedding(
+            for text: String,
+            retention: SearchSemanticEmbeddingRetention
+        ) -> [Double]? {
+            lock.withLock { callCount += 1 }
+            if text.contains("ordered collection") {
+                return [1, 0]
+            }
+            if text.contains("midpoint of a sorted array") {
+                return [4, 3]
+            }
+            return [0, 1]
+        }
+
+        var calls: Int { lock.withLock { callCount } }
+    }
+
     private func searchCapabilities() -> SearchCapabilities {
         var formats: [FileCapabilities.Format] = FileFormat.allCases
             .filter(\.isTextual)
@@ -18,7 +40,9 @@ struct VaultSearchEngineTests {
         root: String,
         limits: SearchResourceLimits = .default,
         admissionGate: AsyncExclusiveGate? = nil,
-        processSearchLock: POSIXAdvisoryFileLock? = nil
+        processSearchLock: POSIXAdvisoryFileLock? = nil,
+        semanticEmbedding: (any SearchSemanticEmbedding)? =
+            NaturalLanguageSearchSemanticEmbedding.shared
     ) throws -> VaultSearchEngine {
         let supportRoot = URL(fileURLWithPath: root)
             .appendingPathComponent(".test-support", isDirectory: true)
@@ -27,6 +51,27 @@ struct VaultSearchEngineTests {
             supportRoot: supportRoot,
             migrateLegacyData: false
         )
+        let pdfAdmission = PDFReadAdmission()
+        let pdfIndex = PDFSearchIndex(
+            databaseURL: dataDirectory.searchIndexDirectoryURL
+                .appendingPathComponent("pdf-pages-v1.sqlite3"),
+            vaultPath: root,
+            admission: pdfAdmission,
+            writerLock: POSIXAdvisoryFileLock(
+                url: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("pdf-index-writer.lock")
+            ),
+            maximumCandidatePages: min(
+                limits.maximumCandidates,
+                limits.maximumAggregateSections
+            ),
+            maximumCandidateTextBytes: limits.maximumAggregateProjectionBytes,
+            maximumSourceFileBytes: limits.maximumPDFFileBytes,
+            maximumPagesPerFile: limits.maximumPDFPagesPerFile,
+            maximumTextBytesPerFile: limits.maximumPDFTextBytesPerFile,
+            maximumMetadataCharacters: limits.maximumMetadataCharacters,
+            maximumMetadataBytes: limits.maximumMetadataBytes
+        )
         return VaultSearchEngine(
             vaultPath: root,
             capabilities: searchCapabilities(),
@@ -34,9 +79,11 @@ struct VaultSearchEngineTests {
             operations: VaultOperationCoordinator(
                 lockDirectoryURL: dataDirectory.lockDirectoryURL
             ),
+            pdfIndex: pdfIndex,
             limits: limits,
             admissionGate: admissionGate,
-            processSearchLock: processSearchLock
+            processSearchLock: processSearchLock,
+            semanticEmbedding: semanticEmbedding
         )
     }
 
@@ -118,6 +165,217 @@ struct VaultSearchEngineTests {
             ))
             #expect(response.results.first?.path == "notes/work/focus.md")
         }
+    }
+
+    @Test("Smart uses local semantic evidence only after literal strategies miss")
+    func semanticParaphraseFallback() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            """
+            # Binary search
+            Compare a target with the midpoint of a sorted array, then discard
+            one side after each comparison.
+            """,
+            to: "notes/binary-search.md",
+            root: root
+        )
+        try write(
+            "# Cooking\nSimmer tomato sauce and boil pasta.",
+            to: "notes/cooking.md",
+            root: root
+        )
+        let embedding = SemanticEmbeddingStub()
+        let response = try await makeEngine(
+            root: root,
+            semanticEmbedding: embedding
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+
+        let result = try #require(response.results.first)
+        #expect(response.results.map(\.path) == ["notes/binary-search.md"])
+        #expect(result.matchedFields == [.content])
+        #expect(result.termCoverage == 0)
+        #expect(result.completeQueryFields.isEmpty)
+        #expect(result.relevance >= response.minimumRelevance)
+        #expect(embedding.calls > 0)
+    }
+
+    @Test("Semantic fallback rejects unrelated notes and skips known-term hits")
+    func semanticFallbackBoundaries() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Cooking\nSimmer tomato sauce and boil pasta.",
+            to: "notes/cooking.md",
+            root: root
+        )
+        let unrelatedEmbedding = SemanticEmbeddingStub()
+        let unrelated = try await makeEngine(
+            root: root,
+            semanticEmbedding: unrelatedEmbedding
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+        #expect(unrelated.results.isEmpty)
+        #expect(unrelatedEmbedding.calls > 0)
+
+        let knownEmbedding = SemanticEmbeddingStub()
+        let known = try await makeEngine(
+            root: root,
+            semanticEmbedding: knownEmbedding
+        ).search(VaultSearchRequest(
+            query: "tomato sauce",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+        #expect(known.results.first?.path == "notes/cooking.md")
+        #expect(knownEmbedding.calls == 0)
+    }
+
+    @Test("Weak lexical noise does not suppress a stronger semantic paraphrase")
+    func semanticHybridFallback() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Binary search\nCompare a target with the midpoint of a sorted array.",
+            to: "notes/binary-search.md",
+            root: root
+        )
+        try write(
+            "# Release process\nCutting the range is generic project wording.",
+            to: "notes/noise.md",
+            root: root
+        )
+        let embedding = SemanticEmbeddingStub()
+
+        let response = try await makeEngine(
+            root: root,
+            semanticEmbedding: embedding
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes],
+            minimumRelevance: 0
+        ))
+
+        #expect(response.results.first?.path == "notes/binary-search.md")
+        #expect(embedding.calls > 0)
+    }
+
+    @Test("Semantic evidence upgrades weak literal evidence in the same passage")
+    func semanticUpgradesSamePassage() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Binary search\nCompare a target with the midpoint of a sorted array range.",
+            to: "notes/binary-search.md",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            semanticEmbedding: SemanticEmbeddingStub()
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes],
+            minimumRelevance: 0
+        ))
+
+        let result = try #require(response.results.first)
+        #expect(result.path == "notes/binary-search.md")
+        #expect(result.termCoverage == 0)
+        #expect(result.relevance > 0.8)
+    }
+
+    @Test("A bounded semantic scan reports incomplete matching coverage")
+    func semanticFallbackWorkLimit() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let sections = (0..<513).map {
+            "# Recipe \($0)\nTomato sauce preparation number \($0)."
+        }.joined(separator: "\n")
+        try write(sections, to: "notes/large.md", root: root)
+
+        let response = try await makeEngine(
+            root: root,
+            semanticEmbedding: SemanticEmbeddingStub()
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+
+        #expect(response.results.isEmpty)
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.path == "notes/large.md")
+        #expect(response.resourceLimitSamples.first?.reason == .matching)
+        #expect(response.resourceLimitSamples.first?.impact == .partial)
+    }
+
+    @Test("A bounded semantic section reports its unseen suffix")
+    func semanticSectionProjectionLimit() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Long note\n"
+                + String(repeating: "generic introduction ", count: 400)
+                + "\nCompare a target with the midpoint of a sorted array.",
+            to: "notes/long.md",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            semanticEmbedding: SemanticEmbeddingStub()
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+
+        #expect(response.results.isEmpty)
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.path == "notes/long.md")
+        #expect(response.resourceLimitSamples.first?.reason == .matching)
+        #expect(response.resourceLimitSamples.first?.impact == .partial)
+    }
+
+    @Test("An empty bounded prefix still reports an unseen semantic suffix")
+    func semanticWhitespacePrefixLimit() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            "# Long note\n"
+                + String(repeating: " ", count: 5_000)
+                + "Compare a target with the midpoint of a sorted array.",
+            to: "notes/whitespace-prefix.md",
+            root: root
+        )
+
+        let response = try await makeEngine(
+            root: root,
+            semanticEmbedding: SemanticEmbeddingStub()
+        ).search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart,
+            areas: [.notes]
+        ))
+
+        #expect(response.results.isEmpty)
+        #expect(response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 1)
+        #expect(response.resourceLimitSamples.first?.path
+            == "notes/whitespace-prefix.md")
+        #expect(response.resourceLimitSamples.first?.impact == .omitted)
     }
 
     @Test("Complete lexical coverage outranks a weak title-only match")
@@ -212,6 +470,11 @@ struct VaultSearchEngineTests {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("notes-only sentinel", to: "notes/only.md", root: root)
+        try write(
+            try generatedSearchPDF(pages: ["reference-only sentinel"]),
+            to: "references/only.pdf",
+            root: root
+        )
         let engine = try makeEngine(root: root)
 
         let notes = try await engine.search(VaultSearchRequest(
@@ -221,6 +484,20 @@ struct VaultSearchEngineTests {
         ))
         #expect(notes.results.map(\.path) == ["notes/only.md"])
         #expect(notes.pdfSummary == .empty)
+
+        let defaultScope = try await engine.search(VaultSearchRequest(
+            query: "sentinel",
+            strategy: .smart
+        ))
+        #expect(defaultScope.results.map(\.path) == ["notes/only.md"])
+        #expect(defaultScope.pdfSummary == .empty)
+
+        let inferredReferences = try await engine.search(VaultSearchRequest(
+            query: "reference-only sentinel",
+            strategy: .phrase,
+            formats: [.pdf]
+        ))
+        #expect(inferredReferences.results.map(\.path) == ["references/only.pdf"])
 
         await #expect(throws: VaultSearchRequestError.self) {
             _ = try await engine.search(VaultSearchRequest(
@@ -1257,6 +1534,7 @@ struct VaultSearchEngineTests {
         let response = try await engine.search(VaultSearchRequest(
             query: "concurrency safety",
             strategy: .phrase,
+            areas: [.notes, .references],
             limit: 10,
             maxHitsPerFile: 3
         ))
@@ -1371,6 +1649,31 @@ struct VaultSearchEngineTests {
         #expect(nonTextFields.results.first?.pdfTextExtractionStatus
             == .metadataOnly)
         #expect(!nonTextFields.coverageIncomplete)
+    }
+
+    @Test("Path-only search validates but does not parse supported note bytes")
+    func pathOnlyInvalidMarkdown() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(
+            Data([0xFF, 0xFE, 0xFD]),
+            to: "notes/path-only-opaque.md",
+            root: root
+        )
+
+        let response = try await makeEngine(root: root).search(VaultSearchRequest(
+            query: "path-only-opaque",
+            strategy: .exact,
+            fields: [.path],
+            formats: [.markdown],
+            areas: [.notes]
+        ))
+
+        let result = try #require(response.results.first)
+        #expect(result.path == "notes/path-only-opaque.md")
+        #expect(result.snippet == "notes/path-only-opaque.md")
+        #expect(!response.coverageIncomplete)
+        #expect(response.resourceLimitedFileCount == 0)
     }
 
     @Test("Title-only PDF search reads metadata without enumerating pages")
@@ -1545,8 +1848,11 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitedFileCount == 1)
         #expect(response.resourceLimitSamples.first?.reason == .projection)
         #expect(response.resourceLimitSamples.first?.impact == .partial)
-        #expect(response.pdfSummary.extractedFileCount == 1)
-        #expect(response.pdfSummary.partialFileCount == 1)
+        // Both source PDFs were completely indexed. The current query's page
+        // hydration was projection-limited, which is reported separately from
+        // source extraction status.
+        #expect(response.pdfSummary.extractedFileCount == 2)
+        #expect(response.pdfSummary.partialFileCount == 0)
     }
 
     @Test("Aggregate section limits reject an oversized file without hiding a later fit")

@@ -9,6 +9,7 @@ struct FileCRUDOperationTests {
             FileCRUDOperation.create,
             .update,
             .delete,
+            .move,
         ] {
             #expect(operation.isMutation)
         }

@@ -6,6 +6,8 @@
 struct VaultRuntime: Sendable {
     /// Routed generic file service.
     let files: any FileCRUDService
+    /// Atomic recursive notes-directory moves.
+    let directories: any DirectoryMoveService
     /// Bounded read-only search service.
     let search: any VaultSearchService
     /// Immutable capability projection shared with MCP discovery.
@@ -79,6 +81,12 @@ struct VaultRuntime: Sendable {
             encoder: CoreGraphicsImageEncoder(),
             limits: limits
         )
+        let pdfAdmission = PDFReadAdmission(
+            processLock: POSIXAdvisoryFileLock(
+                url: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("pdf-reference-reads.lock")
+            )
+        )
         let catalog = FileFormatCatalogFactory.build(
             vaultPath: vaultPath,
             store: store,
@@ -88,12 +96,7 @@ struct VaultRuntime: Sendable {
                 sourceValidator: externalSources,
                 encoder: AVFoundationVideoEncoder()
             ),
-            pdfReader: PDFReader(admission: PDFReadAdmission(
-                processLock: POSIXAdvisoryFileLock(
-                    url: dataDirectory.lockDirectoryURL
-                        .appendingPathComponent("pdf-reference-reads.lock")
-                )
-            ))
+            pdfReader: PDFReader(admission: pdfAdmission)
         )
         let files = VaultFileService(
             vaultPath: vaultPath,
@@ -104,15 +107,45 @@ struct VaultRuntime: Sendable {
             audit: audit,
             readOnly: readOnly
         )
+        let directories = VaultDirectoryMoveService(
+            vaultPath: vaultPath,
+            git: git,
+            audit: audit,
+            processMutationLock: processMutationLock,
+            receipts: mutationReceipts,
+            operations: operations,
+            readOnly: readOnly
+        )
         let capabilities = catalog.capabilities()
         let searchCapabilities = SearchCapabilities(
             fileCapabilities: capabilities
         )
+        let pdfIndex = PDFSearchIndex(
+            databaseURL: dataDirectory.searchIndexDirectoryURL
+                .appendingPathComponent("pdf-pages-v1.sqlite3"),
+            vaultPath: vaultPath,
+            admission: pdfAdmission,
+            writerLock: POSIXAdvisoryFileLock(
+                url: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("pdf-index-writer.lock")
+            )
+        )
+        // Schema preparation touches only derived process data and safely
+        // rebuilds a corrupt/incompatible private cache. If it still cannot be
+        // trusted or opened, search degrades explicitly for PDF content.
+        let preparedPDFIndex: PDFSearchIndex?
+        do {
+            try await pdfIndex.prepare()
+            preparedPDFIndex = pdfIndex
+        } catch {
+            preparedPDFIndex = nil
+        }
         let search = VaultSearchEngine(
             vaultPath: vaultPath,
             capabilities: searchCapabilities,
             store: store,
             operations: operations,
+            pdfIndex: preparedPDFIndex,
             processSearchLock: POSIXAdvisoryFileLock(
                 url: dataDirectory.lockDirectoryURL
                     .appendingPathComponent("vault-search.lock")
@@ -120,6 +153,7 @@ struct VaultRuntime: Sendable {
         )
         return VaultRuntime(
             files: files,
+            directories: directories,
             search: search,
             capabilities: capabilities,
             searchCapabilities: searchCapabilities,

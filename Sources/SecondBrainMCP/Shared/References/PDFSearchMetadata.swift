@@ -14,6 +14,8 @@ enum PDFTextExtractionStatus: String, Codable, CaseIterable, Sendable {
     case contentSkippedFileBytes = "content_skipped_file_bytes"
     /// PDFKit could not open the bounded snapshot.
     case cannotOpen = "cannot_open"
+    /// The derived persistent text index could not safely answer this request.
+    case indexUnavailable = "index_unavailable"
 }
 
 /// Coarse PDF page role used to keep navigational pages below body evidence.

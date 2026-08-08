@@ -299,6 +299,11 @@ struct SearchProductionAcceptanceTests {
             "notes/actor-isolation.md",
             root: root
         )
+        try write(
+            "# Binary search\nLocate a target in a sorted array by checking the midpoint and halving the remaining interval.",
+            "notes/binary-search.md",
+            root: root
+        )
         try write("# Applications\nGeneral application notes.", "notes/apps.md", root: root)
         let service = try engine(root: root)
 
@@ -316,6 +321,14 @@ struct SearchProductionAcceptanceTests {
         #expect(concurrency.results.first?.path == "notes/actor-isolation.md")
         #expect(concurrency.results.first?.relevance
             ?? 0 >= SearchRequestLimits.defaultMinimumRelevance)
+
+        let semantic = try await service.search(VaultSearchRequest(
+            query: "find an item in an ordered collection by repeatedly cutting the range in half",
+            strategy: .smart
+        ))
+        #expect(semantic.results.first?.path == "notes/binary-search.md")
+        #expect(semantic.results.first?.termCoverage == 0)
+        #expect(semantic.results.first?.completeQueryFields.isEmpty == true)
     }
 
     @Test("Title specificity outranks long titles and embedded substrings")
@@ -387,6 +400,7 @@ struct SearchProductionAcceptanceTests {
         #expect(result.completeQueryFields.isEmpty)
         #expect(result.termCoverage == 1)
         #expect(result.relevance >= response.minimumRelevance)
+        #expect(result.relevance < 0.90)
     }
 
     @Test("Symbolic credential documentation remains discoverable end to end")

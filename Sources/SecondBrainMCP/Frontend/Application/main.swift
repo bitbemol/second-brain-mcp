@@ -26,6 +26,7 @@ do {
     try await MCPServerSetup.start(
         config: config,
         files: runtime.files,
+        directories: runtime.directories,
         search: runtime.search,
         capabilities: runtime.capabilities,
         searchCapabilities: runtime.searchCapabilities,

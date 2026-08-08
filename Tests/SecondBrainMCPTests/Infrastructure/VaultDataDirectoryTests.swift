@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import SecondBrainMCP
 
@@ -32,6 +33,11 @@ struct VaultDataDirectoryTests {
         )
 
         #expect(prepared.rootURL == repeated.rootURL)
+        var searchIndexStat = stat()
+        #expect(Darwin.lstat(prepared.searchIndexDirectoryURL.path, &searchIndexStat) == 0)
+        #expect(searchIndexStat.st_mode & S_IFMT == S_IFDIR)
+        #expect(searchIndexStat.st_uid == geteuid())
+        #expect(searchIndexStat.st_mode & 0o077 == 0)
         #expect(try String(contentsOf: prepared.auditLogURL, encoding: .utf8) == "old audit")
         #expect(!FileManager.default.fileExists(
             atPath: legacyRoot.appendingPathComponent("cache").path

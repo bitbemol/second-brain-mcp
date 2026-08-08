@@ -11,10 +11,18 @@ struct MutationRequestFingerprint: Hashable, Sendable, Codable {
         operation: FileCRUDOperation,
         request: Request
     ) throws -> MutationRequestFingerprint {
+        try make(operationIdentifier: operation.rawValue, request: request)
+    }
+
+    /// Computes a deterministic fingerprint for a mutation outside file CRUD.
+    static func make<Request: Encodable>(
+        operationIdentifier: String,
+        request: Request
+    ) throws -> MutationRequestFingerprint {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let requestData = try encoder.encode(request)
-        var input = Data(operation.rawValue.utf8)
+        var input = Data(operationIdentifier.utf8)
         input.append(0)
         input.append(requestData)
         let digest = SHA256.hash(data: input)

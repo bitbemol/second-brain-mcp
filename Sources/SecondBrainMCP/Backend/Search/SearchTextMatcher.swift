@@ -40,6 +40,8 @@ enum SearchMatchKind: Equatable, Sendable {
     case lexical
     /// Bounded edit-distance evidence.
     case fuzzy
+    /// Local embedding similarity with no implied literal term coverage.
+    case semantic
 }
 
 /// Evidence contributed by one searchable field.
@@ -54,6 +56,12 @@ struct SearchMatch: Sendable {
     let coveredTerms: Set<String>
     /// Whether this field alone satisfies the complete query.
     let completeQuery: Bool
+    /// How tightly the contributing terms occur in their source field.
+    ///
+    /// `1` means an adjacent phrase or literal. Smaller values describe terms
+    /// spread across a wider token window and prevent distributed vocabulary
+    /// from looking as strong as one cohesive passage.
+    let cohesion: Double
     /// Concrete matching behavior that produced the evidence.
     let kind: SearchMatchKind
 }
@@ -238,6 +246,7 @@ enum SearchTextMatcher {
             range: range,
             coveredTerms: Set(queryTokens.map(\.normalized)),
             completeQuery: true,
+            cohesion: 1,
             kind: whole ? .literalWhole : .literalSubstring
         )
     }
@@ -286,6 +295,7 @@ enum SearchTextMatcher {
                     ].range.upperBound,
                     coveredTerms: Set(required),
                     completeQuery: true,
+                    cohesion: 1,
                     kind: .phrase
                 )
             }
@@ -301,26 +311,60 @@ enum SearchTextMatcher {
     ) throws -> SearchMatch? {
         let required = uniqueTerms(queryTokens)
         guard !required.isEmpty else { return nil }
-        var firstRangeByTerm: [String: Range<String.Index>] = [:]
         let requiredSet = Set(required)
-        for token in sourceTokens {
+        var occurrences: [(
+            term: String, range: Range<String.Index>, tokenIndex: Int
+        )] = []
+        var coveredTerms = Set<String>()
+        for (tokenIndex, token) in sourceTokens.enumerated() {
             guard try consumeComparison(&budget, limits: limits) else { return nil }
             guard requiredSet.contains(token.normalized) else { continue }
-            if firstRangeByTerm[token.normalized] == nil {
-                firstRangeByTerm[token.normalized] = token.range
-                if firstRangeByTerm.count == required.count { break }
+            occurrences.append((token.normalized, token.range, tokenIndex))
+            coveredTerms.insert(token.normalized)
+        }
+        guard !occurrences.isEmpty else { return nil }
+
+        // Choose the tightest window containing every term that this field can
+        // cover. Using only each term's first occurrence makes an early mention
+        // hide a later cohesive phrase and unfairly rewards scattered prose.
+        var counts: [String: Int] = [:]
+        var left = 0
+        var bestStart = 0
+        var bestEnd = occurrences.count - 1
+        var bestSpan = Int.max
+        for right in occurrences.indices {
+            counts[occurrences[right].term, default: 0] += 1
+            while counts.count == coveredTerms.count, left <= right {
+                let span = occurrences[right].tokenIndex
+                    - occurrences[left].tokenIndex + 1
+                if span < bestSpan {
+                    bestSpan = span
+                    bestStart = left
+                    bestEnd = right
+                }
+                let term = occurrences[left].term
+                if counts[term] == 1 { counts.removeValue(forKey: term) }
+                else { counts[term, default: 0] -= 1 }
+                left += 1
             }
         }
-        guard !firstRangeByTerm.isEmpty else { return nil }
 
-        let coverage = Double(firstRangeByTerm.count) / Double(required.count)
-        let allTermsBonus = firstRangeByTerm.count == required.count ? 10.0 : 0.0
+        let coverage = Double(coveredTerms.count) / Double(required.count)
+        let allTermsBonus = coveredTerms.count == required.count ? 10.0 : 0.0
+        let tokenSpan = max(bestSpan, 1)
+        let cohesion = min(
+            Double(coveredTerms.count) / Double(tokenSpan),
+            1
+        )
         return SearchMatch(
             quality: 30 + (30 * coverage) + allTermsBonus,
             strength: 0.85,
-            range: firstRangeByTerm.values.min { $0.lowerBound < $1.lowerBound },
-            coveredTerms: Set(firstRangeByTerm.keys),
-            completeQuery: firstRangeByTerm.count == required.count,
+            range: occurrences[bestStart].range.lowerBound..<occurrences[
+                bestEnd
+            ].range.upperBound,
+            coveredTerms: coveredTerms,
+            completeQuery: coveredTerms.count == required.count,
+            cohesion: cohesion,
             kind: .lexical
         )
     }
@@ -430,12 +474,16 @@ enum SearchTextMatcher {
         let closeness = totalAllowance == 0
             ? 1.0
             : 1.0 - (Double(totalDistance) / Double(totalAllowance))
+        let positions = chosen.map(\.sourceIndex)
+        let tokenSpan = max((positions.max() ?? 0) - (positions.min() ?? 0) + 1, 1)
+        let cohesion = min(Double(chosen.count) / Double(tokenSpan), 1)
         return SearchMatch(
             quality: 48 + (10 * exactFraction) + (6 * max(closeness, 0)),
             strength: 0.60 + (0.20 * max(closeness, 0)),
             range: earliestRange(chosen.map(\.range), in: text),
             coveredTerms: Set(matchedTerms),
             completeQuery: matchedTerms.count == required.count,
+            cohesion: cohesion,
             kind: .fuzzy
         )
     }

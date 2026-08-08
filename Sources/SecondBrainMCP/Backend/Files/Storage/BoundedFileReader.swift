@@ -175,7 +175,12 @@ enum BoundedFileReader {
             value,
             RegularFileMetadata(
                 byteCount: initialBytes,
-                modificationDate: Date(timeIntervalSince1970: seconds)
+                modificationDate: Date(timeIntervalSince1970: seconds),
+                deviceID: UInt64(initial.st_dev),
+                inode: UInt64(initial.st_ino),
+                modificationNanoseconds: Int64(initial.st_mtimespec.tv_nsec),
+                changeSeconds: Int64(initial.st_ctimespec.tv_sec),
+                changeNanoseconds: Int64(initial.st_ctimespec.tv_nsec)
             )
         )
     }

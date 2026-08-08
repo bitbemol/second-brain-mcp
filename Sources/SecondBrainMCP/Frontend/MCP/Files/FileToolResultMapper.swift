@@ -47,6 +47,10 @@ enum FileToolResultMapper {
             FileToolOutputField.area.rawValue: .string(metadata.area.rawValue),
             FileToolOutputField.replayed.rawValue: .bool(metadata.replayed),
         ]
+        if let sourcePath = metadata.sourcePath {
+            values[FileToolOutputField.sourcePath] = .string(sourcePath)
+            values[FileToolOutputField.destinationPath] = .string(metadata.path)
+        }
         if let revision = metadata.revision {
             values[FileToolOutputField.revision] = .string(revision.rawValue)
         }

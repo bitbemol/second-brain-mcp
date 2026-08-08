@@ -4,6 +4,10 @@ import MCP
 enum FileToolOutputField: String, Sendable {
     /// Canonical vault-relative path operated on.
     case path
+    /// Original path for a completed move operation.
+    case sourcePath = "source_path"
+    /// Explicit destination alias for a completed move.
+    case destinationPath = "destination_path"
     /// Structural vault area containing the path.
     case area
     /// Exact stored-byte revision when a file survives the operation.

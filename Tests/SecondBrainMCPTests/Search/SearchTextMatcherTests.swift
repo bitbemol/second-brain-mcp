@@ -44,6 +44,32 @@ struct SearchTextMatcherTests {
         #expect(once.quality == duplicate.quality)
     }
 
+    @Test("Lexical evidence records whether terms form one cohesive passage")
+    func lexicalCohesion() throws {
+        let adjacent = try #require(try match(
+            "binary search implementation",
+            query: "binary search",
+            strategy: .lexical
+        ))
+        let scattered = try #require(try match(
+            "binary attachments belong to a different sentence with unrelated words before search canvas",
+            query: "binary search",
+            strategy: .lexical
+        ))
+
+        #expect(adjacent.cohesion == 1)
+        #expect(scattered.cohesion < adjacent.cohesion)
+
+        let repeatedSource = "binary unrelated archive prose search then binary search"
+        let repeated = try #require(try match(
+            repeatedSource,
+            query: "binary search",
+            strategy: .lexical
+        ))
+        #expect(repeated.cohesion == 1)
+        #expect(repeated.range.map { String(repeatedSource[$0]) } == "binary search")
+    }
+
     @Test("Word strategies never promote embedded substrings")
     func wholeWordBoundaries() throws {
         for strategy in [SearchStrategy.lexical, .phrase, .fuzzy, .smart] {

@@ -1,11 +1,11 @@
 import Foundation
 
-/// Live, bounded implementation of the shared vault-search port.
+/// Bounded implementation of the shared vault-search port.
 ///
-/// The engine has no persistent index or mutable strategy registry. It captures
-/// one coordinated snapshot per file, extracts the corpus once, and selects the
-/// requested behavior through one exhaustive strategy switch in
-/// ``SearchTextMatcher``.
+/// The engine combines coordinated live note projections with current page
+/// candidates from the derived PDF index, then selects predictable literal
+/// behavior through ``SearchTextMatcher``. Smart prose queries may additionally
+/// use an injected local semantic source when ordinary evidence remains weak.
 struct VaultSearchEngine: VaultSearchService, Sendable {
     enum EngineError: Error, Sendable { case responseLimitTooSmall }
 
@@ -20,6 +20,11 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         let field: SearchField
         let text: String
         let match: SearchMatch
+    }
+
+    private struct SemanticFallbackOutcome {
+        let candidates: [RankedResult]
+        let limitations: [String: VaultSearchResourceLimitImpact]
     }
 
     /// Deduplication key that shares result strings instead of joining a second
@@ -102,15 +107,19 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     private let limits: SearchResourceLimits
     private let admissionGate: AsyncExclusiveGate
     private let processSearchLock: POSIXAdvisoryFileLock?
+    private let semanticEmbedding: (any SearchSemanticEmbedding)?
 
     init(
         vaultPath: String,
         capabilities: SearchCapabilities,
         store: VaultCRUDStore,
         operations: VaultOperationCoordinator,
+        pdfIndex: PDFSearchIndex? = nil,
         limits: SearchResourceLimits = .default,
         admissionGate: AsyncExclusiveGate? = nil,
-        processSearchLock: POSIXAdvisoryFileLock? = nil
+        processSearchLock: POSIXAdvisoryFileLock? = nil,
+        semanticEmbedding: (any SearchSemanticEmbedding)? =
+            NaturalLanguageSearchSemanticEmbedding.shared
     ) {
         self.vaultPath = vaultPath
         self.capabilities = capabilities
@@ -119,12 +128,14 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             maximumWaiters: limits.maximumQueuedRequests
         )
         self.processSearchLock = processSearchLock
+        self.semanticEmbedding = semanticEmbedding
         self.corpusBuilder = SearchCorpusBuilder(
             vaultPath: vaultPath,
             store: store,
             operations: operations,
             capabilities: capabilities,
-            limits: limits
+            limits: limits,
+            pdfIndex: pdfIndex
         )
     }
 
@@ -276,6 +287,50 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             }
         }
 
+        // Semantic work is a conservative hybrid fallback for conversational
+        // note queries. Strong literal/lexical evidence avoids model latency,
+        // while weak generic-term hits do not suppress a real paraphrase.
+        let strongestOrdinaryRelevance = ranked.map(\.result.relevance).max() ?? 0
+        if strongestOrdinaryRelevance < Self.semanticFallbackStrongResultFloor,
+           shouldRunSemanticFallback(validated),
+           let semanticEmbedding {
+            let semanticOutcome = try semanticFallbackResults(
+                in: corpus.documents,
+                request: validated,
+                embedding: semanticEmbedding
+            )
+            for (path, impact) in semanticOutcome.limitations {
+                coverageIncomplete = true
+                if limitedPaths.insert(path).inserted {
+                    resourceLimitedFiles += 1
+                }
+                if let sample = try SearchResourceDiagnostics.sample(
+                    path: path,
+                    reason: .matching,
+                    impact: impact
+                ) {
+                    resourceLimitSamples = SearchResourceDiagnostics.merged(
+                        resourceLimitSamples,
+                        [sample]
+                    )
+                }
+            }
+            for candidate in semanticOutcome.candidates {
+                try accept(
+                    candidate,
+                    strategy: .smart,
+                    minimumRelevance: validated.request.minimumRelevance,
+                    ranked: &ranked,
+                    acceptedIdentities: &acceptedIdentities,
+                    acceptedHitsByPath: &acceptedHitsByPath,
+                    maximumHitsPerFile: validated.request.maxHitsPerFile,
+                    moreResultsAvailable: &moreResultsAvailable,
+                    skippedSensitive: &skippedSensitive,
+                    coverageIncomplete: &coverageIncomplete
+                )
+            }
+        }
+
         applyRarityTieBreak(to: &ranked)
         ranked.sort { isBetter($0, than: $1) }
         let offset = validated.cursorOffset
@@ -378,9 +433,40 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     ) throws {
         if strategy == .fuzzy, candidate.result.termCoverage < 1 { return }
         guard candidate.result.relevance >= minimumRelevance else { return }
-        guard acceptedHitsByPath[candidate.result.path, default: 0]
-                < maximumHitsPerFile else { return }
-        guard acceptedIdentities.insert(identity(of: candidate.result)).inserted else {
+        let candidateIdentity = identity(of: candidate.result)
+        if let existing = ranked.firstIndex(where: {
+            identity(of: $0.result) == candidateIdentity
+        }) {
+            guard isBetter(candidate, than: ranked[existing]) else { return }
+            do {
+                try validateProjection(candidate.result)
+            } catch is SensitiveContentPolicy.Violation {
+                skippedSensitive += 1
+                coverageIncomplete = true
+                return
+            }
+            ranked[existing] = candidate
+            return
+        }
+
+        if acceptedHitsByPath[candidate.result.path, default: 0]
+            >= maximumHitsPerFile {
+            let samePath = ranked.indices.filter {
+                ranked[$0].result.path == candidate.result.path
+            }
+            guard let worstForPath = samePath.max(by: {
+                isBetter(ranked[$0], than: ranked[$1])
+            }), isBetter(candidate, than: ranked[worstForPath]) else { return }
+            do {
+                try validateProjection(candidate.result)
+            } catch is SensitiveContentPolicy.Violation {
+                skippedSensitive += 1
+                coverageIncomplete = true
+                return
+            }
+            acceptedIdentities.remove(identity(of: ranked[worstForPath].result))
+            acceptedIdentities.insert(candidateIdentity)
+            ranked[worstForPath] = candidate
             return
         }
         do {
@@ -390,8 +476,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             coverageIncomplete = true
             return
         }
-        acceptedHitsByPath[candidate.result.path, default: 0] += 1
         if ranked.count < limits.maximumCandidates {
+            acceptedIdentities.insert(candidateIdentity)
+            acceptedHitsByPath[candidate.result.path, default: 0] += 1
             ranked.append(candidate)
             return
         }
@@ -402,6 +489,11 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             worst = index
         }
         if isBetter(candidate, than: ranked[worst]) {
+            let removed = ranked[worst].result
+            acceptedIdentities.remove(identity(of: removed))
+            acceptedHitsByPath[removed.path, default: 1] -= 1
+            acceptedIdentities.insert(candidateIdentity)
+            acceptedHitsByPath[candidate.result.path, default: 0] += 1
             ranked[worst] = candidate
         }
     }
@@ -579,6 +671,27 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             : min(Double(coveredTerms.count) / Double(queryTerms.count), 1)
         let strongestStrength = matches.map(\.match.strength).max() ?? 0
         let strongestField = matches.map { relevanceFieldStrength($0.field) }.max() ?? 0
+        let completeCohesion = matches
+            .filter(\.match.completeQuery)
+            .map(\.match.cohesion)
+            .max()
+        let strongestSingleFieldCoverage = matches
+            .map { $0.match.coveredTerms.count }
+            .max() ?? 0
+        let requiresDistributedFields = strongestSingleFieldCoverage
+            < coveredTerms.count
+        let evidenceCohesion: Double
+        if queryTerms.count <= 1 {
+            evidenceCohesion = 1
+        } else if let completeCohesion {
+            evidenceCohesion = completeCohesion
+        } else {
+            // A partial match can still be a very cohesive local passage. Apply
+            // the distribution penalty only when no single field supplies all
+            // of the evidence accumulated for this result.
+            evidenceCohesion = (matches.map(\.match.cohesion).max() ?? 0)
+                * (requiresDistributedFields ? 0.25 : 1)
+        }
         let strongestDensity = matches.map { match in
             // Density is a small tie signal, so a bounded byte-derived estimate
             // is preferable to allocating an unbounded second token projection.
@@ -598,17 +711,33 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                     query.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
         }
-        let unadjustedRelevance = titleEqualsQuery ? 1 : quantized(
-            min(max(
-                (0.72 * termCoverage)
-                    + (0.18 * strongestStrength)
-                    + (0.08 * strongestField)
-                    + (0.02 * strongestDensity),
-                0
-            ), 1)
-        )
+        let semanticSimilarity = matches
+            .filter { $0.match.kind == .semantic }
+            .map(\.match.strength)
+            .max()
+        let unadjustedRelevance: Double
+        if let semanticSimilarity {
+            unadjustedRelevance = semanticRelevance(
+                forSimilarity: semanticSimilarity
+            )
+        } else {
+            unadjustedRelevance = titleEqualsQuery ? 1 : quantized(
+                min(max(
+                    (0.64 * termCoverage)
+                        + (0.16 * strongestStrength)
+                        + (0.08 * strongestField)
+                        + (0.10 * evidenceCohesion)
+                        + (0.02 * strongestDensity),
+                    0
+                ), 1)
+            )
+        }
+        // Evidence assembled across unrelated fields remains useful, but it
+        // must not present itself as a >0.90 near-exact match.
+        let fieldAdjustedRelevance = requiresDistributedFields
+            ? min(unadjustedRelevance, 0.899) : unadjustedRelevance
         let relevance = quantized(
-            unadjustedRelevance * pageRelevanceMultiplier(pdfPageKind)
+            fieldAdjustedRelevance * pageRelevanceMultiplier(pdfPageKind)
         )
         let primary = matches.map {
             ($0.match.quality * 100) + fieldWeight($0.field)
@@ -669,6 +798,171 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         }
     }
 
+    private func shouldRunSemanticFallback(
+        _ request: SearchResourcePolicy.ValidatedRequest
+    ) -> Bool {
+        guard request.request.strategy == .smart,
+              request.fields.contains(.content),
+              request.areas.contains(.notes),
+              !SearchQueryAnalyzer.containsSymbolSyntax(request.request.query) else {
+            return false
+        }
+        let allTerms = SearchTokenizer.tokens(in: request.request.query)
+        let significantTerms = request.queryTokens
+        let uniqueSignificantTerms = Set(significantTerms.map(\.normalized))
+        guard uniqueSignificantTerms.count >= 5 else { return false }
+        let hasConversationalShape = allTerms.count >= significantTerms.count + 2
+            || request.request.query.contains("?")
+        return hasConversationalShape
+    }
+
+    private func semanticFallbackResults(
+        in documents: [SearchDocument],
+        request: SearchResourcePolicy.ValidatedRequest,
+        embedding: any SearchSemanticEmbedding
+    ) throws -> SemanticFallbackOutcome {
+        let query = try SearchSemanticTextProjection.bounded(
+            from: request.request.query
+        ).value
+        guard let queryVector = validSemanticVector(
+            embedding.embedding(for: query, retention: .transient)
+        ) else {
+            return SemanticFallbackOutcome(candidates: [], limitations: [:])
+        }
+
+        let maximumEvaluatedSections = 512
+        var evaluatedSections = 0
+        var candidates: [RankedResult] = []
+        var limitations: [String: VaultSearchResourceLimitImpact] = [:]
+        for document in documents {
+            try Task.checkCancellation()
+            guard document.format != .pdf,
+                  (try? VaultArea.resolve(path: document.path)) == .notes else {
+                continue
+            }
+            var evaluatedInDocument = false
+            for section in document.sections {
+                try Task.checkCancellation()
+                guard evaluatedSections < maximumEvaluatedSections else {
+                    limitations[document.path] = evaluatedInDocument
+                        ? .partial : .omitted
+                    break
+                }
+                let boundedProjection = try SearchSemanticTextProjection.bounded(
+                    from: section.content
+                )
+                let projection = boundedProjection.value
+                if boundedProjection.truncated, projection.isEmpty {
+                    limitations[document.path] = evaluatedInDocument
+                        ? .partial : .omitted
+                }
+                guard !projection.isEmpty else { continue }
+                evaluatedSections += 1
+                evaluatedInDocument = true
+                if limitations[document.path] != nil {
+                    limitations[document.path] = .partial
+                }
+                if boundedProjection.truncated {
+                    limitations[document.path] = .partial
+                }
+                guard let sourceVector = validSemanticVector(
+                    embedding.embedding(for: projection, retention: .reusable)
+                ),
+                      sourceVector.count == queryVector.count,
+                      let similarity = cosineSimilarity(
+                          queryVector,
+                          sourceVector
+                      ),
+                      similarity >= Self.minimumSemanticSimilarity else {
+                    continue
+                }
+                let match = SearchMatch(
+                    quality: 50 + (40 * similarity),
+                    strength: similarity,
+                    range: nil,
+                    coveredTerms: [],
+                    completeQuery: false,
+                    cohesion: 0,
+                    kind: .semantic
+                )
+                candidates.append(rankedResult(
+                    document: document,
+                    matches: [FieldMatch(
+                        field: .content,
+                        text: section.content,
+                        match: match
+                    )],
+                    source: section.content,
+                    range: nil,
+                    heading: section.heading,
+                    location: section.location,
+                    lineStart: section.lineStart,
+                    lineEnd: section.lineEnd,
+                    queryTokens: request.queryTokens,
+                    query: request.request.query
+                ))
+            }
+        }
+        return SemanticFallbackOutcome(
+            candidates: bestSemanticCandidates(candidates, request: request),
+            limitations: limitations
+        )
+    }
+
+    // Apple's sentence model uses a conservative cosine scale: strong
+    // paraphrases commonly land around 0.4–0.6 rather than near 1. Semantic
+    // fallback runs only when ordinary smart evidence remains below the strong
+    // result floor, so this restores paraphrase recall without perturbing
+    // confident literal hits.
+    private static let minimumSemanticSimilarity = 0.40
+    private static let semanticFallbackStrongResultFloor = 0.90
+    private static let maximumSemanticDimensions = 2_048
+
+    private func semanticRelevance(forSimilarity similarity: Double) -> Double {
+        let normalized = (similarity - Self.minimumSemanticSimilarity)
+            / (1 - Self.minimumSemanticSimilarity)
+        return quantized(min(max(0.60 + (0.40 * normalized), 0), 1))
+    }
+
+    private func bestSemanticCandidates(
+        _ candidates: [RankedResult],
+        request: SearchResourcePolicy.ValidatedRequest
+    ) -> [RankedResult] {
+        var bestByPath: [String: [RankedResult]] = [:]
+        for candidate in candidates {
+            bestByPath[candidate.result.path, default: []].append(candidate)
+        }
+        return bestByPath.values.flatMap { values in
+            values.sorted { isBetter($0, than: $1) }
+                .prefix(request.request.maxHitsPerFile)
+        }.sorted { isBetter($0, than: $1) }
+    }
+
+    private func validSemanticVector(_ vector: [Double]?) -> [Double]? {
+        guard let vector,
+              !vector.isEmpty,
+              vector.count <= Self.maximumSemanticDimensions,
+              vector.allSatisfy(\.isFinite) else { return nil }
+        return vector
+    }
+
+    private func cosineSimilarity(
+        _ lhs: [Double],
+        _ rhs: [Double]
+    ) -> Double? {
+        guard lhs.count == rhs.count, !lhs.isEmpty else { return nil }
+        var dot = 0.0
+        var lhsNorm = 0.0
+        var rhsNorm = 0.0
+        for index in lhs.indices {
+            dot += lhs[index] * rhs[index]
+            lhsNorm += lhs[index] * lhs[index]
+            rhsNorm += rhs[index] * rhs[index]
+        }
+        guard lhsNorm > 0, rhsNorm > 0 else { return nil }
+        return min(max(dot / sqrt(lhsNorm * rhsNorm), -1), 1)
+    }
+
     private func pageRelevanceMultiplier(
         _ kind: PDFSearchPageKind?
     ) -> Double {
@@ -698,6 +992,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             unavailableFileCount: statuses.count(where: {
                 $0 == .locked || $0 == .cannotOpen
                     || $0 == .contentSkippedFileBytes
+                    || $0 == .indexUnavailable
             }),
             ocrPerformed: false
         )

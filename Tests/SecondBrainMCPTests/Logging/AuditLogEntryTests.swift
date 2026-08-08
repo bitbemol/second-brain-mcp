@@ -36,6 +36,20 @@ struct AuditLogEntryTests {
         #expect(entry.contains("READ_REF"))
     }
 
+    @Test("Directory moves have a distinct stable audit operation")
+    func moveOperation() {
+        let entry = AuditLogEntry(
+            timestamp: "2026-08-06T12:00:00Z",
+            operation: .move,
+            area: .notes,
+            path: "notes/in-progress/ticket-123",
+            details: "destination=notes/completed/ticket-123"
+        ).line
+
+        #expect(entry.contains("MOVE"))
+        #expect(entry.contains("notes/completed/ticket-123"))
+    }
+
     @Test("Bounds caller-controlled fields")
     func boundsFields() {
         let entry = AuditLogEntry(

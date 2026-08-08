@@ -37,19 +37,22 @@ struct SearchCorpusBuilder: Sendable {
     private let operations: VaultOperationCoordinator
     private let capabilities: SearchCapabilities
     private let limits: SearchResourceLimits
+    private let pdfIndex: PDFSearchIndex?
 
     init(
         vaultPath: String,
         store: VaultCRUDStore,
         operations: VaultOperationCoordinator,
         capabilities: SearchCapabilities,
-        limits: SearchResourceLimits
+        limits: SearchResourceLimits,
+        pdfIndex: PDFSearchIndex? = nil
     ) {
         self.vaultPath = vaultPath
         self.store = store
         self.operations = operations
         self.capabilities = capabilities
         self.limits = limits
+        self.pdfIndex = pdfIndex
     }
 
     /// Builds safe immutable projections before ranking begins.
@@ -68,6 +71,63 @@ struct SearchCorpusBuilder: Sendable {
         var aggregateSections = 0
         var coverageIncomplete = enumeration.coverageIncomplete
         var candidateStates: [String: String] = [:]
+        var indexedPDFs: [String: PDFIndexedSearchDocument] = [:]
+        var unavailableIndexedPDFPaths = Set<String>()
+        var sensitiveIndexedPDFPaths = Set<String>()
+        var fileByteLimitedPDFPaths = Set<String>()
+        var pdfCandidateSelectionLimited = false
+        var reportedPDFCandidateSelectionLimit = false
+
+        if request.formats.contains(.pdf),
+           request.fields.contains(.title) || request.fields.contains(.content) {
+            var targets: [ReadableFileTarget] = []
+            for candidate in enumeration.candidates where candidate.format == .pdf {
+                try Task.checkCancellation()
+                guard (try? candidateAncestorsRemainSearchable(candidate.path)) == true,
+                      let target = try? ReadableFileTarget.resolve(
+                          path: candidate.path,
+                          format: .pdf,
+                          vaultPath: vaultPath
+                      ),
+                      Self.matchesEnumeratedLocation(
+                          target: target,
+                          candidatePath: candidate.path,
+                          vaultPath: vaultPath
+                      ) else { continue }
+                do {
+                    try SensitiveContentPolicy.validate(
+                        Data(candidate.path.utf8),
+                        format: .markdown,
+                        path: "search candidate path"
+                    )
+                    targets.append(target)
+                } catch is SensitiveContentPolicy.Violation {
+                    sensitiveIndexedPDFPaths.insert(candidate.path)
+                }
+            }
+            if let pdfIndex {
+                do {
+                    let batch = try await pdfIndex.indexedDocuments(
+                        targets: targets,
+                        request: request,
+                        authoritativeScopePrefix: enumeration.coverageIncomplete
+                            || request.scopePrefixes.count != 1
+                            ? nil : request.scopePrefixes.first
+                    )
+                    indexedPDFs = batch.documentsByPath
+                    unavailableIndexedPDFPaths = batch.unavailablePaths
+                    sensitiveIndexedPDFPaths.formUnion(batch.sensitivePaths)
+                    fileByteLimitedPDFPaths.formUnion(batch.fileByteLimitedPaths)
+                    pdfCandidateSelectionLimited = batch.candidateLimited
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    unavailableIndexedPDFPaths.formUnion(targets.map(\.relativePath))
+                }
+            } else {
+                unavailableIndexedPDFPaths.formUnion(targets.map(\.relativePath))
+            }
+        }
 
         for candidate in enumeration.candidates {
             try Task.checkCancellation()
@@ -115,6 +175,172 @@ struct SearchCorpusBuilder: Sendable {
             } catch is SensitiveContentPolicy.Violation {
                 skippedSensitiveFiles += 1
                 coverageIncomplete = true
+                continue
+            }
+
+            // A pure path query is fully answerable from the validated current
+            // descriptor for every supported format. It must not snapshot,
+            // parse, or inherit unrelated body/title coverage failures.
+            if request.fields == Set([SearchField.path]) {
+                do {
+                    try VaultFileInspector.validateSearchableDescriptor(
+                        target,
+                        vaultRoot: URL(fileURLWithPath: vaultPath)
+                    )
+                } catch {
+                    skippedFiles += 1
+                    coverageIncomplete = true
+                    candidateStates[candidate.path] = "descriptor_rejected"
+                    continue
+                }
+                let boundedTitle = PDFDisplayText.bounded(
+                    MarkdownSupport.titleFromFilename(
+                        (candidate.path as NSString).lastPathComponent
+                    ),
+                    maximumCharacters: limits.maximumMetadataCharacters,
+                    maximumBytes: limits.maximumMetadataBytes
+                )
+                let document = SearchDocument(
+                    path: candidate.path,
+                    format: candidate.format,
+                    title: boundedTitle.value,
+                    tags: [],
+                    sections: [],
+                    pdfTextExtractionStatus: candidate.format == .pdf
+                        ? .metadataOnly : nil
+                )
+                let retainedBytes = projectionByteCount(document)
+                guard retainedBytes <= max(
+                    limits.maximumAggregateProjectionBytes
+                        - aggregateProjectionBytes,
+                    0
+                ) else {
+                    resourceLimitedFiles += 1
+                    coverageIncomplete = true
+                    continue
+                }
+                documents.append(document)
+                aggregateProjectionBytes += retainedBytes
+                candidateStates[candidate.path] = "path_descriptor"
+                continue
+            }
+
+            if candidate.format == .pdf,
+               request.fields.contains(.title)
+                || request.fields.contains(.content) {
+                if sensitiveIndexedPDFPaths.contains(candidate.path) {
+                    skippedSensitiveFiles += 1
+                    coverageIncomplete = true
+                    candidateStates[candidate.path] = "sensitive"
+                    continue
+                }
+                guard !unavailableIndexedPDFPaths.contains(candidate.path),
+                      let indexed = indexedPDFs[candidate.path] else {
+                    let title = PDFDisplayText.bounded(
+                        MarkdownSupport.titleFromFilename(
+                            (candidate.path as NSString).lastPathComponent
+                        ),
+                        maximumCharacters: limits.maximumMetadataCharacters,
+                        maximumBytes: limits.maximumMetadataBytes
+                    ).value
+                    documents.append(SearchDocument(
+                        path: candidate.path,
+                        format: .pdf,
+                        title: title,
+                        tags: [],
+                        sections: [],
+                        pdfTextExtractionStatus: fileByteLimitedPDFPaths
+                            .contains(candidate.path)
+                            ? .contentSkippedFileBytes : .indexUnavailable
+                    ))
+                    candidateStates[candidate.path] = "index_unavailable"
+                    if request.fields.contains(.title) || request.fields.contains(.content) {
+                        resourceLimitedFiles += 1
+                        coverageIncomplete = true
+                        partiallyLimitedPaths.insert(candidate.path)
+                        if let sample = try SearchResourceDiagnostics.sample(
+                            path: candidate.path,
+                            reason: fileByteLimitedPDFPaths.contains(candidate.path)
+                                ? .fileBytes : .projection,
+                            impact: .partial
+                        ) {
+                            resourceLimitSamples = SearchResourceDiagnostics.merged(
+                                resourceLimitSamples,
+                                [sample]
+                            )
+                        }
+                    }
+                    continue
+                }
+                let retainedBytes = projectionByteCount(indexed.document)
+                let remainingProjection = max(
+                    limits.maximumAggregateProjectionBytes
+                        - aggregateProjectionBytes,
+                    0
+                )
+                let remainingSections = max(
+                    limits.maximumAggregateSections - aggregateSections,
+                    0
+                )
+                guard retainedBytes <= remainingProjection,
+                      indexed.document.sections.count <= remainingSections else {
+                    resourceLimitedFiles += 1
+                    coverageIncomplete = true
+                    partiallyLimitedPaths.insert(candidate.path)
+                    let metadata = SearchDocument(
+                        path: indexed.document.path,
+                        format: .pdf,
+                        title: indexed.document.title,
+                        tags: [],
+                        sections: [],
+                        pdfTextExtractionStatus: .partial
+                    )
+                    let metadataBytes = projectionByteCount(metadata)
+                    if metadataBytes <= remainingProjection {
+                        documents.append(metadata)
+                        aggregateProjectionBytes += metadataBytes
+                    }
+                    if let sample = try SearchResourceDiagnostics.sample(
+                        path: candidate.path,
+                        reason: .projection,
+                        impact: .partial
+                    ) {
+                        resourceLimitSamples = SearchResourceDiagnostics.merged(
+                            resourceLimitSamples,
+                            [sample]
+                        )
+                    }
+                    continue
+                }
+                documents.append(indexed.document)
+                aggregateProjectionBytes += retainedBytes
+                aggregateSections += indexed.document.sections.count
+                candidateStates[candidate.path] = "index:\(indexed.revisionState)"
+                let contentIncomplete = request.fields.contains(.content)
+                    && indexed.document.pdfTextExtractionStatus != .extracted
+                    && indexed.document.pdfTextExtractionStatus != .noExtractableText
+                let titleIncomplete = request.fields.contains(.title)
+                    && (indexed.titleTruncated
+                        || indexed.document.pdfTextExtractionStatus == .cannotOpen)
+                let globalCandidateLimit = pdfCandidateSelectionLimited
+                    && !reportedPDFCandidateSelectionLimit
+                if globalCandidateLimit { reportedPDFCandidateSelectionLimit = true }
+                if contentIncomplete || titleIncomplete || indexed.candidateLimited
+                    || globalCandidateLimit {
+                    resourceLimitedFiles += 1
+                    coverageIncomplete = true
+                    partiallyLimitedPaths.insert(candidate.path)
+                    if let sample = try SearchResourceDiagnostics.sample(
+                        path: candidate.path,
+                        reason: .projection,
+                        impact: .partial
+                    ) {
+                        resourceLimitSamples = SearchResourceDiagnostics.merged(
+                            resourceLimitSamples,
+                            [sample]
+                        )
+                    }
+                }
                 continue
             }
 

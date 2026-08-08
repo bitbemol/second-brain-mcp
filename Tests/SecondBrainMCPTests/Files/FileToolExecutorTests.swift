@@ -72,6 +72,8 @@ struct FileToolExecutorTests {
             path: "notes/page.md"
         )))
 
-        #expect(await service.recordedOperations() == FileCRUDOperation.allCases)
+        #expect(await service.recordedOperations() == [
+            .create, .read, .update, .delete,
+        ])
     }
 }

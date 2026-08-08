@@ -8,7 +8,8 @@ struct VaultSearchRequest: Sendable {
     let fields: [SearchField]?
     /// Optional concrete format selection; `nil` means every searchable format.
     let formats: [FileFormat]?
-    /// Optional structural-area selection; `nil` means every searchable area.
+    /// Optional structural-area selection; `nil` defaults to notes unless a
+    /// format or path prefix unambiguously selects another area.
     let areas: [VaultArea]?
     /// Optional vault-relative directory prefix used to narrow traversal.
     let pathPrefix: String?

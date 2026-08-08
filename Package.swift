@@ -18,7 +18,8 @@ let package = Package(
             name: "SecondBrainMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk")
-            ]
+            ],
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .testTarget(
             name: "SecondBrainMCPTests",

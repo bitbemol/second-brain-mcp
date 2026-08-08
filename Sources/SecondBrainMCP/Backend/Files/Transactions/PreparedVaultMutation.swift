@@ -1,7 +1,19 @@
 /// Backend-only evidence needed to prove a persisted mutation before recovery.
 enum VaultMutationRecoveryEvidence: Sendable, Codable {
+    /// Source inode captured before an atomic directory rename begins.
+    case directoryMoveIntent(
+        sourcePath: String,
+        destinationPath: String,
+        identity: DirectoryTreeStore.Identity
+    )
     /// Exact soft-deleted artifact that must still exist under vault trash.
     case softDeleted(path: String, revision: FileRevision)
+    /// Directory inode that must remain at the recovered move destination.
+    case movedDirectory(
+        sourcePath: String,
+        destinationPath: String,
+        identity: DirectoryTreeStore.Identity
+    )
 }
 
 /// Result returned by a persistence closure before Git sequencing begins.

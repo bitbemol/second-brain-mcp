@@ -72,7 +72,7 @@ struct VaultMutationRecovery: Sendable {
                         activeMutation: active.identifier
                     )
                 }
-            case .prePersistence, .outcomeUnknown:
+            case .prePersistence, .prePersistenceWithEvidence, .outcomeUnknown:
                 throw VaultMutationExecutor.ExecutionError.recoveryRequired(
                     activeMutation: active.identifier
                 )
@@ -117,6 +117,9 @@ struct VaultMutationRecovery: Sendable {
                 fingerprint: fingerprint
             )
             return .proceed
+        case .prePersistenceWithEvidence:
+            throw VaultMutationExecutor.ExecutionError
+                .priorAttemptOutcomeUnknown(identifier)
         case .outcomeUnknown:
             throw VaultMutationExecutor.ExecutionError
                 .priorAttemptOutcomeUnknown(identifier)

@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Prepared process-owned storage associated with one managed vault.
@@ -14,12 +15,18 @@ struct VaultDataDirectory: Sendable {
     let lockDirectoryURL: URL
     /// Durable successful-mutation receipts used for timeout-safe replay.
     let receiptDirectoryURL: URL
+    /// Derived persistent search data that never enters the managed vault.
+    let searchIndexDirectoryURL: URL
 
     private init(rootURL: URL) {
         self.rootURL = rootURL
         self.auditLogURL = rootURL.appendingPathComponent("audit.log")
         self.lockDirectoryURL = rootURL.appendingPathComponent("locks", isDirectory: true)
         self.receiptDirectoryURL = rootURL.appendingPathComponent("receipts", isDirectory: true)
+        self.searchIndexDirectoryURL = rootURL.appendingPathComponent(
+            "search-index",
+            isDirectory: true
+        )
     }
 
     /// Prepares production process storage for one vault.
@@ -77,6 +84,10 @@ struct VaultDataDirectory: Sendable {
             fileManager: fileManager
         )
         try prepareDirectory(directory.receiptDirectoryURL, fileManager: fileManager)
+        try preparePrivateDirectory(
+            directory.searchIndexDirectoryURL,
+            fileManager: fileManager
+        )
         if migrateLegacyData {
             try directory.migrateLegacyData(
                 from: vaultPath,
@@ -126,6 +137,24 @@ struct VaultDataDirectory: Sendable {
         }
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
         guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
+    /// Derived search data may contain extracted vault text, so its directory
+    /// must remain private even when an older installation created it loosely.
+    private static func preparePrivateDirectory(
+        _ url: URL,
+        fileManager: FileManager
+    ) throws {
+        try prepareDirectory(url, fileManager: fileManager)
+        var value = stat()
+        guard Darwin.lstat(url.path, &value) == 0,
+              value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == geteuid() else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        guard Darwin.chmod(url.path, 0o700) == 0 else {
             throw CocoaError(.fileWriteNoPermission)
         }
     }

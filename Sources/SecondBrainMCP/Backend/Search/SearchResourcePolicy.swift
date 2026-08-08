@@ -139,23 +139,8 @@ enum SearchResourcePolicy {
             fields = Set(SearchField.allCases)
         }
 
-        let areas: Set<VaultArea>
-        if let requested = request.areas {
-            guard !requested.isEmpty else {
-                throw VaultSearchRequestError.emptySelection("areas")
-            }
-            guard requested.count <= capabilities.areas.count,
-                  Set(requested).count == requested.count,
-                  requested.allSatisfy(capabilities.areas.contains) else {
-                throw VaultSearchRequestError.invalidSelection("areas")
-            }
-            areas = Set(requested)
-        } else {
-            areas = Set(capabilities.areas)
-        }
-
         let supported = Set(capabilities.formats)
-        let formats: Set<FileFormat>
+        let explicitlyRequestedFormats: Set<FileFormat>?
         if let requested = request.formats {
             guard !requested.isEmpty else {
                 throw VaultSearchRequestError.emptySelection("formats")
@@ -167,7 +152,48 @@ enum SearchResourcePolicy {
             for format in requested where !supported.contains(format) {
                 throw VaultSearchRequestError.unsupportedFormat(format)
             }
-            formats = Set(requested)
+            explicitlyRequestedFormats = Set(requested)
+        } else {
+            explicitlyRequestedFormats = nil
+        }
+
+        let areas: Set<VaultArea>
+        if let requested = request.areas {
+            guard !requested.isEmpty else {
+                throw VaultSearchRequestError.emptySelection("areas")
+            }
+            guard requested.count <= capabilities.areas.count,
+                  Set(requested).count == requested.count,
+                  requested.allSatisfy(capabilities.areas.contains) else {
+                throw VaultSearchRequestError.invalidSelection("areas")
+            }
+            areas = Set(requested)
+        } else if let rawPrefix = request.pathPrefix,
+                  let areaName = rawPrefix.split(
+                      separator: "/",
+                      omittingEmptySubsequences: true
+                  ).first,
+                  let inferred = VaultArea(rawValue: String(areaName)),
+                  capabilities.areas.contains(inferred) {
+            areas = [inferred]
+        } else if let explicitlyRequestedFormats {
+            areas = Set(capabilities.areas.filter { area in
+                explicitlyRequestedFormats.contains(where: {
+                    capabilities.supports($0, in: area)
+                })
+            })
+        } else {
+            // Keep ordinary note discovery fast. References remain available
+            // through an explicit area, a PDF format, or references/ prefix.
+            areas = capabilities.areas.contains(.notes) ? [.notes] : []
+        }
+        guard !areas.isEmpty else {
+            throw VaultSearchRequestError.invalidSelection("areas")
+        }
+
+        let formats: Set<FileFormat>
+        if let explicitlyRequestedFormats {
+            formats = explicitlyRequestedFormats
         } else {
             formats = areas.reduce(into: Set<FileFormat>()) { result, area in
                 result.formUnion(capabilities.formats(in: area))

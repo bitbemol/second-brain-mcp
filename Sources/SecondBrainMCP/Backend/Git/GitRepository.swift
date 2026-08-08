@@ -78,6 +78,56 @@ actor GitRepository {
         ])
     }
 
+    /// Stages both sides of one directory rename and commits only that subtree move.
+    func commitMove(
+        sourcePath: String,
+        destinationPath: String,
+        message: String
+    ) async throws {
+        // The source no longer exists in the worktree. `git rm --cached` is
+        // replay-safe even after a previous failed commit already staged the
+        // deletion; destination staging then captures every moved descendant.
+        try await run([
+            "--literal-pathspecs", "rm", "-r", "--cached", "--ignore-unmatch",
+            "--", sourcePath
+        ])
+        try await run([
+            "--literal-pathspecs", "add", "-A", "--", destinationPath
+        ])
+        let destination = try NotesDirectoryTarget.resolve(
+            path: destinationPath,
+            vaultPath: repoPath
+        )
+        try DirectoryMoveSecurityPreflight.validate(destination)
+        // The staged bytes must still equal the just-validated worktree. This
+        // prevents a concurrent external edit from entering the commit between
+        // validation and the path-scoped commit.
+        try await run([
+            "--literal-pathspecs", "diff", "--quiet", "--", destinationPath
+        ])
+        try await run([
+            "--literal-pathspecs", "commit", "--only", "-m",
+            Self.sanitizeCommitMessage(message),
+            "--", sourcePath, destinationPath
+        ])
+    }
+
+    /// Reports whether a mutation-aware commit touches the supplied destination.
+    func containsMutationCommit(
+        identifier: MutationID,
+        paths: [String]
+    ) async throws -> Bool {
+        let output = try await run([
+            "--literal-pathspecs",
+            "log",
+            "--fixed-strings",
+            "--grep=[mutation \(identifier.rawValue)]",
+            "--format=%H",
+            "--"
+        ] + paths)
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Reports whether Git already contains the uniquely identified mutation.
     ///
     /// Commit-only recovery calls this before creating a commit so a crash after

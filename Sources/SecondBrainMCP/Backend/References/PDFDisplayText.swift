@@ -42,7 +42,10 @@ enum PDFDisplayText {
             return Bounded(value: "", truncated: !value.isEmpty)
         }
         var result = ""
-        result.reserveCapacity(maximumBytes)
+        // The ceiling may be several MiB for page text. Reserving that full
+        // amount for every short page multiplies retained capacity across an
+        // indexed book, so begin small and let genuinely large values grow.
+        result.reserveCapacity(min(maximumBytes, 4 * 1_024))
         var retainedBytes = 0
         var retainedCharacters = 0
         for character in value {

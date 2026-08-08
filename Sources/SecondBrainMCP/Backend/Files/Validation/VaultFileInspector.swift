@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -5,11 +6,21 @@ import Foundation
 struct VaultTemporaryFileSnapshot: Sendable {
     let url: URL
     let byteCount: Int
+    let metadata: RegularFileMetadata
+    let revision: FileRevision
     private let directoryURL: URL
 
-    fileprivate init(url: URL, byteCount: Int, directoryURL: URL) {
+    fileprivate init(
+        url: URL,
+        byteCount: Int,
+        metadata: RegularFileMetadata,
+        revision: FileRevision,
+        directoryURL: URL
+    ) {
         self.url = url
         self.byteCount = byteCount
+        self.metadata = metadata
+        self.revision = revision
         self.directoryURL = directoryURL
     }
 
@@ -103,6 +114,27 @@ enum VaultFileInspector {
         }
     }
 
+    /// Returns descriptor-bound metadata without reading file bytes.
+    static func stableMetadata(
+        _ target: ReadableFileTarget,
+        vaultRoot: URL
+    ) throws -> RegularFileMetadata {
+        try target.revalidate()
+        do {
+            return try BoundedFileReader.withStableFileDescriptor(
+                fromCanonical: target.url,
+                maximumBytes: target.format.maximumFileBytes,
+                path: target.relativePath,
+                rejectHiddenDescendantsOf: vaultRoot
+            ) { _, _ in () }.metadata
+        } catch BoundedFileReader.ReadError.notFound {
+            throw InspectionError.notFound(target.relativePath)
+        } catch BoundedFileReader.ReadError.notARegularFile,
+                BoundedFileReader.ReadError.hiddenComponent {
+            throw InspectionError.notARegularFile(target.relativePath)
+        }
+    }
+
     /// Streams one stable descriptor into private storage for URL-only decoders.
     static func temporarySnapshot(
         _ target: ReadableFileTarget,
@@ -134,6 +166,7 @@ enum VaultFileInspector {
                 path: target.relativePath
             ) { descriptor, _ in
                 var copiedBytes = 0
+                var digest = SHA256()
                 var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
                 while true {
                     try Task.checkCancellation()
@@ -155,16 +188,21 @@ enum VaultFileInspector {
                             limit: maximumBytes
                         )
                     }
-                    try output.write(contentsOf: Data(buffer.prefix(count)))
+                    let chunk = Data(buffer.prefix(count))
+                    digest.update(data: chunk)
+                    try output.write(contentsOf: chunk)
                 }
-                return copiedBytes
+                return (copiedBytes, digest.finalize())
             }
-            guard copied.value == copied.metadata.byteCount else {
+            guard copied.value.0 == copied.metadata.byteCount else {
                 throw BoundedFileReader.ReadError.changedDuringRead
             }
+            let digest = copied.value.1.map { String(format: "%02x", $0) }.joined()
             return VaultTemporaryFileSnapshot(
                 url: snapshotURL,
-                byteCount: copied.value,
+                byteCount: copied.value.0,
+                metadata: copied.metadata,
+                revision: FileRevision(validatedSHA256Hex: digest),
                 directoryURL: directoryURL
             )
         } catch BoundedFileReader.ReadError.notFound {

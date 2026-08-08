@@ -8,6 +8,7 @@ struct MCPServerSetup {
     /// - Parameters:
     ///   - config: Validated runtime configuration.
     ///   - files: Shared file CRUD service boundary.
+    ///   - directories: Atomic recursive directory-move boundary.
     ///   - search: Shared read-only vault search boundary.
     ///   - capabilities: Immutable format capability manifest.
     ///   - searchCapabilities: Searchable formats derived from the manifest.
@@ -16,6 +17,7 @@ struct MCPServerSetup {
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
+        directories: any DirectoryMoveService,
         search: any VaultSearchService,
         capabilities: FileCapabilities,
         searchCapabilities: SearchCapabilities,
@@ -27,6 +29,11 @@ struct MCPServerSetup {
             files: files
         )
         let searchTool = SearchToolController(search: search)
+        let directoryTool = DirectoryMoveToolController(
+            readOnly: config.readOnly,
+            rejections: rejections,
+            directories: directories
+        )
         let customInstructions = CustomInstructionsLoader.load(
             vaultPath: config.vaultPath
         )
@@ -36,13 +43,14 @@ struct MCPServerSetup {
             instructions: """
             This is a personal knowledge vault with format-aware file access. \
             Use search_vault to discover notes, then create_file, read_file, update_file, \
-            and delete_file with an explicit \
+            delete_file, or move_directory with an explicit \
             concrete format. Read secondbrain://file-capabilities before operating when \
             format support is uncertain. Every file mutation that changes vault bytes is \
             automatically committed to git. Every mutation requires a fresh caller-generated mutation_id UUID; \
             reuse it only when retrying that exact request after a lost response. Before \
             update_file or delete_file, read the note and return its structured revision \
-            as expected_revision. A revision conflict requires reading and reconsidering \
+            as expected_revision. Use move_directory to relocate an entire notes subtree \
+            in one call; do not recreate or move its files individually. A revision conflict requires reading and reconsidering \
             the note, never blindly retrying. The references/ area is read-only. Paths are \
             always relative to the vault root (for example, "notes/projects/app.md").
             """ + (customInstructions.map { "\n\n" + $0 } ?? ""),
@@ -57,16 +65,22 @@ struct MCPServerSetup {
                 capabilities: capabilities,
                 readOnly: config.readOnly
             )
-            return ListTools.Result(
-                tools: fileDefinitions + [SearchToolDefinition.build(
-                    capabilities: searchCapabilities
-                )]
-            )
+            var tools = fileDefinitions
+            if let directoryDefinition = DirectoryMoveToolDefinition.build(
+                readOnly: config.readOnly
+            ) {
+                tools.append(directoryDefinition)
+            }
+            tools.append(SearchToolDefinition.build(capabilities: searchCapabilities))
+            return ListTools.Result(tools: tools)
         }
 
         await server.withMethodHandler(CallTool.self) { params in
             if params.name == SearchToolDefinition.name {
                 return try await searchTool.call(params)
+            }
+            if params.name == DirectoryMoveToolDefinition.name {
+                return try await directoryTool.call(params)
             }
             return try await fileTools.call(params)
         }

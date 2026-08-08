@@ -81,6 +81,7 @@ struct AuditLogEntry: Sendable {
         case create = "CREATE"
         case update = "UPDATE"
         case delete = "DELETE"
+        case move = "MOVE"
         case readReference = "READ_REF"
 
         init(operation: FileCRUDOperation, area: VaultArea) {
@@ -89,6 +90,7 @@ struct AuditLogEntry: Sendable {
             case .read: self = area == .references ? .readReference : .read
             case .update: self = .update
             case .delete: self = .delete
+            case .move: self = .move
             }
         }
     }

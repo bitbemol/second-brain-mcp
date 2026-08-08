@@ -42,6 +42,8 @@ struct FileOperationOutput: Sendable, Codable {
 struct FileOperationMetadata: Sendable, Codable {
     /// Canonical vault-relative path operated on.
     let path: String
+    /// Original path for a move operation, when one path became another.
+    let sourcePath: String?
     /// Structural vault area containing the path.
     let area: VaultArea
     /// Exact stored-byte revision, when a file remains after the operation.
@@ -51,10 +53,27 @@ struct FileOperationMetadata: Sendable, Codable {
     /// Whether this result was restored from a durable idempotency receipt.
     let replayed: Bool
 
+    init(
+        path: String,
+        sourcePath: String? = nil,
+        area: VaultArea,
+        revision: FileRevision?,
+        mutationID: MutationID?,
+        replayed: Bool
+    ) {
+        self.path = path
+        self.sourcePath = sourcePath
+        self.area = area
+        self.revision = revision
+        self.mutationID = mutationID
+        self.replayed = replayed
+    }
+
     /// Returns a copy marked as a replay of an earlier completed mutation.
     func markingReplayed() -> FileOperationMetadata {
         FileOperationMetadata(
             path: path,
+            sourcePath: sourcePath,
             area: area,
             revision: revision,
             mutationID: mutationID,
