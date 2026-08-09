@@ -59,6 +59,52 @@ struct `GitRepository V2` {
         )
     }
 
+    /// Proves a snapshot commits only `notes/`, even when another Git client has
+    /// already staged reference content in the repository's real index.
+    @Test
+    func `a snapshot leaves staged reference content out of history`() async throws {
+        let vault = try makeVault()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let repository = try makeRepository(for: vault)
+        let firstNote = vault.notes.appendingPathComponent("first.md")
+
+        try Data("first version".utf8).write(to: firstNote, options: .atomic)
+        try await repository.recordSnapshot()
+
+        let references = vault.root.appendingPathComponent("references")
+        try FileManager.default.createDirectory(
+            at: references,
+            withIntermediateDirectories: true
+        )
+        try Data("large reference placeholder".utf8).write(
+            to: references.appendingPathComponent("book.pdf"),
+            options: .atomic
+        )
+        _ = try runGit(["add", "--", "references/book.pdf"], in: vault.root)
+
+        try Data("second version".utf8).write(to: firstNote, options: .atomic)
+        try await repository.recordSnapshot()
+
+        #expect(
+            try runGit(
+                ["show", "--pretty=", "--name-only", "HEAD"],
+                in: vault.root
+            ) == "notes/first.md"
+        )
+        #expect(
+            try runGit(
+                ["diff", "--cached", "--name-only", "--", "references"],
+                in: vault.root
+            ) == "references/book.pdf"
+        )
+        #expect(
+            try runGit(
+                ["ls-tree", "-r", "--name-only", "HEAD", "--", "references"],
+                in: vault.root
+            ).isEmpty
+        )
+    }
+
     /// Exercises separate actor instances sharing one lock, matching several MCP
     /// agents or processes that target the same vault concurrently.
     @Test
@@ -201,7 +247,7 @@ private extension `GitRepository V2` {
         )
     }
 
-    /// Runs a small read-only Git assertion command and returns trimmed output.
+    /// Runs a small Git setup or assertion command and returns trimmed output.
     func runGit(_ arguments: [String], in repository: URL) throws -> String {
         let process = Process()
         let standardOutput = Pipe()

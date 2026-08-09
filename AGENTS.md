@@ -29,14 +29,22 @@
 - Keep preparation separate from persistence. `VaultMutationExecutor` owns persistence, Git, audit, and receipt sequencing under the operation coordinator's leases.
 - Preserve exact-byte revisions, mutation-id idempotency, bounded search, cancellation behavior, and strict Swift concurrency unless a reviewed design explicitly replaces them.
 
+## Test-driven changes
+
+- For every behavior change or bug fix, add or update a focused test before editing production code. Model the externally observable behavior and failure path, not private implementation details.
+- Run the focused test against the current implementation and confirm that it fails for the intended behavioral reason. A compiler error, broken fixture, or unrelated infrastructure failure does not count as the red phase.
+- Only after observing the expected failure, implement the smallest coherent change, rerun the focused test to green, and retain the test as regression coverage.
+- If the behavior has no practical automated test boundary, explain the constraint and obtain explicit user agreement before implementation. Documentation-only changes, build configuration, and behavior-preserving refactors do not require manufacturing a failing test, but still require their applicable verification.
+
 ## Change workflow
 
 1. Establish scope and inspect the relevant implementation, callers, tests, and current diagnostics through Xcode.
 2. Trace the complete boundary affected by the request before editing: MCP/CLI ingress, Shared contract, Backend policy, persistence or search, then output.
-3. Make the smallest coherent change. Prefer explicit types, exhaustive switches, structural constraints, and rejection of invalid input over hidden defaults or repair.
-4. Add or update focused tests with the implementation. Use temporary vaults and verify externally observable behavior and failure paths.
-5. Synchronize documentation: public behavior in `README.md`, security or dependency posture in `SECURITY.md`, architecture or durable gotchas in `CLAUDE.md`, and recurring agent workflow lessons in this policy or the repo skill.
-6. Inspect the final Xcode project structure and diff. Report unresolved references, missing files, unexpected untracked files, suspected orphans, and any verification not run.
+3. For a behavior change or bug fix, complete the red phase in **Test-driven changes** before editing production code.
+4. Make the smallest coherent change. Prefer explicit types, exhaustive switches, structural constraints, and rejection of invalid input over hidden defaults or repair.
+5. Run the focused test to green. Use temporary vaults and verify externally observable behavior and failure paths.
+6. Synchronize documentation: public behavior in `README.md`, security or dependency posture in `SECURITY.md`, architecture or durable gotchas in `CLAUDE.md`, and recurring agent workflow lessons in this policy or the repo skill.
+7. Inspect the final Xcode project structure and diff. Report unresolved references, missing files, unexpected untracked files, suspected orphans, and any verification not run.
 
 ## Verification matrix
 

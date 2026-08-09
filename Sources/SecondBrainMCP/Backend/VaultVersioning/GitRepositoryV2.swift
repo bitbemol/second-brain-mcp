@@ -108,11 +108,23 @@ private extension GitRepositoryV2 {
     }
 
     /// Performs one exclusive initialize-stage-check-commit transaction.
+    ///
+    /// The dirty check and commit are both path-scoped to `notes/`. Staging notes
+    /// alone is insufficient because an unscoped `git commit` also consumes entries
+    /// another Git client previously staged in the real index, including large
+    /// read-only reference files. `--only` records the notes state while preserving
+    /// every staged entry outside that tree for its owner.
     func performSnapshot() async throws {
         try await initializeRepositoryIfNeeded()
         try await stageNotesIfPresentOrTracked()
 
-        let arguments = ["diff", "--cached", "--quiet"]
+        let arguments = [
+            "diff",
+            "--cached",
+            "--quiet",
+            "--",
+            "notes",
+        ]
         let difference = try await executeGit(arguments)
 
         switch difference.status {
@@ -134,7 +146,10 @@ private extension GitRepositoryV2 {
             "-c", "core.hooksPath=/dev/null",
             "commit",
             "--no-gpg-sign",
+            "--only",
             "--message", Self.snapshotMessage,
+            "--",
+            "notes",
         ])
     }
 
