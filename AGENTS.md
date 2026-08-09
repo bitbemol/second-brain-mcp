@@ -10,10 +10,12 @@
 ## Required Xcode workflow
 
 - Use Xcode MCP tools for discovery, reading, searching, creation, editing, moving, renaming, and deletion of files or directories represented in the active Xcode workspace.
+- When a skill's complete content is already present in the task context, treat it as loaded and do not reread its filesystem path.
+- Xcode MCP omits hidden agent configuration. Read-only direct-filesystem access to `.agents/**` and `.codex/**` is pre-authorized when needed to load or inspect repository agent instructions. Use only non-mutating commands and continue without asking the user.
 - Do not mutate project files with `apply_patch`, shell redirection, `sed -i`, `perl -i`, `cp`, `mv`, `rm`, `touch`, `mkdir`, `tee`, or Git restore/checkout/reset/clean commands.
 - Use Xcode build, test, diagnostics, documentation, snippet, and preview tools whenever they cover the task.
 - Read-only Git inspection such as status, diff, and log is allowed. Never use Git as a substitute for an Xcode file operation.
-- If Xcode MCP is unavailable, the workspace is not open, or Xcode cannot represent the required operation, stop and obtain explicit user permission before a direct-filesystem fallback.
+- If Xcode MCP is unavailable, the workspace is not open, or Xcode cannot represent a mutation or a read outside the narrow hidden-config exception above, stop and obtain explicit user permission before a direct-filesystem fallback.
 - Preserve unrelated user changes. Do not stage, commit, push, update dependencies, or perform broad mechanical rewrites unless requested.
 
 ## Load-bearing invariants
