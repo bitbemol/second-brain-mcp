@@ -6,7 +6,7 @@ import Foundation
 struct WritableFileTarget: Sendable {
     /// Canonical absolute filesystem URL under `notes/`.
     let url: URL
-    /// Original vault-relative path used for output and Git operations.
+    /// Original vault-relative path used for output, recovery, and audit metadata.
     let relativePath: String
     /// Declared concrete format verified against the path extension.
     let format: FileFormat
@@ -53,7 +53,7 @@ struct WritableFileTarget: Sendable {
 
         // Reads may intentionally follow a link that stays inside the vault, but
         // mutations cannot. Besides protecting the read-only references area,
-        // rejecting every writable symlink keeps filesystem and Git paths bound
+        // rejecting every writable symlink keeps validated and persisted paths bound
         // to the same object. Inspect components explicitly because Foundation
         // cannot canonicalize a symlink parent when the final create target is
         // still absent.

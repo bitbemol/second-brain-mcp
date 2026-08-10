@@ -1,4 +1,4 @@
-/// Metadata required to commit and audit one prepared vault mutation.
+/// Metadata required to persist, snapshot, and audit one prepared vault mutation.
 ///
 /// The plan contains no storage behavior. ``VaultFileService`` supplies the
 /// concrete persistence closure after its format handler prepares the mutation.
@@ -20,34 +20,20 @@ struct VaultMutationPlan: Sendable {
             case .delete: .delete
             }
         }
-
-        /// Past-tense verb used in the stable Git commit message.
-        var commitVerb: String {
-            switch self {
-            case .create: "Created"
-            case .update: "Updated"
-            case .delete: "Deleted"
-            }
-        }
     }
 
-    /// Mutation category used for Git and audit behavior.
+    /// Mutation category used for persistence and audit behavior.
     let kind: Kind
     /// Concrete file format selected by the validated target.
     let format: FileFormat
     /// Validated vault-relative target path.
     let path: String
-    /// Validated target retained for commit-only recovery state checks.
+    /// Validated target retained for exact post-persistence recovery checks.
     let target: WritableFileTarget
     /// Format handler that prepared or authorized the mutation.
     let handler: FileHandlerID
-    /// Caller identity included in commit metadata for retry diagnostics.
+    /// Caller identity included in durable retry and audit metadata.
     let mutationID: MutationID
-
-    /// Stable Git message carrying the required replay identity.
-    var commitMessage: String {
-        "[SecondBrainMCP] \(kind.commitVerb) \(format.rawValue): \(path)"
-    }
 
     /// Stable audit context shared by normal execution and recovery.
     var auditDetails: String {
@@ -56,11 +42,11 @@ struct VaultMutationPlan: Sendable {
 
     /// Creates transaction metadata from the exact target being mutated.
     ///
-    /// Deriving format and path from `target` prevents commit and audit metadata
+    /// Deriving format and path from `target` prevents recovery and audit metadata
     /// from diverging from the persistence closure's destination.
     ///
     /// - Parameters:
-    ///   - kind: Mutation category used for Git and audit behavior.
+    ///   - kind: Mutation category used for persistence and audit behavior.
     ///   - target: Structurally writable target passed to persistence.
     ///   - handler: Format handler that prepared or authorized the mutation.
     ///   - mutationID: Caller identity used for durable retry handling.

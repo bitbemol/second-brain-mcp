@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients compact, ranked search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every successful changed-byte mutation is committed to git; a post-persistence Git failure is surfaced explicitly and blocks later mutations until recovery.
+A local MCP server in Swift that gives MCP clients compact, ranked search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes request a recoverable Git snapshot; snapshot failures are surfaced explicitly and an exact retry completes versioning without applying the mutation twice.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -16,7 +16,7 @@ stdio-capable MCP client ──> SecondBrainMCP
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
-- **Git auto-commit** — every successful changed-byte write creates a scoped commit with `[SecondBrainMCP]` prefix
+- **Git snapshots** — note changes request a local `Vault snapshot`; concurrent agents may share one recovery point, and `references/` is never included
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed
 - **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
 - **Read-only mode** — `--read-only` hides write tools and disables vault migration/Git mutation in the backend
@@ -158,17 +158,17 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 | Tool | Purpose |
 |------|---------|
 | `search_vault` | Rank matching notes and PDF references by title, heading, tags, path, or content without returning a mutation revision |
-| `create_file` | Validate/transform input, atomically create under `notes/`, and git-commit |
+| `create_file` | Validate/transform input, atomically create under `notes/`, and request a vault snapshot |
 | `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
-| `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then git-commit |
-| `move_directory` | Atomically rename a complete `notes/` subtree—including nested files and directories—and create one scoped Git commit |
+| `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then request a vault snapshot |
+| `move_directory` | Atomically rename a complete `notes/` subtree—including nested files and directories—and request a vault snapshot |
 
 ### Directory moves
 
 Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path`, the exact unused `destination_path`, and a fresh `mutation_id`. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123`; no file contents need to be returned to the model or recreated individually. Missing destination parents are created safely, the destination is never overwritten, and a move into its own subtree is rejected.
 
-The complete subtree is validated before the descriptor-based no-follow rename and again after Git staging, so an untracked credential-bearing file cannot hitch a ride into history. Existing files receive the same Git-candidate policy as startup snapshots, including structured HAR credential checks and strict encoding for obvious text/configuration paths. A vault-wide shared/exclusive tree lease prevents cooperating reads or writes from observing half of the path change. Successful moves are immediately discoverable through `search_vault` using the destination `path_prefix`; search itself remains read-only.
+The complete subtree is validated before the descriptor-based no-follow rename, so a credential-bearing file is rejected before the move. The shared snapshot boundary then records the current `notes/` tree; pending changes from another agent may deliberately share that recovery point. A vault-wide shared/exclusive tree lease prevents cooperating reads or writes from observing half of the path change. Successful moves are immediately discoverable through `search_vault` using the destination `path_prefix`; search itself remains read-only.
 
 ### Search
 
@@ -291,7 +291,7 @@ does not belong there. Backend and Shared never depend on Frontend.
 concrete format registers only the operations it supports and binds those operations to reusable
 functions. `VaultFileService` validates and routes requests; `TextFileIngress` converts stored-text
 create requests into bounded inline bytes before their semantic handler; and
-`VaultMutationExecutor` serializes the prepared storage mutation, Git commit, and audit record.
+`VaultMutationExecutor` persists the prepared mutation, requests a vault snapshot, and records audit and retry state.
 Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
 persistence component for the generic API. Writable targets cannot represent `references/`.
 
@@ -300,23 +300,25 @@ gives each note mutation exclusive access and prevents later readers from bypass
 inside one runtime. Persistent advisory locks extend exclusion across independent MCP processes;
 OS scheduling does not promise strict FIFO ordering between separate processes. Lock-file naming is
 a versioned cooperating-host protocol: after an upgrade, fully stop and restart every MCP host for
-the vault before resuming mutations; mixed old/new hosts are not supported. A separate
-vault-wide cross-process mutation lock keeps filesystem persistence, the Git index/commit, audit logging, and
-the durable retry receipt in one ordered critical phase. Exact-byte revisions reject stale edits by
+the vault before resuming mutations; mixed old/new hosts are not supported. Unrelated note mutations may persist concurrently. Only `GitRepository` serializes the complete
+Git init–stage–check–commit sequence, using one application-owned cross-process lock so cooperating agents
+cannot race Git's index. Short receipt and audit locks protect their own metadata without enclosing note
+persistence. Exact-byte revisions reject stale edits by
 every cooperating MCP caller. The store also rechecks bytes immediately before persistence to catch
 ordinary external edits, but an application that ignores these locks can still write inside the
 final compare-to-rename window; filesystem path replacement has no universal cross-application CAS.
 Reference reads bypass note locks and remain concurrent because `references/` has no writable
 representation.
 
-Cancellation while queued performs no mutation. Once persistence begins, the critical phase runs to
-completion even if its MCP caller stops listening; retrying the exact request with the same
-`mutation_id` returns its durable result instead of applying it again. The server writes an
-in-progress intent before that point of no return. If the process stops unexpectedly during that
-narrow phase, a surviving active marker blocks other mutations and permits only conservative exact-request
-recovery rather than risking a duplicate mutation. Sudden machine or storage power loss is outside
-this transaction guarantee because vault bytes, Git objects/refs, and the external receipt directory
-are not one jointly synchronized filesystem transaction.
+Cancellation while queued performs no mutation. Once persistence begins, recovery bookkeeping and
+snapshotting continue even if the MCP caller stops listening; retrying the exact request with the same
+`mutation_id` returns its durable result instead of applying it again. The server records an intent
+and then a per-ID `persistenceStarted` state before bytes may change. If the process stops in that
+uncertain phase, only the same mutation ID fails closed or enters operation-specific recovery;
+unrelated mutations continue. A snapshot request may include pending note changes from several agents,
+and a later request succeeds without a new commit when its state was already captured. Sudden machine
+or storage power loss remains outside this guarantee because vault bytes, Git objects/refs, and the
+external receipt directory are not one jointly synchronized filesystem transaction.
 
 Completed receipts are retained for exact retries and are never silently expired. Their private
 store has a hard 65,536-record / 512 MiB admission ceiling, with capacity reserved when an intent is

@@ -1,184 +1,116 @@
 import Foundation
 
-/// Reconciles durable transaction state before a mutation may persist.
+/// Reconciles one mutation's durable receipt before persistence may run.
 ///
-/// Callers hold the process-local gate and vault-wide process lock. This type
-/// owns stale-marker cleanup, commit-only retry, and recovery-state validation.
+/// Recovery owns mutation-id replay and validation only. It never inspects Git
+/// history or coordinates Git locks; ``VaultVersioning`` is the sole boundary
+/// for deciding whether and how a vault snapshot is recorded.
 struct VaultMutationRecovery: Sendable {
-    /// Outcome of checking durable transaction state.
+    /// Outcome of checking durable state for the requested mutation identifier.
     enum Preflight: Sendable {
-        /// No receipt or active transaction prevents persistence.
+        /// No receipt prevents persistence.
         case proceed
-        /// Replay or commit-only recovery produced the public result.
+        /// Replay or snapshot recovery produced the public result.
         case result(FileOperationOutput)
     }
 
     private let receipts: MutationReceiptStore
-    private let committer: VaultMutationCommitter
+    private let versioning: any VaultVersioning
     private let audit: AuditLogger
 
-    /// Creates recovery orchestration for one vault transaction boundary.
+    /// Creates recovery orchestration for one vault's receipt and versioning boundaries.
     init(
         receipts: MutationReceiptStore,
-        git: GitRepository,
+        versioning: any VaultVersioning,
         audit: AuditLogger
     ) {
         self.receipts = receipts
-        self.committer = VaultMutationCommitter(git: git)
+        self.versioning = versioning
         self.audit = audit
     }
 
-    /// Clears safe stale state, replays completion, or performs commit-only recovery.
+    /// Clears safe pre-persistence state, replays completion, or retries snapshotting.
     func preflight(
         plan: VaultMutationPlan,
         identifier: MutationID,
         fingerprint: MutationRequestFingerprint
     ) async throws -> Preflight {
-        let active: MutationReceiptStore.ActiveTransaction?
-        do {
-            active = try receipts.activeTransaction()
-        } catch {
-            throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                activeMutation: nil
-            )
-        }
-
-        if let active {
-            let lookup: MutationReceiptStore.Lookup
-            do {
-                guard let stored = try receipts.replay(
-                    identifier: active.identifier,
-                    fingerprint: active.fingerprint
-                ) else {
-                    throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                        activeMutation: active.identifier
-                    )
-                }
-                lookup = stored
-            } catch let error as VaultMutationExecutor.ExecutionError {
-                throw error
-            } catch {
-                throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                    activeMutation: active.identifier
-                )
-            }
-
-            switch lookup {
-            case .completed:
-                do {
-                    try receipts.clearActiveTransaction(active)
-                } catch {
-                    throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                        activeMutation: active.identifier
-                    )
-                }
-            case .prePersistence, .prePersistenceWithEvidence, .outcomeUnknown:
-                throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                    activeMutation: active.identifier
-                )
-            case .failedAfterPersistence(let output, let recoveryEvidence, _):
-                guard active.identifier == identifier else {
-                    throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                        activeMutation: active.identifier
-                    )
-                }
-                guard active.fingerprint == fingerprint else {
-                    throw MutationReceiptStore.ReceiptError.identifierReused(
-                        identifier
-                    )
-                }
-                guard let output,
-                      output.metadata?.mutationID == identifier else {
-                    throw VaultMutationExecutor.ExecutionError.recoveryRequired(
-                        activeMutation: active.identifier
-                    )
-                }
-                return .result(try await recoverGitCommit(
-                    plan: plan,
-                    active: active,
-                    output: output,
-                    recoveryEvidence: recoveryEvidence
-                ))
-            }
-        }
-
         guard let lookup = try receipts.replay(
             identifier: identifier,
             fingerprint: fingerprint
         ) else {
             return .proceed
         }
+
         switch lookup {
         case .completed(let output):
             return .result(output)
         case .prePersistence:
-            try receipts.clearPrePersistenceIntent(
-                identifier: identifier,
-                fingerprint: fingerprint
-            )
+            try await receipts.updatingReceipt { store in
+                try store.clearPrePersistenceIntent(
+                    identifier: identifier,
+                    fingerprint: fingerprint
+                )
+            }
             return .proceed
-        case .prePersistenceWithEvidence:
+        case .prePersistenceWithEvidence, .persistenceStarted:
             throw VaultMutationExecutor.ExecutionError
                 .priorAttemptOutcomeUnknown(identifier)
-        case .outcomeUnknown:
-            throw VaultMutationExecutor.ExecutionError
-                .priorAttemptOutcomeUnknown(identifier)
-        case .failedAfterPersistence(_, _, let failure):
-            // A legacy receipt without a global marker cannot be recovered because
-            // intervening history may already have made its original order unclear.
-            throw VaultMutationExecutor.ExecutionError.priorAttemptFailed(
-                identifier,
-                underlying: failure
-            )
+        case .failedAfterPersistence(let output, let recoveryEvidence, let failure):
+            guard let output,
+                  output.metadata?.mutationID == identifier else {
+                throw VaultMutationExecutor.ExecutionError.priorAttemptFailed(
+                    identifier,
+                    underlying: failure
+                )
+            }
+            return .result(try await recoverSnapshot(
+                plan: plan,
+                identifier: identifier,
+                fingerprint: fingerprint,
+                output: output,
+                recoveryEvidence: recoveryEvidence
+            ))
         }
     }
 
-    /// Retries only Git for an exact failed transaction, then finalizes it.
-    private func recoverGitCommit(
+    /// Validates persisted state, asks the versioning boundary to snapshot it, and finalizes replay.
+    ///
+    /// Recording is intentionally idempotent: another agent may already have
+    /// snapshotted these bytes together with other note changes. In that case the
+    /// versioning boundary reports success with no new commit, and recovery can
+    /// still finalize this mutation's receipt.
+    private func recoverSnapshot(
         plan: VaultMutationPlan,
-        active: MutationReceiptStore.ActiveTransaction,
+        identifier: MutationID,
+        fingerprint: MutationRequestFingerprint,
         output: FileOperationOutput,
         recoveryEvidence: VaultMutationRecoveryEvidence?
     ) async throws -> FileOperationOutput {
-        let alreadyCommitted: Bool
         do {
-            alreadyCommitted = try await committer.alreadyCommitted(
-                plan,
-                fingerprint: active.fingerprint
-            )
-            // Finalization is allowed only while the public outcome still
-            // describes the vault, even if Git already committed before a crash.
             try validateRecoveryState(
                 plan: plan,
                 output: output,
                 recoveryEvidence: recoveryEvidence,
-                identifier: active.identifier
+                identifier: identifier
             )
-            if !alreadyCommitted {
-                // Recovery is past persistence. Keep Git alive if the MCP caller
-                // cancels while awaiting the commit-only attempt.
-                try await Task.detached {
-                    try await committer.commit(
-                        plan,
-                        output: output,
-                        fingerprint: active.fingerprint
-                    )
-                }.value
-            } else {
-                try await committer.reconcileCommitted(plan)
-            }
+            try await Task.detached {
+                try await versioning.recordSnapshot()
+            }.value
         } catch let error as VaultMutationExecutor.ExecutionError {
             throw error
         } catch {
             let failure = VaultMutationFailureText.bounded(error)
             do {
-                try receipts.savePostPersistenceFailure(
-                    identifier: active.identifier,
-                    fingerprint: active.fingerprint,
-                    output: output,
-                    recoveryEvidence: recoveryEvidence,
-                    failure: failure
-                )
+                try await receipts.updatingReceipt { store in
+                    try store.savePostPersistenceFailure(
+                        identifier: identifier,
+                        fingerprint: fingerprint,
+                        output: output,
+                        recoveryEvidence: recoveryEvidence,
+                        failure: failure
+                    )
+                }
             } catch {
                 await audit.log(
                     operation: VaultOperation(plan.kind.fileOperation),
@@ -188,15 +120,15 @@ struct VaultMutationRecovery: Sendable {
                 throw VaultMutationExecutor.ExecutionError
                     .recoveryStatePersistenceFailed(
                         path: plan.path,
-                        underlying: "git failure: \(failure); receipt failure: \(error)"
+                        underlying: "snapshot failure: \(failure); receipt failure: \(error)"
                     )
             }
             await audit.log(
                 operation: VaultOperation(plan.kind.fileOperation),
                 path: plan.path,
-                details: "\(plan.auditDetails); recovery git commit failed: \(failure)"
+                details: "\(plan.auditDetails); recovery snapshot failed: \(failure)"
             )
-            throw VaultMutationExecutor.ExecutionError.gitCommitFailed(
+            throw VaultMutationExecutor.ExecutionError.snapshotFailed(
                 path: plan.path,
                 mutationID: plan.mutationID,
                 underlying: failure
@@ -206,17 +138,16 @@ struct VaultMutationRecovery: Sendable {
         await audit.log(
             operation: VaultOperation(plan.kind.fileOperation),
             path: plan.path,
-            details: alreadyCommitted
-                ? "\(plan.auditDetails); finalized previously recovered git commit"
-                : "\(plan.auditDetails); recovered git commit after prior failure"
+            details: "\(plan.auditDetails); recovered vault snapshot after prior failure"
         )
         do {
-            try receipts.save(
-                identifier: active.identifier,
-                fingerprint: active.fingerprint,
-                output: output
-            )
-            try receipts.clearActiveTransaction(active)
+            try await receipts.updatingReceipt { store in
+                try store.save(
+                    identifier: identifier,
+                    fingerprint: fingerprint,
+                    output: output
+                )
+            }
         } catch {
             throw VaultMutationExecutor.ExecutionError.receiptFinalizationFailed(
                 path: plan.path,
@@ -224,12 +155,12 @@ struct VaultMutationRecovery: Sendable {
             )
         }
         guard let metadata = output.metadata else {
-            throw MutationReceiptStore.ReceiptError.corrupt(active.identifier)
+            throw MutationReceiptStore.ReceiptError.corrupt(identifier)
         }
         return output.withMetadata(metadata.markingReplayed())
     }
 
-    /// Confirms commit-only recovery still describes the persisted vault state.
+    /// Confirms snapshot recovery still describes the persisted vault state.
     private func validateRecoveryState(
         plan: VaultMutationPlan,
         output: FileOperationOutput,
@@ -267,9 +198,6 @@ struct VaultMutationRecovery: Sendable {
                 guard current == expected else {
                     throw stateChanged(plan: plan, identifier: identifier)
                 }
-                // A failed transaction from an older process may predate the
-                // current security policy. Never let commit-only recovery turn
-                // those already-persisted bytes into Git history unchecked.
                 try PersistedFileSecurityPolicy.validate(
                     data,
                     format: plan.format,

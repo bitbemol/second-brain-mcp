@@ -139,8 +139,12 @@ struct StructuredTextCRUDIntegrationTests {
         )
 
         let dataDirectory = try makeTestDataDirectory(vaultPath: root.path)
-        let git = GitRepository(repoPath: root.path)
-        try await git.ensureRepository()
+        let versioning = try GitRepository(
+            repositoryURL: root,
+            lockURL: dataDirectory.lockDirectoryURL
+                .appendingPathComponent("vault-versioning.lock")
+        )
+        try await versioning.recordSnapshot()
         let audit = AuditLogger(dataDirectory: dataDirectory)
         let store = VaultCRUDStore(vaultPath: root.path)
         let limits = ImageLimits.default
@@ -163,18 +167,13 @@ struct StructuredTextCRUDIntegrationTests {
             ),
             pdfReader: PDFReader()
         )
-        let processMutationLock = POSIXAdvisoryFileLock(
-            url: dataDirectory.lockDirectoryURL
-                .appendingPathComponent("vault-mutations.lock")
-        )
         let service = VaultFileService(
             vaultPath: root.path,
             catalog: catalog,
             store: store,
             mutations: VaultMutationExecutor(
-                git: git,
+                versioning: versioning,
                 audit: audit,
-                processMutationLock: processMutationLock,
                 receipts: MutationReceiptStore(dataDirectory: dataDirectory)
             ),
             operations: VaultOperationCoordinator(

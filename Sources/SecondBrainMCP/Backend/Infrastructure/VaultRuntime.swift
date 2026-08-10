@@ -1,3 +1,5 @@
+import Foundation
+
 /// Fully initialized backend dependencies for one vault process.
 ///
 /// This is the backend composition root. It owns construction and startup order,
@@ -32,30 +34,20 @@ struct VaultRuntime: Sendable {
     ) async throws -> VaultRuntime {
         let dataDirectory = try VaultDataDirectory.prepare(
             vaultPath: vaultPath,
-            // Writable startup performs migration below while holding the same
-            // cross-process lock as Git bootstrap. Read-only startup never migrates.
+            // Writable startup performs migration below before requesting its
+            // initial notes snapshot. Read-only startup never migrates.
             migrateLegacyData: false
         )
 
-        let processMutationLock = POSIXAdvisoryFileLock(
-            url: dataDirectory.lockDirectoryURL
-                .appendingPathComponent("vault-mutations.lock")
-        )
         let mutationReceipts = MutationReceiptStore(dataDirectory: dataDirectory)
-        let git = GitRepository(repoPath: vaultPath)
+        let versioning = try GitRepository(
+            repositoryURL: URL(fileURLWithPath: vaultPath, isDirectory: true),
+            lockURL: dataDirectory.lockDirectoryURL
+                .appendingPathComponent("vault-versioning.lock")
+        )
         if !readOnly {
-            // Legacy migration, startup snapshots, and CRUD commits share one
-            // repository-wide lock across every MCP process using this vault.
-            try await processMutationLock.withLock(.exclusive) {
-                // A dirty vault may belong to a transaction awaiting commit-only
-                // recovery. Do not let startup migration or snapshotting obscure it.
-                let bootstrapIsSafe = try mutationReceipts
-                    .clearCompletedActiveTransactionForBootstrap()
-                if bootstrapIsSafe {
-                    try dataDirectory.migrateLegacyData(from: vaultPath)
-                    try await git.ensureRepository()
-                }
-            }
+            try dataDirectory.migrateLegacyData(from: vaultPath)
+            try await versioning.recordSnapshot()
         }
 
         let audit = AuditLogger(
@@ -65,9 +57,8 @@ struct VaultRuntime: Sendable {
         let rejections = AuditRejectionReporter(audit: audit)
         let store = VaultCRUDStore(vaultPath: vaultPath)
         let mutations = VaultMutationExecutor(
-            git: git,
+            versioning: versioning,
             audit: audit,
-            processMutationLock: processMutationLock,
             receipts: mutationReceipts
         )
         let operations = VaultOperationCoordinator(
@@ -112,9 +103,8 @@ struct VaultRuntime: Sendable {
         )
         let directories = VaultDirectoryMoveService(
             vaultPath: vaultPath,
-            git: git,
+            versioning: versioning,
             audit: audit,
-            processMutationLock: processMutationLock,
             receipts: mutationReceipts,
             operations: operations,
             readOnly: readOnly

@@ -19,7 +19,7 @@ enum DurableMutationRecordIO {
             path: displayPath,
             // Durable receipt finalization is deliberately past the mutation's
             // point of no return. Caller cancellation must not strand a vault
-            // change after persistence and Git have already completed.
+            // change after persistence and snapshotting have already completed.
             cancellationCheck: {}
         ).data
     }

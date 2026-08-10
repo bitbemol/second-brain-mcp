@@ -4,7 +4,7 @@ import Testing
 
 /// Integration coverage for the intentionally small vault-snapshot contract.
 @Suite
-struct `GitRepository V2` {
+struct `GitRepository snapshots` {
     /// Verifies that a brand-new vault with no `notes/` path is a successful
     /// no-op rather than Git's unmatched-pathspec failure.
     @Test
@@ -212,7 +212,7 @@ struct `GitRepository V2` {
     }
 }
 
-private extension `GitRepository V2` {
+private extension `GitRepository snapshots` {
     /// Filesystem locations owned by one isolated integration test.
     struct TestVault: Sendable {
         let root: URL
@@ -223,7 +223,7 @@ private extension `GitRepository V2` {
     /// Creates an isolated vault and the parent directory required by its lock.
     func makeVault(createNotesDirectory: Bool = true) throws -> TestVault {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GitRepositoryV2Tests-\(UUID().uuidString)")
+            .appendingPathComponent("GitRepositoryTests-\(UUID().uuidString)")
         let notes = root.appendingPathComponent("notes")
 
         try FileManager.default.createDirectory(
@@ -240,8 +240,8 @@ private extension `GitRepository V2` {
 
     /// Constructs an independently isolated actor that coordinates through the
     /// vault's shared cross-process lock file.
-    func makeRepository(for vault: TestVault) throws -> GitRepositoryV2 {
-        try GitRepositoryV2(
+    func makeRepository(for vault: TestVault) throws -> GitRepository {
+        try GitRepository(
             repositoryURL: vault.root,
             lockURL: vault.lock
         )

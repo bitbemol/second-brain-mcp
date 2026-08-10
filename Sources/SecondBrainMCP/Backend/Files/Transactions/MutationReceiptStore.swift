@@ -38,25 +38,18 @@ struct MutationReceiptStore: Sendable {
             identityLockStripeCount: 256
         )
     }
-    /// Identity recorded by the vault-wide active-transaction marker.
-    struct ActiveTransaction: Equatable, Sendable {
-        /// Mutation whose persistence phase may have changed the vault.
-        let identifier: MutationID
-        /// Exact request identity needed to validate a recovery attempt.
-        let fingerprint: MutationRequestFingerprint
-    }
-
     /// Durable state found for one matching mutation request.
     enum Lookup: Sendable {
         /// The mutation completed and its original public result is replayable.
         case completed(FileOperationOutput)
-        /// Intent was recorded by the active-marker protocol before persistence.
+        /// Intent was durably recorded before persistence was allowed to start.
         case prePersistence
         /// Intent includes stable evidence that can disambiguate a directory rename.
         case prePersistenceWithEvidence(VaultMutationRecoveryEvidence)
-        /// A process stopped after recording intent but before a final outcome.
-        case outcomeUnknown
-        /// Persistence succeeded but Git failed; retry may commit the saved outcome.
+        /// Persistence may have started before a process stopped. Optional evidence
+        /// allows an operation-specific recovery path to inspect the durable state.
+        case persistenceStarted(VaultMutationRecoveryEvidence?)
+        /// Persistence succeeded but snapshotting failed; retry may record the outcome.
         case failedAfterPersistence(
             output: FileOperationOutput?,
             recoveryEvidence: VaultMutationRecoveryEvidence?,
@@ -70,10 +63,6 @@ struct MutationReceiptStore: Sendable {
         case identifierReused(MutationID)
         /// A stored receipt cannot be decoded safely.
         case corrupt(MutationID)
-        /// The vault-wide active-transaction marker cannot be decoded safely.
-        case corruptActiveTransaction
-        /// A caller attempted to clear a marker owned by another transaction.
-        case activeTransactionChanged(expected: MutationID, actual: MutationID)
         /// Durable receipt persistence failed before a safe boundary was reached.
         case persistence(path: String, operation: String, code: Int32)
         /// New mutation identities are refused before persistence when retaining
@@ -86,10 +75,6 @@ struct MutationReceiptStore: Sendable {
                 return "Mutation ID \(identifier) was already used for a different request"
             case .corrupt(let identifier):
                 return "Stored mutation receipt is corrupt: \(identifier)"
-            case .corruptActiveTransaction:
-                return "The active mutation transaction marker is corrupt"
-            case .activeTransactionChanged(let expected, let actual):
-                return "Active mutation changed from \(expected) to \(actual)"
             case .persistence(let path, let operation, let code):
                 return "Cannot \(operation) mutation receipt at \(path) (errno \(code))"
             case .capacityExceeded(let maximumCount, let maximumBytes):
@@ -101,6 +86,7 @@ struct MutationReceiptStore: Sendable {
     private struct Receipt: Codable {
         enum State: String, Codable, Equatable {
             case inProgress
+            case persistenceStarted
             case completed
             case failedAfterPersistence
         }
@@ -112,13 +98,6 @@ struct MutationReceiptStore: Sendable {
         let recoveryEvidence: VaultMutationRecoveryEvidence?
         let state: State
         let failure: String?
-    }
-
-    /// Minimal vault-wide marker written before any persistence closure runs.
-    private struct ActiveMarker: Codable {
-        let version: Int
-        let mutationID: MutationID
-        let fingerprint: MutationRequestFingerprint
     }
 
     /// Disposable, crash-durable accounting derived from exact receipts.
@@ -152,13 +131,12 @@ struct MutationReceiptStore: Sendable {
     // payloads. Reserving the full supported encoded outcome at intent admission
     // makes the 512 MiB aggregate and 65,536-record ceilings simultaneously hard.
     private static let reservedReceiptBytes = 8 * 1024
-    private static let maximumActiveMarkerBytes = 64 * 1024
     private static let maximumQuotaLedgerBytes = 64 * 1024
     private static let maximumQuotaRootEntries = 4_096
     static let quotaLedgerFilename = "receipt-quota.json"
     private let receiptDirectoryURL: URL
     private let mutationLockDirectoryURL: URL
-    private let activeTransactionURL: URL
+    private let receiptUpdateLock: POSIXAdvisoryFileLock
     private let quotaLedgerURL: URL
     private let retentionLimits: RetentionLimits
     private let reconciliationEntryObserver: (@Sendable () -> Void)?
@@ -172,8 +150,10 @@ struct MutationReceiptStore: Sendable {
         self.receiptDirectoryURL = dataDirectory.receiptDirectoryURL
         self.mutationLockDirectoryURL = dataDirectory.lockDirectoryURL
             .appendingPathComponent("mutations", isDirectory: true)
-        self.activeTransactionURL = dataDirectory.rootURL
-            .appendingPathComponent("active-mutation.json")
+        self.receiptUpdateLock = POSIXAdvisoryFileLock(
+            url: dataDirectory.lockDirectoryURL
+                .appendingPathComponent("receipt-updates.lock")
+        )
         self.quotaLedgerURL = dataDirectory.rootURL
             .appendingPathComponent(Self.quotaLedgerFilename)
         precondition(retentionLimits.maximumReceiptCount > 0)
@@ -202,6 +182,20 @@ struct MutationReceiptStore: Sendable {
         return try await lock.withLock(.exclusive, operation: operation)
     }
 
+    /// Runs one short receipt or quota-ledger update across all processes.
+    ///
+    /// Mutation identity locks remain independent, so note persistence can overlap.
+    /// Only the small shared accounting transaction is serialized here.
+    func updatingReceipt<Result: Sendable>(
+        _ operation:
+            @escaping @Sendable (MutationReceiptStore) throws -> Result
+    ) async throws -> Result {
+        let store = self
+        return try await receiptUpdateLock.withLock(.exclusive) {
+            try operation(store)
+        }
+    }
+
     /// Returns the original successful outcome for an identical retry.
     func replay(
         identifier: MutationID,
@@ -215,11 +209,15 @@ struct MutationReceiptStore: Sendable {
         }
         switch receipt.state {
         case .inProgress:
-            guard receipt.version >= 2 else { return .outcomeUnknown }
+            guard receipt.version >= 2 else {
+                return .persistenceStarted(receipt.recoveryEvidence)
+            }
             if let evidence = receipt.recoveryEvidence {
                 return .prePersistenceWithEvidence(evidence)
             }
             return .prePersistence
+        case .persistenceStarted:
+            return .persistenceStarted(receipt.recoveryEvidence)
         case .completed:
             guard let output = receipt.output,
                   let metadata = output.metadata,
@@ -241,108 +239,10 @@ struct MutationReceiptStore: Sendable {
         }
     }
 
-    /// Reads the durable vault-wide marker, if one transaction is active.
+    /// Removes an intent that never reached its durable persistence-started state.
     ///
-    /// Callers coordinate this method with the vault-wide process lock. A marker
-    /// is retained from immediately before persistence until a completed receipt
-    /// is durable, preventing an unrelated mutation from obscuring recovery.
-    func activeTransaction() throws -> ActiveTransaction? {
-        guard let data = try DurableMutationRecordIO.read(
-            from: activeTransactionURL,
-            maximumBytes: Self.maximumActiveMarkerBytes,
-            displayPath: "active mutation transaction"
-        ) else { return nil }
-        let marker: ActiveMarker
-        do {
-            marker = try JSONDecoder().decode(ActiveMarker.self, from: data)
-        } catch {
-            throw ReceiptError.corruptActiveTransaction
-        }
-        guard marker.version == 1 else {
-            throw ReceiptError.corruptActiveTransaction
-        }
-        return ActiveTransaction(
-            identifier: marker.mutationID,
-            fingerprint: marker.fingerprint
-        )
-    }
-
-    /// Persists the vault-wide active marker before persistence may begin.
-    func saveActiveTransaction(
-        identifier: MutationID,
-        fingerprint: MutationRequestFingerprint
-    ) throws {
-        let marker = ActiveMarker(
-            version: 1,
-            mutationID: identifier,
-            fingerprint: fingerprint
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(marker)
-        guard data.count <= Self.maximumActiveMarkerBytes else {
-            throw ReceiptError.corruptActiveTransaction
-        }
-        try DurableMutationRecordIO.write(
-            data,
-            destination: activeTransactionURL,
-            temporaryPrefix: ".active-mutation"
-        )
-    }
-
-    /// Durably removes the marker after its completed receipt is visible.
-    ///
-    /// The expected identity check prevents recovery code from clearing a newer
-    /// transaction if this method is ever called without the required process lock.
-    func clearActiveTransaction(_ expected: ActiveTransaction) throws {
-        guard let current = try activeTransaction() else { return }
-        guard current == expected else {
-            throw ReceiptError.activeTransactionChanged(
-                expected: expected.identifier,
-                actual: current.identifier
-            )
-        }
-        try DurableMutationRecordIO.remove(
-            activeTransactionURL,
-            operation: "remove active transaction"
-        )
-    }
-
-    /// Clears the active marker only when it belongs to the supplied completed
-    /// request. A different or absent marker is left untouched.
-    @discardableResult
-    func clearMatchingActiveTransaction(
-        identifier: MutationID,
-        fingerprint: MutationRequestFingerprint
-    ) throws -> Bool {
-        guard let active = try activeTransaction(),
-              active.identifier == identifier,
-              active.fingerprint == fingerprint else { return false }
-        try clearActiveTransaction(active)
-        return true
-    }
-
-    /// Clears a crash-left marker only when its receipt is already completed.
-    ///
-    /// - Returns: `true` when bootstrap is safe, or `false` when an unresolved
-    ///   transaction must remain available for request-driven recovery.
-    func clearCompletedActiveTransactionForBootstrap() throws -> Bool {
-        guard let active = try activeTransaction() else { return true }
-        guard let lookup = try replay(
-            identifier: active.identifier,
-            fingerprint: active.fingerprint
-        ) else {
-            return false
-        }
-        guard case .completed = lookup else { return false }
-        try clearActiveTransaction(active)
-        return true
-    }
-
-    /// Removes a version-2 intent when no active marker was ever made durable.
-    ///
-    /// The executor writes the active marker before calling persistence. Its
-    /// absence therefore proves this intent is safe to restart from preparation.
+    /// This is safe because persistence may begin only after
+    /// ``markPersistenceStarted(identifier:fingerprint:)`` succeeds.
     func clearPrePersistenceIntent(
         identifier: MutationID,
         fingerprint: MutationRequestFingerprint
@@ -361,11 +261,9 @@ struct MutationReceiptStore: Sendable {
         )
     }
 
-    /// Persists intent immediately before the mutation's point of no return.
+    /// Reserves one mutation identity before persistence may begin.
     ///
-    /// If the process crashes afterward, the surviving marker deliberately
-    /// makes a retry fail as outcome-unknown instead of risking a duplicate
-    /// append, replacement, creation, or deletion.
+    /// This pre-persistence state is safe to remove and prepare again after a crash.
     func saveInProgress(
         identifier: MutationID,
         fingerprint: MutationRequestFingerprint,
@@ -373,7 +271,7 @@ struct MutationReceiptStore: Sendable {
     ) throws {
         try write(
             Receipt(
-                version: 2,
+                version: 3,
                 mutationID: identifier,
                 fingerprint: fingerprint,
                 output: nil,
@@ -382,6 +280,56 @@ struct MutationReceiptStore: Sendable {
                 failure: nil
             ),
             identifier: identifier
+        )
+    }
+
+    /// Marks the mutation's point of no return without a vault-wide marker.
+    ///
+    /// Each mutation ID owns its durable state, so unrelated mutations can proceed
+    /// concurrently while an exact retry still fails closed after an uncertain crash.
+    func markPersistenceStarted(
+        identifier: MutationID,
+        fingerprint: MutationRequestFingerprint
+    ) throws {
+        guard let receipt = try loadReceipt(identifier: identifier),
+              receipt.version >= 3,
+              receipt.state == .inProgress else {
+            throw ReceiptError.corrupt(identifier)
+        }
+        guard receipt.fingerprint == fingerprint else {
+            throw ReceiptError.identifierReused(identifier)
+        }
+        try write(
+            Receipt(
+                version: 3,
+                mutationID: identifier,
+                fingerprint: fingerprint,
+                output: nil,
+                recoveryEvidence: receipt.recoveryEvidence,
+                state: .persistenceStarted,
+                failure: nil
+            ),
+            identifier: identifier
+        )
+    }
+
+    /// Removes a persistence-started receipt after operation-specific validation
+    /// proves that persistence did not occur.
+    func clearPersistenceStarted(
+        identifier: MutationID,
+        fingerprint: MutationRequestFingerprint
+    ) throws {
+        guard let receipt = try loadReceipt(identifier: identifier),
+              receipt.version >= 3,
+              receipt.state == .persistenceStarted else {
+            throw ReceiptError.corrupt(identifier)
+        }
+        guard receipt.fingerprint == fingerprint else {
+            throw ReceiptError.identifierReused(identifier)
+        }
+        try removeReceipt(
+            identifier: identifier,
+            operation: "remove validated persistence-started receipt"
         )
     }
 
@@ -395,7 +343,7 @@ struct MutationReceiptStore: Sendable {
             throw ReceiptError.corrupt(identifier)
         }
         let receipt = Receipt(
-            version: 2,
+            version: 3,
             mutationID: identifier,
             fingerprint: fingerprint,
             output: output,
@@ -406,7 +354,7 @@ struct MutationReceiptStore: Sendable {
         try write(receipt, identifier: identifier)
     }
 
-    /// Records an outcome that changed bytes but failed during Git sequencing.
+    /// Records an outcome that changed bytes but failed during snapshotting.
     func savePostPersistenceFailure(
         identifier: MutationID,
         fingerprint: MutationRequestFingerprint,
@@ -418,7 +366,7 @@ struct MutationReceiptStore: Sendable {
             throw ReceiptError.corrupt(identifier)
         }
         let receipt = Receipt(
-            version: 2,
+            version: 3,
             mutationID: identifier,
             fingerprint: fingerprint,
             output: output,
@@ -464,7 +412,7 @@ struct MutationReceiptStore: Sendable {
 
     /// Loads the constant-size durable ledger when its directory identity still
     /// matches, otherwise performs one bounded reconciliation. Production calls
-    /// this under the vault-wide cross-process mutation lock.
+    /// this under the short cross-process receipt-update lock.
     private func currentQuotaLedger() throws -> QuotaLedger {
         try cleanupQuotaLedgerTemporaries()
         if let ledger = try loadCurrentQuotaLedger() { return ledger }
@@ -819,7 +767,7 @@ struct MutationReceiptStore: Sendable {
         } catch {
             throw ReceiptError.corrupt(identifier)
         }
-        guard (1...2).contains(receipt.version),
+        guard (1...3).contains(receipt.version),
               receipt.mutationID == identifier else {
             throw ReceiptError.corrupt(identifier)
         }

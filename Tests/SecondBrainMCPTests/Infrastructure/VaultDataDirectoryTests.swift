@@ -173,7 +173,7 @@ struct VaultDataDirectoryTests {
         )
         let lock = POSIXAdvisoryFileLock(
             url: prepared.lockDirectoryURL
-                .appendingPathComponent("vault-mutations.lock"),
+                .appendingPathComponent("vault-versioning.lock"),
             retryNanoseconds: 1_000_000
         )
 

@@ -99,8 +99,8 @@ struct VaultDataDirectory: Sendable {
 
     /// Migrates obsolete vault-local process data into this prepared directory.
     ///
-    /// Production invokes this method while holding the vault-wide process lock
-    /// so simultaneous MCP startups cannot race the compatibility move.
+    /// The migration itself validates its owned legacy inputs and destinations;
+    /// it does not participate in the Git snapshot lock.
     ///
     /// - Parameters:
     ///   - vaultPath: Canonical managed vault root.

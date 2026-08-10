@@ -1,5 +1,5 @@
 //
-//  GitRepositoryV2.swift
+//  GitRepository.swift
 //  SecondBrainMCP
 //
 //  Created by BitBemol on 09/08/26.
@@ -16,16 +16,12 @@ import Subprocess
 /// because the requested state has already been recorded.
 ///
 /// The versioning lock serializes Git operations; it intentionally does not stop
-/// agents from writing notes. A change that becomes visible before `git add`
-/// stages its file may be included in the snapshot currently in progress, even
-/// when another agent initiated that snapshot. A change that arrives after its
-/// file was staged remains in the working tree and is captured by the next
-/// snapshot request. This is deliberate: commits are vault recovery points, not
-/// ownership records for individual agents or mutations.
-///
-/// The temporary V2 name lets this replacement coexist with the legacy
-/// ``GitRepository`` until its callers have migrated to ``VaultVersioning``.
-actor GitRepositoryV2: VaultVersioning {
+/// agents from writing notes. Any note change visible when the scoped commit reads
+/// the notes tree may join the snapshot currently in progress, even when another
+/// agent initiated it. A later change remains pending for the next snapshot
+/// request. This is deliberate: commits are vault recovery points, not ownership
+/// records for individual agents or mutations.
+actor GitRepository: VaultVersioning {
     /// A deliberately generic subject because commits describe vault states,
     /// not individual mutations or authors.
     private static let snapshotMessage = "Vault snapshot"
@@ -90,7 +86,7 @@ actor GitRepositoryV2: VaultVersioning {
     /// preventing overlapping `git add`, `git diff`, and `git commit` processes
     /// both locally and across MCP processes. It does not freeze the notes
     /// directory, so concurrent writes may join this snapshot according to what
-    /// `git add` observes; that coalescing is part of the snapshot contract.
+    /// the scoped commit observes; that coalescing is part of the snapshot contract.
     func recordSnapshot() async throws {
         let versioningLock = self.versioningLock
 
@@ -100,7 +96,7 @@ actor GitRepositoryV2: VaultVersioning {
     }
 }
 
-private extension GitRepositoryV2 {
+private extension GitRepository {
     /// The bounded information needed to interpret one completed Git process.
     struct GitResult {
         let status: TerminationStatus

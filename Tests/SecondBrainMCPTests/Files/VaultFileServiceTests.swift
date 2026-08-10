@@ -172,7 +172,7 @@ struct VaultFileServiceTests {
         #expect(read["areas"] as? [String] == ["notes"])
     }
 
-    @Test("Markdown CRUD routes through generic storage and creates git commits")
+    @Test("Markdown CRUD routes through generic storage and records snapshots")
     func markdownLifecycle() async throws {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
@@ -215,7 +215,7 @@ struct VaultFileServiceTests {
             path: path
         ))
         #expect(!FileManager.default.fileExists(atPath: root + "/" + path))
-        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+        #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
     }
 
     @Test("No-op updates do not create empty commits")
@@ -299,7 +299,7 @@ struct VaultFileServiceTests {
             contentsOfFile: root + "/" + safePath,
             encoding: .utf8
         ).hasSuffix("safe content"))
-        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+        #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
     }
 
     @Test("Notes reads return the exact stored-byte revision")
@@ -372,12 +372,12 @@ struct VaultFileServiceTests {
             catalog: catalog,
             store: store,
             mutations: VaultMutationExecutor(
-                git: GitRepository(repoPath: root),
-                audit: audit,
-                processMutationLock: POSIXAdvisoryFileLock(
-                    url: dataDirectory.lockDirectoryURL
-                        .appendingPathComponent("vault-mutations.lock")
+                versioning: try GitRepository(
+                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true),
+                    lockURL: dataDirectory.lockDirectoryURL
+                        .appendingPathComponent("vault-versioning.lock")
                 ),
+                audit: audit,
                 receipts: MutationReceiptStore(dataDirectory: dataDirectory)
             ),
             operations: VaultOperationCoordinator(
@@ -576,7 +576,7 @@ struct VaultFileServiceTests {
             at: root
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "2")
-        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+        #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
     }
 
     @Test("Unsupported operation is rejected before touching disk")
@@ -669,12 +669,12 @@ struct VaultFileServiceTests {
             catalog: catalog,
             store: store,
             mutations: VaultMutationExecutor(
-                git: GitRepository(repoPath: root),
-                audit: audit,
-                processMutationLock: POSIXAdvisoryFileLock(
-                    url: dataDirectory.lockDirectoryURL
-                        .appendingPathComponent("vault-mutations.lock")
+                versioning: try GitRepository(
+                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true),
+                    lockURL: dataDirectory.lockDirectoryURL
+                        .appendingPathComponent("vault-versioning.lock")
                 ),
+                audit: audit,
                 receipts: MutationReceiptStore(dataDirectory: dataDirectory)
             ),
             operations: VaultOperationCoordinator(

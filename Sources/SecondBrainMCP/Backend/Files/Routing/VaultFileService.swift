@@ -18,7 +18,7 @@ actor VaultFileService: FileCRUDService {
     ///   - vaultPath: Canonical vault root.
     ///   - catalog: Immutable format-operation registrations.
     ///   - store: Sole generic persistence actor.
-    ///   - mutations: Serialized persistence, Git, and audit transaction boundary.
+    ///   - mutations: Persistence, versioning, audit, and retry transaction boundary.
     ///   - operations: Fair notes-path coordination shared across processes.
     ///   - audit: Append-only operation log.
     ///   - readOnly: Whether mutation methods must fail before resolving or writing.
@@ -44,7 +44,7 @@ actor VaultFileService: FileCRUDService {
     ///
     /// - Parameter request: Transport-neutral create input.
     /// - Returns: Handler-specific presentation output.
-    /// - Throws: Routing, preparation, persistence, or Git errors.
+    /// - Throws: Routing, preparation, persistence, or versioning errors.
     func create(_ request: CreateFileRequest) async throws -> FileOperationOutput {
         try requireMutationPermission()
         let target = try resolveWritableTarget(
@@ -92,7 +92,7 @@ actor VaultFileService: FileCRUDService {
                         replayed: false
                     ))
                     return PreparedVaultMutation(
-                        requiresCommit: true,
+                        requiresSnapshot: true,
                         perform: {
                             _ = try await store.create(
                                 target: target,
@@ -164,11 +164,11 @@ actor VaultFileService: FileCRUDService {
 
     /// Prepares and atomically replaces a file when its snapshot is still current.
     ///
-    /// No-op replacements are audited without creating an empty Git commit.
+    /// No-op replacements are audited without requesting an unnecessary snapshot.
     ///
     /// - Parameter request: Transport-neutral update input.
     /// - Returns: Handler-specific presentation output.
-    /// - Throws: Routing, stale-snapshot, persistence, or Git errors.
+    /// - Throws: Routing, stale-snapshot, persistence, or versioning errors.
     func update(_ request: UpdateFileRequest) async throws -> FileOperationOutput {
         try requireMutationPermission()
         let target = try resolveWritableTarget(
@@ -219,7 +219,7 @@ actor VaultFileService: FileCRUDService {
                         replayed: false
                     ))
                     return PreparedVaultMutation(
-                        requiresCommit: !noChanges,
+                        requiresSnapshot: !noChanges,
                         perform: {
                             guard !noChanges else { return output }
                             do {
@@ -276,7 +276,7 @@ actor VaultFileService: FileCRUDService {
                     }
                     try await binding.execute(request, target)
                     return PreparedVaultMutation(
-                        requiresCommit: true,
+                        requiresSnapshot: true,
                         performWithRecoveryEvidence: {
                             let deletion: (
                                 trashPath: String,

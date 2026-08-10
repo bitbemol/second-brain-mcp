@@ -4,7 +4,7 @@ import Foundation
 struct ReadableFileTarget: Sendable {
     /// Canonical absolute filesystem URL.
     let url: URL
-    /// Original vault-relative path used for output and Git operations.
+    /// Original vault-relative path used for output and audit metadata.
     let relativePath: String
     /// Declared concrete format verified against the path extension.
     let format: FileFormat

@@ -18,27 +18,27 @@ enum VaultMutationRecoveryEvidence: Sendable, Codable {
     )
 }
 
-/// Result returned by a persistence closure before Git sequencing begins.
+/// Result returned by a persistence closure before snapshotting begins.
 struct PersistedVaultMutation: Sendable {
     /// Public operation result returned or retained in the replay receipt.
     let output: FileOperationOutput
-    /// Backend-only evidence needed by a later commit-only retry.
+    /// Backend-only evidence needed by a later snapshot retry.
     let recoveryEvidence: VaultMutationRecoveryEvidence?
 }
 
 /// Persistence work prepared under an exclusive notes-path lease.
 struct PreparedVaultMutation: Sendable {
-    /// Whether successful execution requires a Git commit.
-    let requiresCommit: Bool
+    /// Whether changed bytes require a vault snapshot.
+    let requiresSnapshot: Bool
     /// Applies prepared bytes or deletion and returns output plus recovery evidence.
     let perform: @Sendable () async throws -> PersistedVaultMutation
 
     /// Creates ordinary create/update persistence without extra evidence.
     init(
-        requiresCommit: Bool,
+        requiresSnapshot: Bool,
         perform: @escaping @Sendable () async throws -> FileOperationOutput
     ) {
-        self.requiresCommit = requiresCommit
+        self.requiresSnapshot = requiresSnapshot
         self.perform = {
             PersistedVaultMutation(
                 output: try await perform(),
@@ -49,11 +49,11 @@ struct PreparedVaultMutation: Sendable {
 
     /// Creates persistence that produces backend-only recovery evidence.
     init(
-        requiresCommit: Bool,
+        requiresSnapshot: Bool,
         performWithRecoveryEvidence:
             @escaping @Sendable () async throws -> PersistedVaultMutation
     ) {
-        self.requiresCommit = requiresCommit
+        self.requiresSnapshot = requiresSnapshot
         self.perform = performWithRecoveryEvidence
     }
 }

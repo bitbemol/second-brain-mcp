@@ -2,7 +2,7 @@
 
 A local MCP server in Swift that gives MCP clients format-aware access to a knowledge vault.
 Files under `notes/` are writable, `references/` is structurally read-only, and every successful
-changed-byte mutation is auto-committed to git. File CRUD is exposed through four generic tools
+changed-byte mutation requests a recoverable snapshot of the notes tree. File CRUD is exposed through four generic tools
 with an explicit concrete `format` argument; `search_vault` is a separate bounded read-only port.
 
 The codebase favors **clear boundaries and structural safety over cleverness**: security is
@@ -63,11 +63,12 @@ Sources/SecondBrainMCP/
 │   │   ├── Routing/                  # Bindings, catalog, operation families, service
 │   │   ├── Storage/                  # Generic snapshots, persistence, and soft deletion
 │   │   ├── Targets/                  # Validated readable/writable paths
-│   │   ├── Transactions/             # Mutation, Git, and audit sequencing
+│   │   ├── Transactions/             # Mutation, receipt, recovery, and audit sequencing
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
 │   ├── Search/                       # Safe corpus snapshots, extraction, and ranking
-│   └── …                             # Canvas, references, Git, logging, infrastructure
+│   ├── VaultVersioning/               # Sole Git subprocess and serialization boundary
+│   └── …                             # Canvas, references, logging, infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
     ├── Files/                        # Concrete formats, CRUD contracts, capabilities, output
     ├── Search/                       # Search request/result/service contracts
@@ -102,7 +103,7 @@ MCP request
   → stored-text ingress validates inline content before its format handler
   → format handler prepares/interprets bytes
       ├─ read: VaultFileService returns output and records the audit event
-      └─ mutation: VaultMutationExecutor runs VaultCRUDStore → GitRepository → AuditLogger
+      └─ mutation: VaultMutationExecutor persists → VaultVersioning.recordSnapshot() → audit → receipt
 ```
 
 `FileFormat` is concrete storage format only. Semantic roles such as “attachment” or “reference”
@@ -111,18 +112,22 @@ independently, so multiple formats can share a handler and a format can use a sp
 only one operation.
 
 **Concurrency:** note reads use shared per-path leases; note mutations use exclusive per-path leases
-held through persistence, Git, audit, and receipt storage. A fair actor prevents reader barging in one
-runtime, persistent advisory locks coordinate independent processes, and a vault-wide mutation lock
-protects the shared Git index. `read_file` returns an exact-byte revision for notes; update/delete
-must compare that opaque value before changing bytes. References are read-only and remain concurrent.
+held through persistence, versioning, audit, and receipt storage. A fair actor prevents reader barging
+in one runtime, and persistent advisory locks coordinate independent processes. Unrelated note
+mutations may persist concurrently. `GitRepository`, behind `VaultVersioning`, alone serializes the
+complete initialize-stage-check-commit sequence so Git never races its index or ref locks. `read_file`
+returns an exact-byte revision for notes; update/delete must compare that opaque value before changing
+bytes. References are read-only and remain concurrent.
 
-Every mutation requires a caller-generated `mutation_id`. The executor stores durable receipts so an
-exact retry after a lost response replays the original outcome; reuse with different request bytes is
-rejected. Queued cancellation does no work. After the point of no return, the mutation finishes in a
-cancellation-independent task. After an ordinary process crash, a surviving active marker blocks
-other mutations and permits only conservative exact-request recovery. Sudden machine or storage
-power loss is outside this transaction guarantee: vault bytes, Git refs, and external receipts are
-not one jointly synchronized filesystem transaction.
+Every mutation requires a caller-generated `mutation_id`. The executor stores a durable per-ID
+receipt so an exact retry after a lost response replays the original outcome; reuse with different
+request bytes is rejected. Queued cancellation does no work. After the point of no return, the
+mutation finishes in a cancellation-independent task. An uncertain crash fails closed only for that
+mutation ID; unrelated mutations are not globally blocked. A snapshot retry validates the saved
+outcome and calls `recordSnapshot()` again. That call may create a commit or may succeed because
+another agent's snapshot already contains the bytes. Sudden machine or storage power loss remains
+outside the transaction guarantee: vault bytes, Git refs, and external receipts are not one jointly
+synchronized filesystem transaction.
 
 ### Layering & guardrails
 
@@ -184,14 +189,15 @@ general process sandbox.
 `delete_file` moves user content to a collision-proof path under `.trash/`. Never permanently
 remove user content. Removing a temporary file created by the store itself is allowed cleanup.
 
-### 6. Mutation → Git → audit is one transaction responsibility
+### 6. Mutation → versioning → audit is one transaction responsibility
 
 `VaultFileService` validates, prepares, and submits a `VaultMutationPlan`.
-`VaultMutationExecutor` owns serialized persistence, Git commit, audit, and mutation-receipt
-sequencing through its local and cross-process vault-wide locks. `VaultOperationCoordinator` owns
-the shared/exclusive notes-path lease surrounding the complete service operation. Do not persist or
-commit in a format handler or MCP adapter. Git failures are propagated explicitly—even if the
-filesystem mutation already succeeded—rather than swallowed with `try?`.
+`VaultMutationExecutor` owns persistence, audit, and mutation-receipt sequencing.
+`VaultOperationCoordinator` owns the shared/exclusive notes-path lease surrounding the complete
+service operation. `VaultVersioning` is the only version-control interface, and `GitRepository` owns
+all Git state and its cross-process lock. Do not persist or invoke Git in a format handler, service,
+or MCP adapter. Snapshot failures are propagated explicitly—even if the filesystem mutation already
+succeeded—rather than swallowed with `try?`.
 
 ## Conventions & design intent
 
@@ -219,7 +225,7 @@ filesystem mutation already succeeded—rather than swallowed with `try?`.
 - **Keep files focused.** One cohesive type or family per file; split before a file becomes a
   mixed-responsibility boundary.
 - **Tests use temporary vaults** and never touch user content.
-- **Repo commits use Conventional Commits**; vault commits use `[SecondBrainMCP]`.
+- **Repo commits use Conventional Commits**; vault recovery commits use the stable `Vault snapshot` subject.
 
 ## Adding a file format
 
