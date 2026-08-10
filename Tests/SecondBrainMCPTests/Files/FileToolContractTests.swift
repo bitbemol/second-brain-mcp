@@ -80,11 +80,18 @@ struct `MCP file consistency contract` {
         #expect(replacementDescription.contains("markdown"))
         #expect(replacementDescription.contains("json"))
         #expect(replacementDescription.contains("csv"))
-        let readProperties = try inputProperties(of: #require(tools["read_file"]))
+        let readTool = try #require(tools["read_file"])
+        let readSchema = try #require(readTool.inputSchema.objectValue)
+        #expect(readSchema["additionalProperties"]?.boolValue == false)
+        let readProperties = try inputProperties(of: readTool)
         #expect(readProperties["query"] == nil)
+        #expect(readProperties["book_page"] == nil)
+        #expect(readProperties["max_pages"] == nil)
         #expect(
-            readProperties["book_page"]?.objectValue?["maxLength"]?.intValue
-                == FileReadRequestLimits.maximumPDFBookPageBytes
+            readProperties["pages"]?.objectValue?["maxItems"]?.intValue == 20
+        )
+        #expect(
+            readProperties["pages"]?.objectValue?["uniqueItems"]?.boolValue == true
         )
         #expect(
             readProperties["page_range"]?.objectValue?["maxLength"]?.intValue

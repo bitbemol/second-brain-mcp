@@ -18,8 +18,7 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Subprocess", package: "swift-subprocess")
             ],
-            path: "Sources/SecondBrainMCP",
-            linkerSettings: [.linkedLibrary("sqlite3")]
+            path: "Sources/SecondBrainMCP"
         ),
         .testTarget(
             name: "SecondBrainMCPTests",

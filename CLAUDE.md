@@ -274,18 +274,18 @@ Server logs (stderr) are captured by Claude Desktop at
 
 ## PDF subsystem
 
-- `read_file(format: pdf)` retrieves pages; it does not search. It returns dual content per page:
-  bounded extracted text plus a JPEG render so diagrams, equations, and scans remain visible.
-  It defaults to 5 pages with a hard cap of 20.
-- Read selectors are `page` (physical, 1-indexed), `book_page` (printed label), and
-  `page_range`. Content queries belong exclusively to `search_vault`.
+- `read_file(format: pdf)` retrieves physical pages; it never searches or returns document
+  navigation metadata. Every selected page produces exactly one bounded text block and one PNG image.
+- Select one page with `page`, an ordered unique set with `pages`, or an inclusive range with
+  `page_range`. Selectors are mutually exclusive, default to page 1, and may return at most 20 pages.
+- A requested set is all-or-error: invalid, missing, unrenderable, or aggregate-oversized pages are
+  rejected rather than silently omitted. Content queries belong exclusively to `search_vault`.
 - `search_vault(location: references)` represents each PDF page as an atom. It caches page text
   by exact file revision under `VaultDataDirectory.searchIndexDirectoryURL`, prefers embedded
   PDFKit text, and uses Vision OCR only when a page has no embedded text.
 - PDF search extraction and direct reads share `PDFReadAdmission`; page work uses autorelease
-  scopes and cooperative cancellation. Render tuning lives in `PDFPageRenderer.RenderConfig.default`.
-- Search results carry only the physical page locator. The subsequent read creates its own stable
-  snapshot and renders the requested page; cached OCR text is derived data, never mutation authority.
+  scopes and cooperative cancellation. Direct reads use a private stable snapshot and bounded
+  raster dimensions; cached OCR text remains derived search data, never mutation authority.
 
 
 ## Gotchas

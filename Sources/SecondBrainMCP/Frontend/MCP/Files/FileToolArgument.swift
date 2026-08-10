@@ -23,14 +23,12 @@ enum FileToolArgument: String, Sendable {
     case startLine = "start_line"
     /// Maximum log lines returned from a range.
     case maxLines = "max_lines"
-    /// Physical PDF page number.
+    /// One physical PDF page number.
     case page
-    /// Printed PDF page label.
-    case bookPage = "book_page"
+    /// Ordered physical PDF page numbers.
+    case pages
     /// Inclusive physical PDF page range.
     case pageRange = "page_range"
-    /// Maximum PDF pages returned.
-    case maxPages = "max_pages"
     /// Format-specific update strategy.
     case mode
     /// Exact text substitutions for patch updates.

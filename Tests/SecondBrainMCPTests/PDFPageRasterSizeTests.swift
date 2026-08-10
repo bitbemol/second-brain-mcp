@@ -76,7 +76,6 @@ struct `PDF page raster sizing` {
     ) -> PDFRenderConfiguration {
         PDFRenderConfiguration(
             dpi: dpi,
-            jpegQuality: 0.6,
             maxDimension: maximumDimension
         )
     }

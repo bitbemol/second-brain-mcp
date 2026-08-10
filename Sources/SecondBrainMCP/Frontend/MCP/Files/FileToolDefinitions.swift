@@ -90,7 +90,7 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read one supported atomic file element. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Stored text formats return their complete validated content; HAR JSON is sanitized before it is stored and returned. Logs use bounded line windows, images may be resized or decomposed into timed GIF frames, and PDFs return requested text plus rendered pages.",
+                description: "Read one supported atomic file element. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Stored text formats return their complete validated content; HAR JSON is sanitized before it is stored and returned. Logs use bounded line windows, images may be resized or decomposed into timed GIF frames, and PDFs return physical pages as text plus PNG images.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
@@ -110,23 +110,25 @@ enum FileToolDefinitions {
                         ]),
                         .page: .object([
                             "type": .string("integer"), "minimum": .int(1),
-                            "description": .string("For PDFs, physical 1-indexed page")
+                            "description": .string("For PDFs, one physical 1-indexed page")
                         ]),
-                        .bookPage: .object([
-                            "type": .string("string"),
-                            "minLength": .int(1),
-                            "maxLength": .int(FileReadRequestLimits.maximumPDFBookPageBytes),
-                            "description": .string("For PDFs, printed page label; the backend limit is measured in UTF-8 bytes"),
+                        .pages: .object([
+                            "type": .string("array"),
+                            "minItems": .int(1),
+                            "maxItems": .int(FileReadRequestLimits.maximumPDFPagesPerRead),
+                            "uniqueItems": .bool(true),
+                            "items": .object([
+                                "type": .string("integer"),
+                                "minimum": .int(1),
+                            ]),
+                            "description": .string("For PDFs, ordered physical pages; mutually exclusive with page and page_range"),
                         ]),
                         .pageRange: .object([
                             "type": .string("string"),
                             "minLength": .int(1),
                             "maxLength": .int(FileReadRequestLimits.maximumPDFPageRangeBytes),
-                            "description": .string("For PDFs, range such as 10-20; the backend limit is measured in UTF-8 bytes"),
-                        ]),
-                        .maxPages: .object([
-                            "type": .string("integer"), "minimum": .int(1), "maximum": .int(20),
-                            "description": .string("For PDFs, maximum pages (default 5)")
+                            "pattern": .string("^\\d+-\\d+$"),
+                            "description": .string("For PDFs, an inclusive physical range such as 7-10; mutually exclusive with page and pages"),
                         ])
                     ]
                 ),
@@ -314,7 +316,8 @@ enum FileToolDefinitions {
         return .object([
             "type": .string("object"),
             "properties": argumentObject(properties),
-            "required": requiredArguments([.format, .path] + additionalRequired)
+            "required": requiredArguments([.format, .path] + additionalRequired),
+            "additionalProperties": .bool(false)
         ])
     }
 

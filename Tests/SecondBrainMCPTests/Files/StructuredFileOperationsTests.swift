@@ -125,15 +125,7 @@ struct `Generic files — structured format operations` {
         let rawRequest = ReadFileRequest(
             format: .har,
             path: target.relativePath,
-            options: ReadFileOptions(
-                tailLines: nil,
-                startLine: nil,
-                maxLines: nil,
-                page: nil,
-                bookPage: nil,
-                pageRange: nil,
-                maxPages: nil
-            )
+            options: .default
         )
         let output = try operations.read(
             rawRequest,
@@ -288,7 +280,7 @@ struct `Generic files — structured format operations` {
         )
         try await store.create(target: target, data: prepared.data)
 
-        let options = ReadFileOptions(tailLines: 2, startLine: nil, maxLines: nil, page: nil, bookPage: nil, pageRange: nil, maxPages: nil)
+        let options = ReadFileOptions(tailLines: 2)
         let readSnapshot = try await store.snapshot(target.readable)
         let output = try operations.read(
             ReadFileRequest(format: .log, path: target.relativePath, options: options),
@@ -315,13 +307,8 @@ struct `Generic files — structured format operations` {
         ).readable
         let snapshot = FileSnapshot(data: Data("one\ntwo\nthree".utf8), modifiedDate: nil)
         let options = ReadFileOptions(
-            tailLines: nil,
             startLine: .min,
-            maxLines: .max,
-            page: nil,
-            bookPage: nil,
-            pageRange: nil,
-            maxPages: nil
+            maxLines: .max
         )
 
         let output = try operations.read(
@@ -354,15 +341,7 @@ struct `Generic files — structured format operations` {
         }
         #expect(createSummary.contains("250002 lines"))
 
-        let options = ReadFileOptions(
-            tailLines: 2,
-            startLine: nil,
-            maxLines: nil,
-            page: nil,
-            bookPage: nil,
-            pageRange: nil,
-            maxPages: nil
-        )
+        let options = ReadFileOptions(tailLines: 2)
         let output = try operations.read(
             ReadFileRequest(
                 format: .log,

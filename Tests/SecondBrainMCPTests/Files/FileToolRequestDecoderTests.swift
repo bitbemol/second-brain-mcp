@@ -41,8 +41,7 @@ struct `MCP file request decoder` {
             arguments: [
                 "format": .string("pdf"),
                 "path": .string("references/manual.pdf"),
-                "page": .int(7),
-                "max_pages": .int(3),
+                "pages": .array([.int(7), .int(9)]),
             ]
         )
 
@@ -55,8 +54,8 @@ struct `MCP file request decoder` {
         }
 
         #expect(request.format == .pdf)
-        #expect(request.options.page == 7)
-        #expect(request.options.maxPages == 3)
+        #expect(request.options.page == nil)
+        #expect(request.options.pages == [7, 9])
     }
 
     @Test
@@ -192,6 +191,22 @@ struct `MCP file request decoder` {
                 arguments: [
                     "format": .string("archive"),
                     "path": .string("notes/page.archive"),
+                ]
+            ),
+            for: .read
+        )
+    }
+
+    @Test
+    func `Removed PDF selectors are rejected instead of ignored`() {
+        expectError(
+            "Unknown parameter: book_page",
+            decoding: CallTool.Parameters(
+                name: FileToolName.read.rawValue,
+                arguments: [
+                    "format": .string("pdf"),
+                    "path": .string("references/manual.pdf"),
+                    "book_page": .string("xii"),
                 ]
             ),
             for: .read

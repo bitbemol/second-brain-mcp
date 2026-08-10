@@ -64,19 +64,20 @@ You don't have to take that on faith — see [Verifying](#verifying-it-yourself)
 
 ## Dependencies
 
-One direct dependency (the MCP SDK); the rest are transitive and come from Apple's open-source Swift
-libraries. All are version-pinned in `Package.resolved` (committed), so `swift build` never silently
-pulls new versions. The table below reflects the committed lockfile — regenerate any time with
+Two direct dependencies (the MCP SDK and Swift Subprocess) plus their transitive packages are
+version-pinned in `Package.resolved` (committed), so `swift build` never silently pulls new versions.
+The table below reflects the committed lockfile — regenerate any time with
 `swift package show-dependencies`.
 
 | Package | Owner | Version | Role |
 |---------|-------|---------|------|
-| `modelcontextprotocol/swift-sdk` | MCP org (Anthropic) | 0.12.0 | **Direct** — MCP protocol library |
-| `apple/swift-log` | Apple | 1.10.1 | Logging to stderr |
-| `apple/swift-system` | Apple | 1.6.4 | Low-level system calls |
-| `apple/swift-nio` | Apple | 2.95.0 | Async I/O (used by the SDK's HTTP transport — not by this server) |
-| `apple/swift-collections` | Apple | 1.4.0 | Data structures |
-| `apple/swift-atomics` | Apple | 1.3.0 | Thread-safe primitives |
+| `modelcontextprotocol/swift-sdk` | MCP org | 0.12.1 | **Direct** — MCP protocol library |
+| `swiftlang/swift-subprocess` | Swift project | 1.0.0 | **Direct** — bounded invocation of the fixed `/usr/bin/git` boundary |
+| `apple/swift-log` | Apple | 1.15.0 | Logging to stderr |
+| `apple/swift-system` | Apple | 1.8.0 | Low-level system calls |
+| `apple/swift-nio` | Apple | 2.101.3 | Async I/O (used by the SDK's HTTP transport — not by this server) |
+| `apple/swift-collections` | Apple | 1.6.0 | Data structures |
+| `apple/swift-atomics` | Apple | 1.3.1 | Thread-safe primitives |
 | `mattt/eventsource` | Mattt Thompson | 1.4.1 | SSE parser pulled in by the SDK — unused by this server |
 
 ## Data flow
