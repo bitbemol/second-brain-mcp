@@ -33,9 +33,9 @@ swift build -c release
 # 2. Create a vault
 ./setup-vault.sh
 
-# 3. Connect to Claude Desktop or Claude Code (see below)
+# 3. Connect to Claude or Codex (see below)
 
-# 4. Ask Claude: "What notes do I have?"
+# 4. Ask your MCP client: "What notes do I have?"
 ```
 
 ## Requirements
@@ -60,10 +60,10 @@ cp .build/release/second-brain-mcp /usr/local/bin/
 
 > **Always use the `.build/release/second-brain-mcp` path — not an architecture-specific one** like `.build/arm64-apple-macosx/release/second-brain-mcp`. Swift 6.4 changed SwiftPM's default build system from `native` (which wrote products to `.build/<triple>/release/`) to `swiftbuild` (which writes to `.build/out/Products/Release/`). SwiftPM keeps `.build/release` and `.build/debug` as symlinks to the current layout under **both** systems, so pinning to the symlink survives toolchain upgrades. Pinning to an arch-specific path will silently keep launching a **stale binary** after you upgrade Swift — the build succeeds, but lands somewhere your config no longer points to.
 
-## Connecting to Claude
+## Connecting to Claude and Codex
 
-SecondBrainMCP uses the standard stdio MCP transport. The examples below configure Claude Desktop
-and Claude Code; another MCP client can use the same executable and arguments when it supports
+SecondBrainMCP uses the standard stdio MCP transport. The examples below configure Claude Desktop,
+Claude Code, and Codex. Another MCP client can use the same executable and arguments when it supports
 launching local stdio servers.
 
 ### Option A: Claude Desktop (the macOS app)
@@ -108,9 +108,38 @@ claude mcp add-from-claude-desktop
 ```
 
 Verify with:
+
 ```bash
 claude mcp list
 ```
+
+### Option C: Codex (desktop app, CLI, and IDE extension)
+
+The quickest setup uses the Codex CLI:
+
+```bash
+codex mcp add second-brain -- \
+  /absolute/path/to/.build/release/second-brain-mcp \
+  --vault /absolute/path/to/your/vault
+```
+
+This writes the server to the user-level Codex configuration. The Codex desktop app, CLI, and IDE
+extension share that configuration, so one registration makes the server available across all three.
+Verify it from a terminal or from the Codex TUI:
+
+```bash
+codex mcp list
+```
+
+```text
+/mcp
+```
+
+You can also configure it from the Codex desktop app: open **Settings → MCP servers**, select
+**Add server**, choose **STDIO**, enter the same executable and arguments, save, and restart Codex.
+For a trusted-project-only configuration, place the equivalent server entry in
+`.codex/config.toml` instead of the default `~/.codex/config.toml`. See the
+[official Codex MCP documentation](https://developers.openai.com/codex/mcp/) for configuration details.
 
 ### Updating the server
 
@@ -120,7 +149,7 @@ After pulling changes or editing the code, rebuild and **relaunch the client** s
 swift build -c release
 ```
 
-Then fully restart: **Cmd+Q and reopen Claude Desktop**, or start a new `claude` session. A running server keeps serving its old tool list until the process is relaunched — rebuilding alone isn't enough.
+Then fully restart the active client: **Cmd+Q and reopen Claude Desktop or Codex**, or start a new `claude` or `codex` session. A running server keeps serving its old tool list until the process is relaunched — rebuilding alone isn't enough.
 
 If new tools still don't appear, confirm the client's `command` points at `.build/release/second-brain-mcp` (the symlink, see [Installation](#installation)) and not a stale architecture-specific path.
 
