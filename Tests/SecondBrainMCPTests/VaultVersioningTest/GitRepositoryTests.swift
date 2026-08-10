@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 /// Integration coverage for the intentionally small vault-snapshot contract.
 @Suite

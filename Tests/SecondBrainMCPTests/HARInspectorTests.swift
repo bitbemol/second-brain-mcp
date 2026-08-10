@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("HAR inspection")
 struct HARInspectorTests {

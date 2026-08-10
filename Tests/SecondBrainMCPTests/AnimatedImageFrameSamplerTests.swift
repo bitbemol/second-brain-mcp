@@ -1,5 +1,5 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("Animated image frame sampling")
 struct AnimatedImageFrameSamplerTests {

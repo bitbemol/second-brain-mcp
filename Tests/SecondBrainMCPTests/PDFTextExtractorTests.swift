@@ -1,6 +1,6 @@
 import PDFKit
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("PDF text extraction")
 struct PDFTextExtractorTests {

@@ -1,6 +1,6 @@
 import MCP
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("MCP file tool controller")
 struct FileToolControllerTests {

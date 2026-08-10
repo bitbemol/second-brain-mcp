@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import SQLite3
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("Persistent PDF search index")
 struct PDFSearchIndexTests {

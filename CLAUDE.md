@@ -67,13 +67,19 @@ Sources/SecondBrainMCP/
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
 │   ├── Search/                       # Safe corpus snapshots, extraction, and ranking
-│   ├── VaultVersioning/               # Sole Git subprocess and serialization boundary
+│   ├── VaultVersioning/              # Sole Git subprocess and serialization boundary
 │   └── …                             # Canvas, references, logging, infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
     ├── Files/                        # Concrete formats, CRUD contracts, capabilities, output
     ├── Search/                       # Search request/result/service contracts
     └── Logging/                      # Process-level stderr logger
 ```
+
+Keep the executable target and product identity aligned as `second-brain-mcp`; Swift exposes that
+target to source as module `second_brain_mcp`, which is what the test target imports. Do not map a
+differently named executable product onto target `SecondBrainMCP`: command-line SwiftPM accepts
+that graph, but Xcode 26 builds the product module as `second_brain_mcp` and then cannot resolve the
+testable `SecondBrainMCP` module.
 
 Search stays outside CRUD:
 

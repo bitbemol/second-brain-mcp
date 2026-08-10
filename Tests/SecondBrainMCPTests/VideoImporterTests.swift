@@ -6,7 +6,7 @@ import CoreVideo
 import ImageIO
 import CoreGraphics
 import UniformTypeIdentifiers
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("VideoImporter")
 struct VideoImporterTests {

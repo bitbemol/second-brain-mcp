@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("File format catalog")
 struct FileFormatCatalogTests {

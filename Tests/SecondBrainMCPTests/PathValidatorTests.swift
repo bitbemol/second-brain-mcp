@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 // MARK: - Happy Path
 

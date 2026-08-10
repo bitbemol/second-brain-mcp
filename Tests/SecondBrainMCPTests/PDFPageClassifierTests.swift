@@ -1,5 +1,5 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("PDF page classification")
 struct PDFPageClassifierTests {

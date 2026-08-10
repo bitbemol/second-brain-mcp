@@ -1,6 +1,6 @@
 import CoreGraphics
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("PDF page raster sizing")
 struct PDFPageRasterSizeTests {

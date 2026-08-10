@@ -3,7 +3,7 @@ import Foundation
 import ImageIO
 import Testing
 import UniformTypeIdentifiers
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("ImageImporter preparation")
 struct ImageImporterTests {

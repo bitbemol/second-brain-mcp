@@ -1,4 +1,4 @@
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 /// Builds focused resource ceilings without repeating the production policy.
 func searchTestLimits(

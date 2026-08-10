@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("Bounded file reader")
 struct BoundedFileReaderTests {

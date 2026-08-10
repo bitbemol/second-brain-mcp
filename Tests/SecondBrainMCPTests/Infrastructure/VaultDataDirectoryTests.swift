@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("Vault process-data directory")
 struct VaultDataDirectoryTests {

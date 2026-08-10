@@ -2,7 +2,7 @@ import Foundation
 import PDFKit
 import Synchronization
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("PDF document navigation")
 struct PDFDocumentNavigationTests {

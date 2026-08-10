@@ -3,7 +3,7 @@ import Foundation
 import ImageIO
 import CoreGraphics
 import UniformTypeIdentifiers
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 // MARK: - Test helpers
 

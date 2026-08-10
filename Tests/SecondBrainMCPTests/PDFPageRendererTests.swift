@@ -1,7 +1,7 @@
 import Foundation
 import PDFKit
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("PDF page rendering")
 struct PDFPageRendererTests {

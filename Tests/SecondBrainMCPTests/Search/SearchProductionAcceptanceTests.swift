@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 /// Generated, copyright-free acceptance fixtures modeled on a real HAR-heavy vault.
 @Suite("Vault search production acceptance")

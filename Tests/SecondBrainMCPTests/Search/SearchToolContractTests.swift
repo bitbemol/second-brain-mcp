@@ -1,7 +1,7 @@
 import Foundation
 import MCP
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 @Suite("MCP vault search contract")
 struct SearchToolContractTests {

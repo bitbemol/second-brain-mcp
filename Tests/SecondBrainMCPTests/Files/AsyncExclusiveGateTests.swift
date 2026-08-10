@@ -1,5 +1,5 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 /// Behavioral coverage for the reusable FIFO async serialization primitive.
 @Suite("Async exclusive gate")
