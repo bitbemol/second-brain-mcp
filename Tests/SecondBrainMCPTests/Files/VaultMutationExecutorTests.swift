@@ -3,9 +3,9 @@ import Testing
 @testable import second_brain_mcp
 
 @Suite
-struct VaultMutationExecutorTests {
+struct `Vault mutation executor` {
     @Test
-    func successfulPersistenceRequestsOneSnapshot() async throws {
+    func `Successful persistence requests one snapshot`() async throws {
         let root = try makeVault()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let versioning = VersioningProbe()
@@ -43,7 +43,7 @@ struct VaultMutationExecutorTests {
     }
 
     @Test
-    func identicalRetryReplaysWithoutPreparingOrSnapshottingAgain() async throws {
+    func `An identical retry replays without preparing or snapshotting again`() async throws {
         let root = try makeVault()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let versioning = VersioningProbe()
@@ -89,7 +89,7 @@ struct VaultMutationExecutorTests {
     }
 
     @Test
-    func snapshotFailureRetriesWithoutPersistingTwice() async throws {
+    func `A snapshot failure retries without persisting twice`() async throws {
         let root = try makeVault()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let versioning = VersioningProbe(failuresBeforeSuccess: 1)
@@ -136,7 +136,7 @@ struct VaultMutationExecutorTests {
     }
 
     @Test
-    func persistenceStartedReceiptFailsClosedForExactRetry() async throws {
+    func `A persistence-started receipt fails closed for an exact retry`() async throws {
         let root = try makeVault()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
@@ -176,7 +176,7 @@ struct VaultMutationExecutorTests {
     }
 
     @Test
-    func independentExecutorsDoNotOwnGitSerialization() async throws {
+    func `Independent executors do not own Git serialization`() async throws {
         let root = try makeVault()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let versioningLockURL = dataDirectory.lockDirectoryURL

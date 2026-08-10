@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault search engine")
-struct VaultSearchEngineTests {
+@Suite
+struct `Vault search engine` {
     private final class SemanticEmbeddingStub: SearchSemanticEmbedding,
         @unchecked Sendable {
         private let lock = NSLock()
@@ -111,8 +111,8 @@ struct VaultSearchEngineTests {
         try data.write(to: url, options: .atomic)
     }
 
-    @Test("Title, heading, and body weights produce deterministic breadth")
-    func fieldRanking() async throws {
+    @Test
+    func `Title, heading, and body weights produce deterministic breadth`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("---\ntitle: Concurrency\n---\nA guide.", to: "notes/z-title.md", root: root)
@@ -129,8 +129,8 @@ struct VaultSearchEngineTests {
         #expect(response.results.allSatisfy { $0.path.hasPrefix("notes/") })
     }
 
-    @Test("Smart and fuzzy search recover misspelled multi-word queries")
-    func typoSearch() async throws {
+    @Test
+    func `Smart and fuzzy search recover misspelled multi-word queries`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -159,8 +159,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("Smart uses local semantic evidence only after literal strategies miss")
-    func semanticParaphraseFallback() async throws {
+    @Test
+    func `Smart uses local semantic evidence only after literal strategies miss`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -196,8 +196,8 @@ struct VaultSearchEngineTests {
         #expect(embedding.calls > 0)
     }
 
-    @Test("Semantic fallback rejects unrelated notes and skips known-term hits")
-    func semanticFallbackBoundaries() async throws {
+    @Test
+    func `Semantic fallback rejects unrelated notes and skips known-term hits`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -230,8 +230,8 @@ struct VaultSearchEngineTests {
         #expect(knownEmbedding.calls == 0)
     }
 
-    @Test("Weak lexical noise does not suppress a stronger semantic paraphrase")
-    func semanticHybridFallback() async throws {
+    @Test
+    func `Weak lexical noise does not suppress a stronger semantic paraphrase`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -260,8 +260,8 @@ struct VaultSearchEngineTests {
         #expect(embedding.calls > 0)
     }
 
-    @Test("Semantic evidence upgrades weak literal evidence in the same passage")
-    func semanticUpgradesSamePassage() async throws {
+    @Test
+    func `Semantic evidence upgrades weak literal evidence in the same passage`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -286,8 +286,8 @@ struct VaultSearchEngineTests {
         #expect(result.relevance > 0.8)
     }
 
-    @Test("A bounded semantic scan reports incomplete matching coverage")
-    func semanticFallbackWorkLimit() async throws {
+    @Test
+    func `A bounded semantic scan reports incomplete matching coverage`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let sections = (0..<513).map {
@@ -312,8 +312,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.impact == .partial)
     }
 
-    @Test("A bounded semantic section reports its unseen suffix")
-    func semanticSectionProjectionLimit() async throws {
+    @Test
+    func `A bounded semantic section reports its unseen suffix`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -341,8 +341,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.impact == .partial)
     }
 
-    @Test("An empty bounded prefix still reports an unseen semantic suffix")
-    func semanticWhitespacePrefixLimit() async throws {
+    @Test
+    func `An empty bounded prefix still reports an unseen semantic suffix`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -370,8 +370,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.impact == .omitted)
     }
 
-    @Test("Complete lexical coverage outranks a weak title-only match")
-    func lexicalCoverageBeforeFieldBoost() async throws {
+    @Test
+    func `Complete lexical coverage outranks a weak title-only match`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -391,8 +391,8 @@ struct VaultSearchEngineTests {
         #expect(response.results.first?.path == "notes/complete.md")
     }
 
-    @Test("Metadata-only matches do not borrow an unrelated section")
-    func metadataPresentation() async throws {
+    @Test
+    func `Metadata-only matches do not borrow an unrelated section`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -415,8 +415,8 @@ struct VaultSearchEngineTests {
         #expect(result.snippet == "notes/project-index.md")
     }
 
-    @Test("Presentation uses the strongest field that produced the rank")
-    func strongestMatchPresentation() async throws {
+    @Test
+    func `Presentation uses the strongest field that produced the rank`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -438,8 +438,8 @@ struct VaultSearchEngineTests {
         #expect(result.termCoverage == 1)
     }
 
-    @Test("Nested paths, field filters, format filters, and prefixes compose")
-    func filters() async throws {
+    @Test
+    func `Nested paths, field filters, format filters, and prefixes compose`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("# Alpha\nneedle", to: "notes/work/alpha.md", root: root)
@@ -457,8 +457,8 @@ struct VaultSearchEngineTests {
         #expect(response.results.map(\.path) == ["notes/work/data.json"])
     }
 
-    @Test("Area filters derive compatible default formats")
-    func areaFilters() async throws {
+    @Test
+    func `Area filters derive compatible default formats`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("notes-only sentinel", to: "notes/only.md", root: root)
@@ -507,8 +507,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("Path prefixes scope traversal before directory budgets apply")
-    func pathPrefixScopesTraversal() async throws {
+    @Test
+    func `Path prefixes scope traversal before directory budgets apply`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<20 {
@@ -541,8 +541,8 @@ struct VaultSearchEngineTests {
         #expect(!missing.coverageIncomplete)
     }
 
-    @Test("Prefixes are canonical directories and cannot expose hidden scopes")
-    func safeCanonicalPrefixes() async throws {
+    @Test
+    func `Prefixes are canonical directories and cannot expose hidden scopes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("canonical-target", to: "notes/work/target.md", root: root)
@@ -575,8 +575,8 @@ struct VaultSearchEngineTests {
         #expect(broad.results.isEmpty)
     }
 
-    @Test("A prefix that becomes a package after validation stays excluded")
-    func revalidatesScopedRootBeforeTraversal() async throws {
+    @Test
+    func `A prefix that becomes a package after validation stays excluded`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let request = VaultSearchRequest(
@@ -615,8 +615,8 @@ struct VaultSearchEngineTests {
         #expect(corpus.coverageIncomplete)
     }
 
-    @Test("Symlinks and unsupported or hidden files cannot expand search scope")
-    func containment() async throws {
+    @Test
+    func `Symlinks and unsupported or hidden files cannot expand search scope`() async throws {
         let root = try makeVault()
         let outside = NSTemporaryDirectory()
             + "VaultSearchOutside-\(UUID().uuidString).md"
@@ -650,8 +650,8 @@ struct VaultSearchEngineTests {
         #expect(safe.results.map(\.path) == ["notes/safe.md"])
     }
 
-    @Test("Resolved search targets stay bound to their enumerated location")
-    func resolvedTargetsMatchLexicalCandidates() throws {
+    @Test
+    func `Resolved search targets stay bound to their enumerated location`() throws {
         let root = try makeVault()
         let rootAlias = NSTemporaryDirectory()
             + "VaultSearchRootAlias-\(UUID().uuidString)"
@@ -724,8 +724,8 @@ struct VaultSearchEngineTests {
         ))
     }
 
-    @Test("Hidden entries consume traversal budget without entering the corpus")
-    func hiddenTraversalBudget() async throws {
+    @Test
+    func `Hidden entries consume traversal budget without entering the corpus`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<10 {
@@ -748,8 +748,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("Unsafe legacy text is counted but never projected")
-    func sensitiveLegacyFile() async throws {
+    @Test
+    func `Unsafe legacy text is counted but never projected`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let token = "sk-proj-" + String(repeating: "a", count: 24)
@@ -768,8 +768,8 @@ struct VaultSearchEngineTests {
         #expect(!response.results.contains { $0.snippet.contains(token) })
     }
 
-    @Test("HAR credentials are sanitized before matching")
-    func harConfidentiality() async throws {
+    @Test
+    func `HAR credentials are sanitized before matching`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let secret = "Bearer " + String(repeating: "z", count: 32)
@@ -799,8 +799,8 @@ struct VaultSearchEngineTests {
         #expect(!result.snippet.contains(secret))
     }
 
-    @Test("Service rejects invalid limits and exposes result truncation")
-    func serviceLimits() async throws {
+    @Test
+    func `Service rejects invalid limits and exposes result truncation`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("common", to: "notes/a.md", root: root)
@@ -845,8 +845,8 @@ struct VaultSearchEngineTests {
         #expect(bounded.truncated)
     }
 
-    @Test("Direct callers cannot bypass collection and path-prefix limits")
-    func directRequestLimits() async throws {
+    @Test
+    func `Direct callers cannot bypass collection and path-prefix limits`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let engine = try makeEngine(root: root)
@@ -877,8 +877,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("File caps retain the lexicographically first eligible notes")
-    func deterministicFileCap() async throws {
+    @Test
+    func `File caps retain the lexicographically first eligible notes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("common", to: "notes/z.md", root: root)
@@ -901,8 +901,8 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
-    @Test("An aggregate-oversized file cannot hide later fitting notes")
-    func aggregateOversizedFileDoesNotPoisonTraversal() async throws {
+    @Test
+    func `An aggregate-oversized file cannot hide later fitting notes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let archive = """
@@ -940,8 +940,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("A file that exceeds only the remaining budget cannot hide later notes")
-    func residualAggregateBudgetDoesNotPoisonTraversal() async throws {
+    @Test
+    func `A file that exceeds only the remaining budget cannot hide later notes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(String(repeating: "a", count: 80), to: "notes/000-prefix.log", root: root)
@@ -968,8 +968,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("Coverage counters partition malformed, sensitive, and resource-limited files")
-    func coverageCounters() async throws {
+    @Test
+    func `Coverage counters partition malformed, sensitive, and resource-limited files`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("counter-target", to: "notes/000-safe.md", root: root)
@@ -999,8 +999,8 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
-    @Test("Structured archives stop before materializing excessive shapes")
-    func structuredValueBudget() async throws {
+    @Test
+    func `Structured archives stop before materializing excessive shapes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1024,8 +1024,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("Embedded HAR JSON shares the structured-value budget")
-    func embeddedHARValueBudget() async throws {
+    @Test
+    func `Embedded HAR JSON shares the structured-value budget`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let embedded = #"{"values":["#
@@ -1062,8 +1062,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("Defensive JSON nesting ceilings are reported as resource limits")
-    func nestingIsResourceLimited() async throws {
+    @Test
+    func `Defensive JSON nesting ceilings are reported as resource limits`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let nested = String(repeating: "[", count: 513) + "0"
@@ -1084,8 +1084,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("Sensitive filenames are skipped independently of the query")
-    func sensitiveFilenameCoverage() async throws {
+    @Test
+    func `Sensitive filenames are skipped independently of the query`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let sensitiveName = "sk_live_" + String(repeating: "a", count: 24)
@@ -1111,8 +1111,8 @@ struct VaultSearchEngineTests {
         #expect(missing.results.isEmpty)
     }
 
-    @Test("Projection validation never synthesizes credentials across fields")
-    func independentProjectionFields() async throws {
+    @Test
+    func `Projection validation never synthesizes credentials across fields`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let opaque = String(repeating: "q", count: 32)
@@ -1137,8 +1137,8 @@ struct VaultSearchEngineTests {
         #expect(body.skippedSensitiveFileCount == 0)
     }
 
-    @Test("Snippet cleanup never synthesizes a credential across controls")
-    func snippetCleaningPreservesCredentialSeparators() async throws {
+    @Test
+    func `Snippet cleanup never synthesizes a credential across controls`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1157,8 +1157,8 @@ struct VaultSearchEngineTests {
         #expect(response.skippedSensitiveFileCount == 0)
     }
 
-    @Test("URL credentials in legacy text are never searchable")
-    func urlCredentialConfidentiality() async throws {
+    @Test
+    func `URL credentials in legacy text are never searchable`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1178,8 +1178,8 @@ struct VaultSearchEngineTests {
         #expect(response.skippedSensitiveFileCount == 2)
     }
 
-    @Test("Token ceilings report incomplete coverage, not another result page")
-    func tokenCoverageLimit() async throws {
+    @Test
+    func `Token ceilings report incomplete coverage, not another result page`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1208,8 +1208,8 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
-    @Test("Literal occurrence ceilings report partial matching coverage")
-    func literalOccurrenceCoverage() async throws {
+    @Test
+    func `Literal occurrence ceilings report partial matching coverage`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1231,8 +1231,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.reason == .matching)
     }
 
-    @Test("Literal work is bounded across the complete request")
-    func requestWideLiteralOccurrenceCoverage() async throws {
+    @Test
+    func `Literal work is bounded across the complete request`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("cat", to: "notes/000-whole.md", root: root)
@@ -1262,8 +1262,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.reason == .matching)
     }
 
-    @Test("Limits in unrequested fields do not make filtered coverage incomplete")
-    func fieldSpecificCoverage() async throws {
+    @Test
+    func `Limits in unrequested fields do not make filtered coverage incomplete`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1287,8 +1287,8 @@ struct VaultSearchEngineTests {
         #expect(!response.truncated)
     }
 
-    @Test("Complete front matter stays complete when only the body is capped")
-    func frontMatterCoverageIsFieldSpecific() async throws {
+    @Test
+    func `Complete front matter stays complete when only the body is capped`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1333,8 +1333,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("A line cap inside front matter marks unseen tags incomplete")
-    func frontMatterCutByLineLimit() async throws {
+    @Test
+    func `A line cap inside front matter marks unseen tags incomplete`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1364,8 +1364,8 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
-    @Test("Canvas hits return node coordinates and ignore layout JSON")
-    func canvasLocation() async throws {
+    @Test
+    func `Canvas hits return node coordinates and ignore layout JSON`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1395,8 +1395,8 @@ struct VaultSearchEngineTests {
         #expect(layout.results.isEmpty)
     }
 
-    @Test("The final pretty-printed response obeys its byte ceiling")
-    func responseByteLimit() async throws {
+    @Test
+    func `The final pretty-printed response obeys its byte ceiling`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<12 {
@@ -1423,8 +1423,8 @@ struct VaultSearchEngineTests {
         #expect(response.truncated)
     }
 
-    @Test("The bounded top-K selector replaces early weak hits with later strong hits")
-    func boundedTopKReplacement() async throws {
+    @Test
+    func `The bounded top-K selector replaces early weak hits with later strong hits`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<10 {
@@ -1455,8 +1455,8 @@ struct VaultSearchEngineTests {
         #expect(response.moreResultsAvailable)
     }
 
-    @Test("An impossible empty-response ceiling fails instead of lying")
-    func impossibleResponseByteLimit() async throws {
+    @Test
+    func `An impossible empty-response ceiling fails instead of lying`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let engine = try makeEngine(
@@ -1468,8 +1468,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("Vault processes share one full-corpus search permit")
-    func crossProcessAdmission() async throws {
+    @Test
+    func `Vault processes share one full-corpus search permit`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("needle", to: "notes/a.md", root: root)
@@ -1501,8 +1501,8 @@ struct VaultSearchEngineTests {
         #expect(await completion.completed)
     }
 
-    @Test("Opaque cursors page through every ranked result without overlap")
-    func pagination() async throws {
+    @Test
+    func `Opaque cursors page through every ranked result without overlap`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<123 {
@@ -1537,8 +1537,8 @@ struct VaultSearchEngineTests {
         #expect(previousOmitted == 0)
     }
 
-    @Test("One search discovers notes and ranked PDF pages with extraction status")
-    func unifiedPDFDiscovery() async throws {
+    @Test
+    func `One search discovers notes and ranked PDF pages with extraction status`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1591,8 +1591,8 @@ struct VaultSearchEngineTests {
         #expect(scoped.results.map(\.physicalPage) == [3, 1])
     }
 
-    @Test("Oversized PDFs remain discoverable by metadata and disclose missing text")
-    func oversizedPDFMetadata() async throws {
+    @Test
+    func `Oversized PDFs remain discoverable by metadata and disclose missing text`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let pdf = try generatedSearchPDF(pages: [
@@ -1634,8 +1634,8 @@ struct VaultSearchEngineTests {
         #expect(content.resourceLimitSamples.first?.impact == .partial)
     }
 
-    @Test("Path-only PDF search reads no bytes and never opens PDFKit")
-    func pathOnlyPDFMetadata() async throws {
+    @Test
+    func `Path-only PDF search reads no bytes and never opens PDFKit`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1671,8 +1671,8 @@ struct VaultSearchEngineTests {
         #expect(!nonTextFields.coverageIncomplete)
     }
 
-    @Test("Path-only search validates but does not parse supported note bytes")
-    func pathOnlyInvalidMarkdown() async throws {
+    @Test
+    func `Path-only search validates but does not parse supported note bytes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1696,8 +1696,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitedFileCount == 0)
     }
 
-    @Test("Title-only PDF search reads metadata without enumerating pages")
-    func titleOnlyPDFMetadata() async throws {
+    @Test
+    func `Title-only PDF search reads metadata without enumerating pages`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1729,8 +1729,8 @@ struct VaultSearchEngineTests {
         #expect(!response.coverageIncomplete)
     }
 
-    @Test("A bounded-away PDF title reports incomplete title coverage")
-    func truncatedPDFTitleCoverage() async throws {
+    @Test
+    func `A bounded-away PDF title reports incomplete title coverage`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1763,8 +1763,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.impact == .partial)
     }
 
-    @Test("Title-only PDF search distinguishes readable metadata from cannot-open")
-    func titleOnlyPDFUnavailableStatuses() async throws {
+    @Test
+    func `Title-only PDF search distinguishes readable metadata from cannot-open`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1815,8 +1815,8 @@ struct VaultSearchEngineTests {
         #expect(broken.resourceLimitedFileCount == 1)
     }
 
-    @Test("PDFs without extractable text remain visible without implying OCR")
-    func noTextPDFStatus() async throws {
+    @Test
+    func `PDFs without extractable text remain visible without implying OCR`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1838,8 +1838,8 @@ struct VaultSearchEngineTests {
         #expect(!response.coverageIncomplete)
     }
 
-    @Test("Expanded PDF text shares one retained-projection budget")
-    func aggregatePDFProjectionBudget() async throws {
+    @Test
+    func `Expanded PDF text shares one retained-projection budget`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1883,8 +1883,8 @@ struct VaultSearchEngineTests {
         #expect(response.pdfSummary.partialFileCount == 0)
     }
 
-    @Test("Aggregate section limits reject an oversized file without hiding a later fit")
-    func aggregateSectionBudgetPreservesLaterFit() async throws {
+    @Test
+    func `Aggregate section limits reject an oversized file without hiding a later fit`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1915,8 +1915,8 @@ struct VaultSearchEngineTests {
         #expect(response.resourceLimitSamples.first?.reason == .projection)
     }
 
-    @Test("Exhausted section budget prevents later PDF page extraction")
-    func aggregateSectionBudgetBoundsPDFExtraction() async throws {
+    @Test
+    func `Exhausted section budget prevents later PDF page extraction`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1945,8 +1945,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("A mixed text and image-only PDF reports partial extraction")
-    func mixedPDFExtractionStatus() async throws {
+    @Test
+    func `A mixed text and image-only PDF reports partial extraction`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -1966,8 +1966,8 @@ struct VaultSearchEngineTests {
         #expect(response.coverageIncomplete)
     }
 
-    @Test("A cursor is bound to every result-shaping request option")
-    func cursorBinding() async throws {
+    @Test
+    func `A cursor is bound to every result-shaping request option`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("cursor sentinel", to: "notes/a.md", root: root)
@@ -2029,8 +2029,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("Oversized locators cannot produce a non-advancing cursor")
-    func oversizedLocatorPagination() async throws {
+    @Test
+    func `Oversized locators cannot produce a non-advancing cursor`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let identifier = String(
@@ -2067,8 +2067,8 @@ struct VaultSearchEngineTests {
         #expect(second.results.map(\.path) == ["notes/999-later.md"])
     }
 
-    @Test("Continuation rejects a corpus changed between pages")
-    func cursorCorpusRevision() async throws {
+    @Test
+    func `Continuation rejects a corpus changed between pages`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("revision sentinel", to: "notes/a.md", root: root)
@@ -2092,8 +2092,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("Continuation binds skipped versus admitted projection outcomes")
-    func cursorProjectionOutcome() async throws {
+    @Test
+    func `Continuation binds skipped versus admitted projection outcomes`() async throws {
         let root = try makeVault()
         let pdfPath = root + "/references/outcome-sentinel.pdf"
         defer {
@@ -2153,8 +2153,8 @@ struct VaultSearchEngineTests {
         }
     }
 
-    @Test("Callers can request several distinct passages from one file")
-    func multiplePassagesPerFile() async throws {
+    @Test
+    func `Callers can request several distinct passages from one file`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -2190,8 +2190,8 @@ struct VaultSearchEngineTests {
         #expect(Set(expanded.results.map(\.lineStart)).count == 3)
     }
 
-    @Test("Smart enforces one per-file passage ceiling across both passes")
-    func smartPassesShareHitLimit() async throws {
+    @Test
+    func `Smart enforces one per-file passage ceiling across both passes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -2220,8 +2220,8 @@ struct VaultSearchEngineTests {
         #expect(Set(response.results.map(\.lineStart)).count == 2)
     }
 
-    @Test("Distributed metadata evidence preserves distinct local passages")
-    func distributedPassagePresentation() async throws {
+    @Test
+    func `Distributed metadata evidence preserves distinct local passages`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -2251,8 +2251,8 @@ struct VaultSearchEngineTests {
         #expect(response.results.allSatisfy { $0.snippet.contains("engine") })
     }
 
-    @Test("A canceled search leaves the shared admission queue immediately")
-    func admissionCancellation() async throws {
+    @Test
+    func `A canceled search leaves the shared admission queue immediately`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("needle", to: "notes/a.md", root: root)
@@ -2281,8 +2281,8 @@ struct VaultSearchEngineTests {
         try await holder.value
     }
 
-    @Test("A full search queue returns a bounded retryable error")
-    func admissionCapacity() async throws {
+    @Test
+    func `A full search queue returns a bounded retryable error`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("needle", to: "notes/a.md", root: root)

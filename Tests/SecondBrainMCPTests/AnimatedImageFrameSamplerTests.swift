@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Animated image frame sampling")
-struct AnimatedImageFrameSamplerTests {
-    @Test("Sampling is evenly spaced with first and last included")
-    func sampling() {
+@Suite
+struct `Animated image frame sampling` {
+    @Test
+    func `Sampling is evenly spaced with first and last included`() {
         #expect(
             AnimatedImageFrameSampler.sampleIndices(total: 5, maximum: 8)
                 == [0, 1, 2, 3, 4]
@@ -24,8 +24,8 @@ struct AnimatedImageFrameSamplerTests {
         #expect(zip(sampled, sampled.dropFirst()).allSatisfy { $0 < $1 })
     }
 
-    @Test("Time offsets sum the delays before a frame")
-    func timeOffsets() {
+    @Test
+    func `Time offsets sum the delays before a frame`() {
         let delays = [0.1, 0.2, 0.3, 0.4]
 
         #expect(AnimatedImageFrameSampler.timeOffset(delays: delays, before: 0) == 0)
@@ -43,8 +43,8 @@ struct AnimatedImageFrameSamplerTests {
         )
     }
 
-    @Test("Plan combines selected frames with source timing")
-    func plan() {
+    @Test
+    func `Plan combines selected frames with source timing`() {
         let plan = AnimatedImageFrameSampler.plan(
             totalFrames: 4,
             maximumFrames: 3,

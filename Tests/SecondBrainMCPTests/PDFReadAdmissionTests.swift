@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF read admission")
-struct PDFReadAdmissionTests {
-    @Test("Only one expensive PDF read runs at a time")
-    func serializesReads() async throws {
+@Suite
+struct `PDF read admission` {
+    @Test
+    func `Only one expensive PDF read runs at a time`() async throws {
         let gate = AsyncExclusiveGate()
         let admission = PDFReadAdmission(gate: gate)
         let hold = PDFAdmissionHold()
@@ -36,8 +36,8 @@ struct PDFReadAdmissionTests {
         #expect(await completion.completed)
     }
 
-    @Test("A full PDF read queue fails with a bounded busy error")
-    func rejectsExcessWaiters() async throws {
+    @Test
+    func `A full PDF read queue fails with a bounded busy error`() async throws {
         let gate = AsyncExclusiveGate(maximumWaiters: 0)
         let admission = PDFReadAdmission(gate: gate)
         let hold = PDFAdmissionHold()

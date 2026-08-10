@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault file inspection")
-struct VaultFileInspectorTests {
-    @Test("Returns regular-file metadata")
-    func metadata() throws {
+@Suite
+struct `Vault file inspection` {
+    @Test
+    func `Returns regular-file metadata`() throws {
         let root = try makeVault()
         let target = try ReadableFileTarget.resolve(
             path: "notes/entry.log",
@@ -21,8 +21,8 @@ struct VaultFileInspectorTests {
         #expect(metadata.modificationDate != nil)
     }
 
-    @Test("Distinguishes missing and non-regular targets")
-    func invalidEntries() throws {
+    @Test
+    func `Distinguishes missing and non-regular targets`() throws {
         let root = try makeVault()
         let missing = try ReadableFileTarget.resolve(
             path: "notes/missing.log",
@@ -56,8 +56,8 @@ struct VaultFileInspectorTests {
         }
     }
 
-    @Test("Temporary snapshots remain immutable after the vault path changes")
-    func temporarySnapshotIsPrivate() throws {
+    @Test
+    func `Temporary snapshots remain immutable after the vault path changes`() throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let target = try ReadableFileTarget.resolve(

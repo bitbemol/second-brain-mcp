@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Server configuration")
-struct ServerConfigTests {
-    @Test("Vault and read-only arguments produce frontend configuration")
-    func validArguments() throws {
+@Suite
+struct `Server configuration` {
+    @Test
+    func `Vault and read-only arguments produce frontend configuration`() throws {
         let vaultPath = try makeVault()
 
         let config = try ServerConfig.parse(arguments: [
@@ -19,8 +19,8 @@ struct ServerConfigTests {
         #expect(config.readOnly)
     }
 
-    @Test("Legacy log-level arguments remain harmless")
-    func legacyLogLevel() throws {
+    @Test
+    func `Legacy log-level arguments remain harmless`() throws {
         let vaultPath = try makeVault()
 
         let config = try ServerConfig.parse(arguments: [
@@ -35,15 +35,15 @@ struct ServerConfigTests {
         #expect(!config.readOnly)
     }
 
-    @Test("Missing vault argument is rejected")
-    func missingVault() {
+    @Test
+    func `Missing vault argument is rejected`() {
         #expect(throws: ServerConfig.ConfigError.self) {
             try ServerConfig.parse(arguments: ["second-brain-mcp"])
         }
     }
 
-    @Test("Empty vault values cannot select the process working directory")
-    func rejectsEmptyVaultValue() {
+    @Test
+    func `Empty vault values cannot select the process working directory`() {
         #expect(throws: ServerConfig.ConfigError.self) {
             try ServerConfig.parse(arguments: ["server", "--vault", ""])
         }
@@ -52,8 +52,8 @@ struct ServerConfigTests {
         }
     }
 
-    @Test("Regular file cannot be used as a vault")
-    func vaultMustBeDirectory() throws {
+    @Test
+    func `Regular file cannot be used as a vault`() throws {
         let path = NSTemporaryDirectory() + "ServerConfigTests-\(UUID().uuidString).txt"
         try Data("not a directory".utf8).write(to: URL(fileURLWithPath: path))
 
@@ -66,8 +66,8 @@ struct ServerConfigTests {
         }
     }
 
-    @Test("Vault aliases resolve to one canonical process identity")
-    func canonicalizesVaultAlias() throws {
+    @Test
+    func `Vault aliases resolve to one canonical process identity`() throws {
         let vaultPath = try makeVault()
         let alias = NSTemporaryDirectory()
             + "ServerConfigTests-alias-\(UUID().uuidString)"

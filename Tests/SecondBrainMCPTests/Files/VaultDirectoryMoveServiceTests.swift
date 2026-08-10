@@ -3,8 +3,8 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault directory move service", .serialized)
-struct VaultDirectoryMoveServiceTests {
+@Suite(.serialized)
+struct `Vault directory move service` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "VaultDirectoryMoveServiceTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
@@ -42,8 +42,8 @@ struct VaultDirectoryMoveServiceTests {
         return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     }
 
-    @Test("One move preserves a nested subtree, commits once, and search sees its new prefix")
-    func recursiveMoveAndSearch() async throws {
+    @Test
+    func `One move preserves a nested subtree, commits once, and search sees its new prefix`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -88,8 +88,8 @@ struct VaultDirectoryMoveServiceTests {
             .trimmingCharacters(in: .whitespacesAndNewlines) == "2")
     }
 
-    @Test("No-clobber, self-subtree, non-directory, and reference moves fail safely")
-    func rejectsUnsafeMoves() async throws {
+    @Test
+    func `No-clobber, self-subtree, non-directory, and reference moves fail safely`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(
@@ -138,8 +138,8 @@ struct VaultDirectoryMoveServiceTests {
         ))
     }
 
-    @Test("Read-only runtime refuses directory moves without initializing Git")
-    func readOnly() async throws {
+    @Test
+    func `Read-only runtime refuses directory moves without initializing Git`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
@@ -156,8 +156,8 @@ struct VaultDirectoryMoveServiceTests {
         ))
     }
 
-    @Test("An untracked credential inside the subtree is never moved or committed")
-    func rejectsSensitiveSubtree() async throws {
+    @Test
+    func `An untracked credential inside the subtree is never moved or committed`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -184,8 +184,8 @@ struct VaultDirectoryMoveServiceTests {
             .contains("Vault snapshot"))
     }
 
-    @Test("An existing HAR with structured credentials is never moved or committed")
-    func rejectsCredentialBearingHAR() async throws {
+    @Test
+    func `An existing HAR with structured credentials is never moved or committed`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -212,8 +212,8 @@ struct VaultDirectoryMoveServiceTests {
             .trimmingCharacters(in: .whitespacesAndNewlines) == "1")
     }
 
-    @Test("An obvious unknown text file cannot become binary through invalid UTF-8")
-    func rejectsInvalidUnknownTextEncoding() async throws {
+    @Test
+    func `An obvious unknown text file cannot become binary through invalid UTF-8`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -241,8 +241,8 @@ struct VaultDirectoryMoveServiceTests {
             .trimmingCharacters(in: .whitespacesAndNewlines) == "1")
     }
 
-    @Test("Git mode validation follows Git's owner-execute convention")
-    func preservesGroupAndOtherExecutePermissions() async throws {
+    @Test
+    func `Git mode validation follows Git's owner-execute convention`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -274,8 +274,8 @@ struct VaultDirectoryMoveServiceTests {
         #expect(try git(["status", "--porcelain"], root: root).isEmpty)
     }
 
-    @Test("An exact retry records a snapshot after the directory was already moved")
-    func recoversSnapshotFailure() async throws {
+    @Test
+    func `An exact retry records a snapshot after the directory was already moved`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -311,8 +311,8 @@ struct VaultDirectoryMoveServiceTests {
             .trimmingCharacters(in: .whitespacesAndNewlines) == "2")
     }
 
-    @Test("A move snapshot coalesces unrelated pending note work")
-    func coalescesUnrelatedNoteWork() async throws {
+    @Test
+    func `A move snapshot coalesces unrelated pending note work`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -338,8 +338,8 @@ struct VaultDirectoryMoveServiceTests {
         #expect(snapshot.contains("notes/unrelated.md"))
     }
 
-    @Test("A crash after rename is recovered only for the recorded source inode")
-    func recoversInterruptedRenameFromIdentity() async throws {
+    @Test
+    func `A crash after rename is recovered only for the recorded source inode`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -401,8 +401,8 @@ struct VaultDirectoryMoveServiceTests {
         ))
     }
 
-    @Test("A pre-persistence directory intent is safely restarted")
-    func clearsEvidenceOnlyIntent() async throws {
+    @Test
+    func `A pre-persistence directory intent is safely restarted`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -447,8 +447,8 @@ struct VaultDirectoryMoveServiceTests {
         ))
     }
 
-    @Test("A completed directory move replays without moving again")
-    func completedMoveReplays() async throws {
+    @Test
+    func `A completed directory move replays without moving again`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -464,8 +464,8 @@ struct VaultDirectoryMoveServiceTests {
         #expect(replay.metadata?.replayed == true)
     }
 
-    @Test("A prior commit mentioning the mutation ID cannot suppress a snapshot")
-    func doesNotInspectCommitMessagesForReplay() async throws {
+    @Test
+    func `A prior commit mentioning the mutation ID cannot suppress a snapshot`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -493,10 +493,9 @@ struct VaultDirectoryMoveServiceTests {
     }
 
     @Test(
-        "Move recovery refuses any descendant state change",
         arguments: RecoveredSubtreeMutation.allCases
     )
-    func recoveryBindsExactSubtree(
+    func `Move recovery refuses any descendant state change`(
         mutation: RecoveredSubtreeMutation
     ) async throws {
         let root = try makeVault()
@@ -549,8 +548,8 @@ struct VaultDirectoryMoveServiceTests {
             .trimmingCharacters(in: .whitespacesAndNewlines) == "1")
     }
 
-    @Test("Hidden and package descendants are refused before rename")
-    func rejectsHiddenAndPackageDescendants() async throws {
+    @Test
+    func `Hidden and package descendants are refused before rename`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
@@ -593,8 +592,8 @@ struct VaultDirectoryMoveServiceTests {
         }
     }
 
-    @Test("All subtree bytes are charged from stable descriptors")
-    func enforcesAggregateSubtreeBytes() throws {
+    @Test
+    func `All subtree bytes are charged from stable descriptors`() throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let source = try NotesDirectoryTarget.resolve(
@@ -609,8 +608,8 @@ struct VaultDirectoryMoveServiceTests {
         }
     }
 
-    @Test("Aggregate manifest paths are bounded independently from file bytes")
-    func enforcesAggregateManifestPathBytes() throws {
+    @Test
+    func `Aggregate manifest paths are bounded independently from file bytes`() throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let source = try NotesDirectoryTarget.resolve(
@@ -625,8 +624,8 @@ struct VaultDirectoryMoveServiceTests {
         }
     }
 
-    @Test("Created-parent cleanup never removes a substituted directory")
-    func cleanupUsesCreatedIdentity() throws {
+    @Test
+    func `Created-parent cleanup never removes a substituted directory`() throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         enum Injected: Error { case stop }
@@ -665,8 +664,8 @@ struct VaultDirectoryMoveServiceTests {
         #expect(FileManager.default.fileExists(atPath: source.url.path))
     }
 
-    @Test("Birthtime participates in directory recovery identity")
-    func birthtimeStrengthensIdentity() throws {
+    @Test
+    func `Birthtime participates in directory recovery identity`() throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let tree = DirectoryTreeStore(vaultPath: root)

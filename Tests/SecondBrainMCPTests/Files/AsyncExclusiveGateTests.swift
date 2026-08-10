@@ -2,10 +2,10 @@ import Testing
 @testable import second_brain_mcp
 
 /// Behavioral coverage for the reusable FIFO async serialization primitive.
-@Suite("Async exclusive gate")
-struct AsyncExclusiveGateTests {
-    @Test("Runs concurrent operations one at a time")
-    func serializesOperations() async throws {
+@Suite
+struct `Async exclusive gate` {
+    @Test
+    func `Runs concurrent operations one at a time`() async throws {
         let gate = AsyncExclusiveGate()
         let probe = CriticalSectionProbe()
 
@@ -26,8 +26,8 @@ struct AsyncExclusiveGateTests {
         #expect(maximumConcurrency == 1)
     }
 
-    @Test("A throwing operation releases the next permit")
-    func releasesPermitAfterError() async throws {
+    @Test
+    func `A throwing operation releases the next permit`() async throws {
         let gate = AsyncExclusiveGate()
         do {
             let _: Void = try await gate.withPermit {
@@ -45,8 +45,8 @@ struct AsyncExclusiveGateTests {
         #expect(value == 42)
     }
 
-    @Test("Cancellation while queued skips the operation and releases followers")
-    func queuedCancellationSkipsOperation() async throws {
+    @Test
+    func `Cancellation while queued skips the operation and releases followers`() async throws {
         let gate = AsyncExclusiveGate()
         let hold = GateHold()
         let probe = CancellationProbe()
@@ -93,8 +93,8 @@ struct AsyncExclusiveGateTests {
         #expect(!canceledOperationStarted)
     }
 
-    @Test("A bounded queue refuses to retain another suspended operation")
-    func boundedQueue() async throws {
+    @Test
+    func `A bounded queue refuses to retain another suspended operation`() async throws {
         let gate = AsyncExclusiveGate(maximumWaiters: 1)
         let hold = GateHold()
         let holder = Task {

@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("File format catalog")
-struct FileFormatCatalogTests {
-    @Test("Typed binding access resolves each registered CRUD function")
-    func resolvesTypedBindings() throws {
+@Suite
+struct `File format catalog` {
+    @Test
+    func `Typed binding access resolves each registered CRUD function`() throws {
         let catalog = makeCatalog()
 
         #expect(try catalog.createBinding(for: .markdown, in: .notes).id.rawValue == "markdown")
@@ -14,8 +14,8 @@ struct FileFormatCatalogTests {
         #expect(try catalog.deleteBinding(for: .markdown, in: .notes).id.rawValue == "soft_delete")
     }
 
-    @Test("Binding access enforces operation area policy")
-    func rejectsDisallowedArea() throws {
+    @Test
+    func `Binding access enforces operation area policy`() throws {
         let catalog = makeCatalog()
 
         do {
@@ -28,8 +28,8 @@ struct FileFormatCatalogTests {
         }
     }
 
-    @Test("Binding access rejects unregistered formats")
-    func rejectsUnknownFormat() throws {
+    @Test
+    func `Binding access rejects unregistered formats`() throws {
         let catalog = FileFormatCatalog(definitions: [])
 
         do {

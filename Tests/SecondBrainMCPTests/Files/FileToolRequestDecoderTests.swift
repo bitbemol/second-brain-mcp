@@ -2,13 +2,13 @@ import MCP
 import Testing
 @testable import second_brain_mcp
 
-@Suite("MCP file request decoder")
-struct FileToolRequestDecoderTests {
+@Suite
+struct `MCP file request decoder` {
     private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
     private let revision = "sha256:" + String(repeating: "a", count: 64)
 
-    @Test("Create arguments decode into shared request values")
-    func createRequest() throws {
+    @Test
+    func `Create arguments decode into shared request values`() throws {
         let params = CallTool.Parameters(
             name: "create_file",
             arguments: [
@@ -37,8 +37,8 @@ struct FileToolRequestDecoderTests {
         #expect(request.transform == .videoToGIF)
     }
 
-    @Test("Read arguments preserve format-specific options")
-    func readRequest() throws {
+    @Test
+    func `Read arguments preserve format-specific options`() throws {
         let params = CallTool.Parameters(
             name: "read_file",
             arguments: [
@@ -64,8 +64,8 @@ struct FileToolRequestDecoderTests {
         #expect(request.options.maxPages == 3)
     }
 
-    @Test("Update replacements decode in input order")
-    func updateRequest() throws {
+    @Test
+    func `Update replacements decode in input order`() throws {
         let params = CallTool.Parameters(
             name: "update_file",
             arguments: [
@@ -99,8 +99,8 @@ struct FileToolRequestDecoderTests {
         #expect(request.replacements.first?.newText == "after")
     }
 
-    @Test("Delete requires and preserves mutation consistency values")
-    func deleteRequest() throws {
+    @Test
+    func `Delete requires and preserves mutation consistency values`() throws {
         let params = CallTool.Parameters(
             name: "delete_file",
             arguments: [
@@ -123,8 +123,8 @@ struct FileToolRequestDecoderTests {
         #expect(request.expectedRevision.rawValue == revision)
     }
 
-    @Test("Mutation identities and expected revisions are strict")
-    func mutationConsistencyValidation() {
+    @Test
+    func `Mutation identities and expected revisions are strict`() {
         expectError(
             "Missing required parameter: mutation_id",
             decoding: CallTool.Parameters(
@@ -175,8 +175,8 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Invalid update mode retains its boundary error")
-    func invalidUpdateMode() {
+    @Test
+    func `Invalid update mode retains its boundary error`() {
         let params = CallTool.Parameters(
             name: "update_file",
             arguments: [
@@ -194,10 +194,9 @@ struct FileToolRequestDecoderTests {
     }
 
     @Test(
-        "Every CRUD decoder shares required path validation",
         arguments: FileToolName.allCases
     )
-    func missingPath(tool: FileToolName) {
+    func `Every CRUD decoder shares required path validation`(tool: FileToolName) {
         let params = CallTool.Parameters(
             name: tool.rawValue,
             arguments: ["format": .string("markdown")]
@@ -210,8 +209,8 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Identity decoding distinguishes missing and unsupported formats")
-    func invalidFormats() {
+    @Test
+    func `Identity decoding distinguishes missing and unsupported formats`() {
         expectError(
             "Missing required parameter: format",
             decoding: CallTool.Parameters(
@@ -233,8 +232,8 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Invalid create transforms receive a focused diagnostic")
-    func invalidCreateTransform() {
+    @Test
+    func `Invalid create transforms receive a focused diagnostic`() {
         expectError(
             "Invalid create transform: transcode",
             decoding: CallTool.Parameters(
@@ -249,8 +248,8 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Present arguments with wrong JSON types are rejected")
-    func invalidArgumentTypes() {
+    @Test
+    func `Present arguments with wrong JSON types are rejected`() {
         expectError(
             "Invalid parameter 'mode': expected string",
             decoding: CallTool.Parameters(

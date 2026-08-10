@@ -2,16 +2,16 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Generic files — CRUD store")
-struct VaultCRUDStoreTests {
+@Suite
+struct `Generic files — CRUD store` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "VaultCRUDStoreTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: root + "/notes/deep", withIntermediateDirectories: true)
         return root
     }
 
-    @Test("Create, snapshot, replace, and soft-delete share one persistence path")
-    func lifecycle() async throws {
+    @Test
+    func `Create, snapshot, replace, and soft-delete share one persistence path`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let target = try WritableFileTarget.resolve(path: "notes/deep/a.log", format: .log, vaultPath: root)
@@ -36,8 +36,8 @@ struct VaultCRUDStoreTests {
         #expect(FileManager.default.fileExists(atPath: root + "/" + deletion.trashPath))
     }
 
-    @Test("Replace rejects a stale snapshot")
-    func staleUpdate() async throws {
+    @Test
+    func `Replace rejects a stale snapshot`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let target = try WritableFileTarget.resolve(path: "notes/deep/a.log", format: .log, vaultPath: root)
@@ -55,8 +55,8 @@ struct VaultCRUDStoreTests {
         #expect(try String(contentsOf: target.url, encoding: .utf8) == "external edit")
     }
 
-    @Test("Create rejects an existing destination")
-    func noClobber() async throws {
+    @Test
+    func `Create rejects an existing destination`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let target = try WritableFileTarget.resolve(path: "notes/a.har", format: .har, vaultPath: root)
@@ -66,8 +66,8 @@ struct VaultCRUDStoreTests {
         }
     }
 
-    @Test("Snapshot and soft-delete share regular-file validation")
-    func validatesReadableFileKind() async throws {
+    @Test
+    func `Snapshot and soft-delete share regular-file validation`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let missing = try WritableFileTarget.resolve(
@@ -107,8 +107,8 @@ struct VaultCRUDStoreTests {
         #expect(FileManager.default.fileExists(atPath: directory.url.path))
     }
 
-    @Test("Create and replace reject files beyond the format policy")
-    func rejectsOversizedWrites() async throws {
+    @Test
+    func `Create and replace reject files beyond the format policy`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let target = try WritableFileTarget.resolve(
@@ -135,8 +135,8 @@ struct VaultCRUDStoreTests {
         #expect(try String(contentsOf: target.url, encoding: .utf8) == "original")
     }
 
-    @Test("Snapshot honors a stricter caller byte ceiling")
-    func boundedSnapshot() async throws {
+    @Test
+    func `Snapshot honors a stricter caller byte ceiling`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let store = VaultCRUDStore(vaultPath: root)
@@ -155,8 +155,8 @@ struct VaultCRUDStoreTests {
         }
     }
 
-    @Test("Soft-delete paths cannot collide for equal basenames")
-    func uniqueTrashPaths() async throws {
+    @Test
+    func `Soft-delete paths cannot collide for equal basenames`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let first = try WritableFileTarget.resolve(path: "notes/a/same.log", format: .log, vaultPath: root)
@@ -184,8 +184,8 @@ struct VaultCRUDStoreTests {
         #expect(FileManager.default.fileExists(atPath: root + "/" + secondTrash))
     }
 
-    @Test("Soft delete rejects a symlinked trash directory")
-    func softDeleteDoesNotEscapeThroughTrashSymlink() async throws {
+    @Test
+    func `Soft delete rejects a symlinked trash directory`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let target = try WritableFileTarget.resolve(
@@ -220,8 +220,8 @@ struct VaultCRUDStoreTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
     }
 
-    @Test("Create revalidates a parent replaced by an outside symlink")
-    func createRejectsChangedParentPath() async throws {
+    @Test
+    func `Create revalidates a parent replaced by an outside symlink`() async throws {
         let root = try makeVault()
         let safeDirectory = URL(fileURLWithPath: root + "/notes/safe")
         try FileManager.default.createDirectory(
@@ -258,8 +258,8 @@ struct VaultCRUDStoreTests {
         ))
     }
 
-    @Test("Soft delete rejects a stale caller revision")
-    func softDeleteRejectsStaleRevision() async throws {
+    @Test
+    func `Soft delete rejects a stale caller revision`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let target = try WritableFileTarget.resolve(

@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDFReader — read boundary")
-struct PDFReaderTests {
-    @Test("Reports an unreadable validated PDF target")
-    func rejectsUnreadableTarget() async throws {
+@Suite
+struct `PDFReader — read boundary` {
+    @Test
+    func `Reports an unreadable validated PDF target`() async throws {
         let root = NSTemporaryDirectory() + "PDFReaderTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
             atPath: root + "/references",
@@ -22,8 +22,8 @@ struct PDFReaderTests {
         }
     }
 
-    @Test("Rejects oversized PDFs before opening")
-    func rejectsOversizedTarget() async throws {
+    @Test
+    func `Rejects oversized PDFs before opening`() async throws {
         let root = NSTemporaryDirectory() + "PDFReaderSizeTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
             atPath: root + "/references",
@@ -44,8 +44,8 @@ struct PDFReaderTests {
         }
     }
 
-    @Test("Rejects empty and oversized PDF queries before opening PDFKit")
-    func rejectsInvalidQuery() async throws {
+    @Test
+    func `Rejects empty and oversized PDF queries before opening PDFKit`() async throws {
         let root = NSTemporaryDirectory() + "PDFReaderQueryTests-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(

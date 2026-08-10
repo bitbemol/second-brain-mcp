@@ -2,14 +2,14 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Canvas document validation")
-struct CanvasDocumentValidatorTests {
+@Suite
+struct `Canvas document validation` {
     private func validate(_ json: String) throws {
         try CanvasDocumentValidator.validate(jsonData: Data(json.utf8))
     }
 
-    @Test("Valid canvas with nodes and edges passes")
-    func valid() throws {
+    @Test
+    func `Valid canvas with nodes and edges passes`() throws {
         try validate("""
         {"nodes":[
           {"id":"a","type":"text","x":0,"y":0,"width":200,"height":60,"text":"Hello"},
@@ -21,8 +21,8 @@ struct CanvasDocumentValidatorTests {
         """)
     }
 
-    @Test("Inspection projects validated node presentation data")
-    func inspection() throws {
+    @Test
+    func `Inspection projects validated node presentation data`() throws {
         let result = try CanvasDocumentValidator.inspect(jsonData: Data("""
         {"nodes":[
           {"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"First line\\nSecond line"},
@@ -40,21 +40,21 @@ struct CanvasDocumentValidatorTests {
         #expect(result.edgeCount == 1)
     }
 
-    @Test("Empty canvas passes")
-    func empty() throws {
+    @Test
+    func `Empty canvas passes`() throws {
         try validate("{}")
         try validate(#"{"nodes":[],"edges":[]}"#)
     }
 
-    @Test("Malformed JSON is rejected")
-    func malformed() {
+    @Test
+    func `Malformed JSON is rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate("{not json")
         }
     }
 
-    @Test("Duplicate JSON object keys are rejected before semantic decoding")
-    func duplicateJSONKeys() {
+    @Test
+    func `Duplicate JSON object keys are rejected before semantic decoding`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate(#"{"nodes":[],"n\u006fdes":[]}"#)
         }
@@ -63,8 +63,8 @@ struct CanvasDocumentValidatorTests {
         }
     }
 
-    @Test("Duplicate node id is rejected")
-    func duplicateID() {
+    @Test
+    func `Duplicate node id is rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate("""
             {"nodes":[
@@ -75,8 +75,8 @@ struct CanvasDocumentValidatorTests {
         }
     }
 
-    @Test("Edge referencing a missing node is rejected")
-    func danglingEdge() {
+    @Test
+    func `Edge referencing a missing node is rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate("""
             {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"hi"}],
@@ -85,22 +85,22 @@ struct CanvasDocumentValidatorTests {
         }
     }
 
-    @Test("Unknown node type is rejected")
-    func unknownType() {
+    @Test
+    func `Unknown node type is rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate(#"{"nodes":[{"id":"a","type":"sticky","x":0,"y":0,"width":1,"height":1}]}"#)
         }
     }
 
-    @Test("Missing required geometry is rejected")
-    func missingGeometry() {
+    @Test
+    func `Missing required geometry is rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate(#"{"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":1,"text":"hi"}]}"#)
         }
     }
 
-    @Test("Invalid enum values are rejected")
-    func badEnums() {
+    @Test
+    func `Invalid enum values are rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate(#"{"nodes":[{"id":"g","type":"group","x":0,"y":0,"width":1,"height":1,"backgroundStyle":"wrong"}]}"#)
         }
@@ -113,15 +113,15 @@ struct CanvasDocumentValidatorTests {
         }
     }
 
-    @Test("Invalid color is rejected")
-    func badColor() {
+    @Test
+    func `Invalid color is rejected`() {
         #expect(throws: CanvasDocumentValidator.ValidationError.self) {
             try validate(##"{"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"x","color":"#zz"}]}"##)
         }
     }
 
-    @Test("Unknown extra keys are accepted")
-    func extraKeysAccepted() throws {
+    @Test
+    func `Unknown extra keys are accepted`() throws {
         try validate("""
         {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"x","pluginField":42}],
          "customTopLevel":{"foo":"bar"}}

@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Audit log entry")
-struct AuditLogEntryTests {
-    @Test("Escapes record and field delimiters in untrusted values")
-    func escapesUntrustedFields() {
+@Suite
+struct `Audit log entry` {
+    @Test
+    func `Escapes record and field delimiters in untrusted values`() {
         let entry = AuditLogEntry(
             timestamp: "2026-08-06T12:00:00Z",
             operation: .delete,
@@ -23,8 +23,8 @@ struct AuditLogEntryTests {
         ))
     }
 
-    @Test("Reference reads retain their stored audit vocabulary")
-    func preservesReferenceReadOperation() {
+    @Test
+    func `Reference reads retain their stored audit vocabulary`() {
         let entry = AuditLogEntry(
             timestamp: "2026-08-06T12:00:00Z",
             operation: .read,
@@ -36,8 +36,8 @@ struct AuditLogEntryTests {
         #expect(entry.contains("READ_REF"))
     }
 
-    @Test("Directory moves have a distinct stable audit operation")
-    func moveOperation() {
+    @Test
+    func `Directory moves have a distinct stable audit operation`() {
         let entry = AuditLogEntry(
             timestamp: "2026-08-06T12:00:00Z",
             operation: .move,
@@ -50,8 +50,8 @@ struct AuditLogEntryTests {
         #expect(entry.contains("notes/completed/ticket-123"))
     }
 
-    @Test("Bounds caller-controlled fields")
-    func boundsFields() {
+    @Test
+    func `Bounds caller-controlled fields`() {
         let entry = AuditLogEntry(
             timestamp: "2026-08-06T12:00:00Z",
             operation: .read,

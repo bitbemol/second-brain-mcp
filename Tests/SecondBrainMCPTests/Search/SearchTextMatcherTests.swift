@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault search matching")
-struct SearchTextMatcherTests {
+@Suite
+struct `Vault search matching` {
     private let limits = SearchResourceLimits.default
 
     private func match(
@@ -22,30 +22,30 @@ struct SearchTextMatcherTests {
         )
     }
 
-    @Test("Exact matching preserves punctuation and treats regex syntax literally")
-    func exactIdentifiers() throws {
+    @Test
+    func `Exact matching preserves punctuation and treats regex syntax literally`() throws {
         #expect(try match("stale .git/index.lock detected", query: ".git/index.lock", strategy: .exact) != nil)
         #expect(try match("ordinary text", query: ".*", strategy: .exact) == nil)
         #expect(try match("contains .* literally", query: ".*", strategy: .exact) != nil)
         #expect(try match("(a+)+$", query: "(a+)+$", strategy: .exact) != nil)
     }
 
-    @Test("Phrase requires adjacent ordered tokens across punctuation")
-    func phrase() throws {
+    @Test
+    func `Phrase requires adjacent ordered tokens across punctuation`() throws {
         #expect(try match("Swift, structured concurrency", query: "structured concurrency", strategy: .phrase) != nil)
         #expect(try match("concurrency is structured", query: "structured concurrency", strategy: .phrase) == nil)
         #expect(try match("structured and safe concurrency", query: "structured concurrency", strategy: .phrase) == nil)
     }
 
-    @Test("Lexical search accepts partial coverage without duplicate amplification")
-    func lexical() throws {
+    @Test
+    func `Lexical search accepts partial coverage without duplicate amplification`() throws {
         let once = try #require(try match("actors coordinate writes", query: "actors actors missing", strategy: .lexical))
         let duplicate = try #require(try match("actors coordinate writes", query: "actors missing", strategy: .lexical))
         #expect(once.quality == duplicate.quality)
     }
 
-    @Test("Lexical evidence records whether terms form one cohesive passage")
-    func lexicalCohesion() throws {
+    @Test
+    func `Lexical evidence records whether terms form one cohesive passage`() throws {
         let adjacent = try #require(try match(
             "binary search implementation",
             query: "binary search",
@@ -70,8 +70,8 @@ struct SearchTextMatcherTests {
         #expect(repeated.range.map { String(repeatedSource[$0]) } == "binary search")
     }
 
-    @Test("Word strategies never promote embedded substrings")
-    func wholeWordBoundaries() throws {
+    @Test
+    func `Word strategies never promote embedded substrings`() throws {
         for strategy in [SearchStrategy.lexical, .phrase, .fuzzy, .smart] {
             #expect(try match("notifications applications aguacate", query: "cat", strategy: strategy) == nil)
             #expect(try match("refactoring factorial interactor", query: "actor", strategy: strategy) == nil)
@@ -92,8 +92,8 @@ struct SearchTextMatcherTests {
         #expect(whole.kind == .literalWhole)
     }
 
-    @Test("Conversational punctuation does not force literal-only matching")
-    func conversationalPunctuation() throws {
+    @Test
+    func `Conversational punctuation does not force literal-only matching`() throws {
         let text = "App leftovers are stored in the user Library folder."
         for query in [
             "where should I look for files left after uninstalling an app?",
@@ -114,8 +114,8 @@ struct SearchTextMatcherTests {
         }
     }
 
-    @Test("Dense embedded literal occurrences stop at a declared ceiling")
-    func boundedLiteralOccurrences() throws {
+    @Test
+    func `Dense embedded literal occurrences stop at a declared ceiling`() throws {
         let source = String(repeating: "cat", count: 2_000) + " cat"
         let limits = searchTestLimits(maximumLiteralOccurrencesPerField: 32)
         var budget = SearchWorkBudget()
@@ -131,8 +131,8 @@ struct SearchTextMatcherTests {
         #expect(budget.truncated)
     }
 
-    @Test("Identifier tokenization understands camel and acronym boundaries")
-    func identifierBoundaries() throws {
+    @Test
+    func `Identifier tokenization understands camel and acronym boundaries`() throws {
         #expect(try match("SwiftUI state", query: "swift ui", strategy: .phrase) != nil)
         #expect(try match("URLSession task", query: "url session", strategy: .phrase) != nil)
         #expect(try match("MainActor", query: "actor", strategy: .lexical) != nil)
@@ -140,15 +140,15 @@ struct SearchTextMatcherTests {
         #expect(try match("@main entry", query: "@main", strategy: .smart) != nil)
     }
 
-    @Test("Fuzzy search repairs realistic typos but not short words")
-    func fuzzy() throws {
+    @Test
+    func `Fuzzy search repairs realistic typos but not short words`() throws {
         #expect(try match("concurrent git lock", query: "concurent git lok", strategy: .fuzzy) != nil)
         #expect(try match("an unrelated catalog", query: "concurent git lok", strategy: .fuzzy) == nil)
         #expect(try match("go runtime", query: "fo", strategy: .fuzzy) == nil)
     }
 
-    @Test("Fuzzy search repairs one adjacent transposition")
-    func adjacentTranspositions() throws {
+    @Test
+    func `Fuzzy search repairs one adjacent transposition`() throws {
         #expect(try match("focus", query: "focsu", strategy: .fuzzy) != nil)
         #expect(try match(
             "swimlane focus",
@@ -162,8 +162,8 @@ struct SearchTextMatcherTests {
         #expect(try match("abcd", query: "badc", strategy: .fuzzy) == nil)
     }
 
-    @Test("Fuzzy assignment finds a valid distinct-token mapping")
-    func nonGreedyFuzzyAssignment() throws {
+    @Test
+    func `Fuzzy assignment finds a valid distinct-token mapping`() throws {
         // A greedy exact-first matcher consumes `abc` for the first term and
         // then cannot place `abd`. The valid mapping is abc -> axc and
         // abd -> abc, with each source position used exactly once.
@@ -171,8 +171,8 @@ struct SearchTextMatcherTests {
         #expect(try match("axc ayb", query: "abc ayc", strategy: .fuzzy) != nil)
     }
 
-    @Test("Fuzzy quality uses the best assignment independent of token order")
-    func minimumCostFuzzyAssignment() throws {
+    @Test
+    func `Fuzzy quality uses the best assignment independent of token order`() throws {
         let forward = try #require(try match(
             "abc axc",
             query: "abc ayc",
@@ -187,8 +187,8 @@ struct SearchTextMatcherTests {
         #expect(forward.quality == 56)
     }
 
-    @Test("Closer fuzzy matches receive a higher quality score")
-    func fuzzyDistanceRanking() throws {
+    @Test
+    func `Closer fuzzy matches receive a higher quality score`() throws {
         let oneEdit = try #require(try match(
             "abcdefgi",
             query: "abcdefgh",
@@ -202,8 +202,8 @@ struct SearchTextMatcherTests {
         #expect(oneEdit.quality > twoEdits.quality)
     }
 
-    @Test("Unicode normalization never reuses folded indices")
-    func unicodeRangesAndSnippets() throws {
+    @Test
+    func `Unicode normalization never reuses folded indices`() throws {
         let source = "🧠 notes about İSTANBUL and cafe\u{301} design"
         let found = try #require(try match(source, query: "istanbul", strategy: .exact))
         let snippet = SearchSnippetBuilder.make(
@@ -236,8 +236,8 @@ struct SearchTextMatcherTests {
         #expect(separated.contains("sk_ live_"))
     }
 
-    @Test("Fuzzy work stops at deterministic operation budgets")
-    func fuzzyBudget() throws {
+    @Test
+    func `Fuzzy work stops at deterministic operation budgets`() throws {
         let tiny = SearchResourceLimits(
             maximumQueryBytes: 1_024,
             maximumQueryTokens: 64,
@@ -283,8 +283,8 @@ struct SearchTextMatcherTests {
         #expect(budget.exhausted)
     }
 
-    @Test("Word strategies split snake-case identifiers")
-    func snakeCaseRecall() throws {
+    @Test
+    func `Word strategies split snake-case identifiers`() throws {
         #expect(try match(
             "the git_index_lock is stale",
             query: "git index lock",
@@ -297,13 +297,13 @@ struct SearchTextMatcherTests {
         ) != nil)
     }
 
-    @Test("Distinct fuzzy terms cannot reuse one source token")
-    func distinctFuzzyAssignment() throws {
+    @Test
+    func `Distinct fuzzy terms cannot reuse one source token`() throws {
         #expect(try match("git", query: "git bit", strategy: .fuzzy) == nil)
     }
 
-    @Test("Source token and general comparison work are independently bounded")
-    func generalWorkBounds() throws {
+    @Test
+    func `Source token and general comparison work are independently bounded`() throws {
         var tokenBudget = SearchWorkBudget()
         let tokenLimits = searchTestLimits(
             maximumSourceTokensPerField: 3,
@@ -336,8 +336,8 @@ struct SearchTextMatcherTests {
         #expect(comparisonBudget.exhausted)
     }
 
-    @Test("Dense fuzzy assignment consumes the shared work budget")
-    func fuzzyAssignmentBudget() throws {
+    @Test
+    func `Dense fuzzy assignment consumes the shared work budget`() throws {
         var budget = SearchWorkBudget()
         let bounded = searchTestLimits(
             maximumSourceTokensPerField: 100,
@@ -356,8 +356,8 @@ struct SearchTextMatcherTests {
         #expect(budget.exhausted)
     }
 
-    @Test("Explicit fuzzy requires every term while smart can fall back")
-    func fuzzyAndSemantics() throws {
+    @Test
+    func `Explicit fuzzy requires every term while smart can fall back`() throws {
         #expect(try match(
             "swimlane unrelated",
             query: "swimlane focsu",

@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("JSON file operations")
-struct JSONFileOperationsTests {
-    @Test("Cancellation is not misreported as malformed JSON")
-    func cancellationPropagates() async throws {
+@Suite
+struct `JSON file operations` {
+    @Test
+    func `Cancellation is not misreported as malformed JSON`() async throws {
         let target = try makeTarget()
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
@@ -19,8 +19,8 @@ struct JSONFileOperationsTests {
         }
     }
 
-    @Test("Creation and reading preserve valid JSON bytes")
-    func losslessCreateAndRead() throws {
+    @Test
+    func `Creation and reading preserve valid JSON bytes`() throws {
         let target = try makeTarget()
         let source = "{\n  \"z\": 1,\n  \"a\": [true, null]\n}\n"
         let operations = JSONFileOperations()
@@ -59,8 +59,8 @@ struct JSONFileOperationsTests {
         ).data == largeNumber)
     }
 
-    @Test("Malformed JSON is rejected on creation and after updates")
-    func malformedJSON() throws {
+    @Test
+    func `Malformed JSON is rejected on creation and after updates`() throws {
         let target = try makeTarget()
         let operations = JSONFileOperations()
         for malformed in [
@@ -118,8 +118,8 @@ struct JSONFileOperationsTests {
         }
     }
 
-    @Test("Leading UTF-8 BOM survives reads and patch updates")
-    func byteOrderMarkIsPreserved() throws {
+    @Test
+    func `Leading UTF-8 BOM survives reads and patch updates`() throws {
         let target = try makeTarget()
         let operations = JSONFileOperations()
         let original = Data([0xef, 0xbb, 0xbf]) + Data(#"{"value":1}"#.utf8)
@@ -164,8 +164,8 @@ struct JSONFileOperationsTests {
         ).hasSuffix(#"{"value":2}"#))
     }
 
-    @Test("Oversized updates fail before JSON syntax work")
-    func oversizedUpdate() throws {
+    @Test
+    func `Oversized updates fail before JSON syntax work`() throws {
         let target = try makeTarget()
         let snapshot = FileSnapshot(data: Data("0".utf8), modifiedDate: nil)
         let oversized = String(
@@ -190,8 +190,8 @@ struct JSONFileOperationsTests {
         }
     }
 
-    @Test("JSON supports replacement and exact patches but not append")
-    func updateModes() throws {
+    @Test
+    func `JSON supports replacement and exact patches but not append`() throws {
         let target = try makeTarget()
         let operations = JSONFileOperations()
         let original = Data(#"{"enabled":false,"count":1}"#.utf8)

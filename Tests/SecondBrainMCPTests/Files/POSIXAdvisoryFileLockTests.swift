@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("POSIX advisory file lock")
-struct POSIXAdvisoryFileLockTests {
-    @Test("Independent shared leases keep a writer excluded until both close")
-    func independentSharedLeases() async throws {
+@Suite
+struct `POSIX advisory file lock` {
+    @Test
+    func `Independent shared leases keep a writer excluded until both close`() async throws {
         let url = try lockURL()
         let first = POSIXAdvisoryFileLock(
             url: url,
@@ -42,8 +42,8 @@ struct POSIXAdvisoryFileLockTests {
         #expect(await probe.entered)
     }
 
-    @Test("A canceled waiter never acquires the protected operation")
-    func canceledWaiter() async throws {
+    @Test
+    func `A canceled waiter never acquires the protected operation`() async throws {
         let url = try lockURL()
         let contention = AdvisoryContentionProbe()
         let lock = POSIXAdvisoryFileLock(
@@ -75,8 +75,8 @@ struct POSIXAdvisoryFileLockTests {
         try await lock.withLock(.exclusive) {}
     }
 
-    @Test("Contention observer reports retries and stays silent without contention")
-    func contentionObservation() async throws {
+    @Test
+    func `Contention observer reports retries and stays silent without contention`() async throws {
         let url = try lockURL()
         let contention = AdvisoryContentionProbe()
         try await POSIXAdvisoryFileLock(
@@ -102,8 +102,8 @@ struct POSIXAdvisoryFileLockTests {
         #expect(contention.count > previousContentionCount)
     }
 
-    @Test("A symlink cannot substitute for a persistent lock file")
-    func rejectsSymlink() async throws {
+    @Test
+    func `A symlink cannot substitute for a persistent lock file`() async throws {
         let url = try lockURL()
         let destination = url.deletingLastPathComponent()
             .appendingPathComponent("destination")

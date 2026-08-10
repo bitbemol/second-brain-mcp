@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Persisted Git-candidate security policy")
-struct PersistedFileSecurityPolicyTests {
-    @Test("Structured HAR credentials are rejected")
-    func rejectsCredentialBearingHAR() {
+@Suite
+struct `Persisted Git-candidate security policy` {
+    @Test
+    func `Structured HAR credentials are rejected`() {
         let archive = #"{"log":{"entries":[{"request":{"headers":[{"name":"Authorization","value":"short-secret"}]}}]}}"#
 
         #expect(throws: PersistedFileSecurityPolicy.Violation.self) {
@@ -17,8 +17,8 @@ struct PersistedFileSecurityPolicyTests {
         }
     }
 
-    @Test("Invalid UTF-8 is rejected for an obvious unknown text path")
-    func rejectsInvalidUnknownTextEncoding() {
+    @Test
+    func `Invalid UTF-8 is rejected for an obvious unknown text path`() {
         #expect(throws: TextFileSupport.TextError.self) {
             try PersistedFileSecurityPolicy.validateGitCandidate(
                 Data([0xff]),
@@ -28,8 +28,8 @@ struct PersistedFileSecurityPolicyTests {
         }
     }
 
-    @Test("Valid UTF-8 is scanned even when its extension names a binary format")
-    func scansTextDisguisedAsKnownBinary() {
+    @Test
+    func `Valid UTF-8 is scanned even when its extension names a binary format`() {
         let data = Data("api_key=abcdefghijklmnop1234567890".utf8)
 
         #expect(throws: SensitiveContentPolicy.Violation.self) {
@@ -41,8 +41,8 @@ struct PersistedFileSecurityPolicyTests {
         }
     }
 
-    @Test("Opaque unknown binary bytes retain the binary exemption")
-    func permitsOpaqueUnknownBinary() throws {
+    @Test
+    func `Opaque unknown binary bytes retain the binary exemption`() throws {
         try PersistedFileSecurityPolicy.validateGitCandidate(
             Data([0xff]),
             format: nil,

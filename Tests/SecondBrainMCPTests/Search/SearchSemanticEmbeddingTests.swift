@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Local semantic embedding")
-struct SearchSemanticEmbeddingTests {
+@Suite
+struct `Local semantic embedding` {
     private final class Counter: @unchecked Sendable {
         private let lock = NSLock()
         private var value = 0
@@ -12,8 +12,8 @@ struct SearchSemanticEmbeddingTests {
         var count: Int { lock.withLock { value } }
     }
 
-    @Test("Corpus vectors are cached while transient queries are not retained")
-    func boundedCacheRetention() async {
+    @Test
+    func `Corpus vectors are cached while transient queries are not retained`() async {
         let calls = Counter()
         let embedding = NaturalLanguageSearchSemanticEmbedding { _ in
             calls.increment()
@@ -41,8 +41,8 @@ struct SearchSemanticEmbeddingTests {
         #expect(calls.count == 3)
     }
 
-    @Test("Semantic text projection is byte bounded and Unicode safe")
-    func boundedProjection() throws {
+    @Test
+    func `Semantic text projection is byte bounded and Unicode safe`() throws {
         let ascii = try SearchSemanticTextProjection.make(
             from: String(repeating: "x", count: 5 * 1_024)
         )

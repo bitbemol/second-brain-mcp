@@ -3,10 +3,10 @@ import Darwin
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault process-data directory")
-struct VaultDataDirectoryTests {
-    @Test("Migrates known legacy data without deleting unknown files")
-    func migratesLegacyDataSelectively() throws {
+@Suite
+struct `Vault process-data directory` {
+    @Test
+    func `Migrates known legacy data without deleting unknown files`() throws {
         let roots = try makeRoots()
         let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
         try FileManager.default.createDirectory(
@@ -50,8 +50,8 @@ struct VaultDataDirectoryTests {
         ))
     }
 
-    @Test("Removes an empty legacy directory after migration")
-    func removesEmptyLegacyRoot() throws {
+    @Test
+    func `Removes an empty legacy directory after migration`() throws {
         let roots = try makeRoots()
         let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
         try FileManager.default.createDirectory(
@@ -72,8 +72,8 @@ struct VaultDataDirectoryTests {
         #expect(!FileManager.default.fileExists(atPath: legacyRoot.path))
     }
 
-    @Test("Migration never follows a symlinked legacy root")
-    func preservesSymlinkedLegacyRootAndExternalData() throws {
+    @Test
+    func `Migration never follows a symlinked legacy root`() throws {
         let roots = try makeRoots()
         let external = roots.vault
             .deletingLastPathComponent()
@@ -101,8 +101,8 @@ struct VaultDataDirectoryTests {
         ))
     }
 
-    @Test("Migration preserves symlinked known entries")
-    func preservesSymlinkedKnownEntries() throws {
+    @Test
+    func `Migration preserves symlinked known entries`() throws {
         let roots = try makeRoots()
         let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
         let external = roots.vault
@@ -134,8 +134,8 @@ struct VaultDataDirectoryTests {
         ))
     }
 
-    @Test("Preparation surfaces filesystem failures")
-    func reportsPreparationFailure() throws {
+    @Test
+    func `Preparation surfaces filesystem failures`() throws {
         let roots = try makeRoots()
         let blockingFile = roots.support.appendingPathComponent("not-a-directory")
         try FileManager.default.createDirectory(
@@ -155,8 +155,8 @@ struct VaultDataDirectoryTests {
         }
     }
 
-    @Test("The vault-wide lock serializes simultaneous legacy migration")
-    func coordinatesConcurrentMigration() async throws {
+    @Test
+    func `The vault-wide lock serializes simultaneous legacy migration`() async throws {
         let roots = try makeRoots()
         let legacyRoot = roots.vault.appendingPathComponent(".secondbrain-mcp")
         try FileManager.default.createDirectory(

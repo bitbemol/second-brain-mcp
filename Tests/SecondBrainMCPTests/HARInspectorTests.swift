@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("HAR inspection")
-struct HARInspectorTests {
-    @Test("Every entry requires the fields used by HAR summaries")
-    func validatesEveryEntry() throws {
+@Suite
+struct `HAR inspection` {
+    @Test
+    func `Every entry requires the fields used by HAR summaries`() throws {
         #expect(throws: HARInspector.InspectionError.self) {
             try HARInspector.inspect(data: Data(#"""
         {"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[
@@ -24,8 +24,8 @@ struct HARInspectorTests {
         }
     }
 
-    @Test("Entry timing and status values have safe numeric domains")
-    func validatesNumericDomains() {
+    @Test
+    func `Entry timing and status values have safe numeric domains`() {
         #expect(throws: HARInspector.InspectionError.self) {
             try HARInspector.inspect(data: Data(#"""
             {"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[
@@ -47,8 +47,8 @@ struct HARInspectorTests {
         }
     }
 
-    @Test("Request URLs are absolute and host counting is case-insensitive")
-    func validatesAndNormalizesURLs() throws {
+    @Test
+    func `Request URLs are absolute and host counting is case-insensitive`() throws {
         #expect(throws: HARInspector.InspectionError.self) {
             try HARInspector.inspect(data: Data(#"""
             {"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[
@@ -70,8 +70,8 @@ struct HARInspectorTests {
         #expect(inspection.hostCount == 1)
     }
 
-    @Test("Invalid JSON and missing required structure remain distinct")
-    func requiredStructure() {
+    @Test
+    func `Invalid JSON and missing required structure remain distinct`() {
         #expect(throws: HARInspector.InspectionError.self) {
             try HARInspector.inspect(data: Data("not json".utf8))
         }

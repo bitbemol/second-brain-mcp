@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Generic files — structured format operations")
-struct StructuredFileOperationsTests {
+@Suite
+struct `Generic files — structured format operations` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "StructuredFileOperationsTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
@@ -14,8 +14,8 @@ struct StructuredFileOperationsTests {
         TextFileCreateInput(data: Data(content.utf8), tags: tags)
     }
 
-    @Test("HAR creation validates structure and reading summarizes entries")
-    func har() async throws {
+    @Test
+    func `HAR creation validates structure and reading summarizes entries`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = HARFileOperations()
@@ -48,8 +48,8 @@ struct StructuredFileOperationsTests {
         #expect(!summary.contains("\"entries\""))
     }
 
-    @Test("Malformed HAR is rejected before persistence")
-    func invalidHAR() throws {
+    @Test
+    func `Malformed HAR is rejected before persistence`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(path: "notes/bad.har", format: .har, vaultPath: root)
@@ -69,8 +69,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("HAR creation stores sanitized bytes and reports the intervention")
-    func sanitizedHAR() throws {
+    @Test
+    func `HAR creation stores sanitized bytes and reports the intervention`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -102,8 +102,8 @@ struct StructuredFileOperationsTests {
         #expect(output.contains("Sanitized 1 sensitive value"))
     }
 
-    @Test("Raw reads sanitize legacy HAR bytes and reject unknown secret locations")
-    func legacyHARRawRead() throws {
+    @Test
+    func `Raw reads sanitize legacy HAR bytes and reject unknown secret locations`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -165,8 +165,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("HAR summaries reject credentials in projected legacy fields")
-    func legacyHARSummaryDoesNotDiscloseSecrets() throws {
+    @Test
+    func `HAR summaries reject credentials in projected legacy fields`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -198,8 +198,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("Patch failures never echo caller-supplied search text")
-    func patchFailureDoesNotEchoSearchText() {
+    @Test
+    func `Patch failures never echo caller-supplied search text`() {
         let secret = "Bearer " + String(repeating: "p", count: 32)
         do {
             _ = try TextFileSupport.apply(
@@ -212,8 +212,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("Opaque text formats cannot import arbitrary external paths")
-    func rejectsExternalTextSource() async throws {
+    @Test
+    func `Opaque text formats cannot import arbitrary external paths`() async throws {
         let root = try makeVault()
         let source = NSTemporaryDirectory() + "external-secret-\(UUID().uuidString).log"
         try Data("private".utf8).write(to: URL(fileURLWithPath: source))
@@ -251,8 +251,8 @@ struct StructuredFileOperationsTests {
         #expect(!FileManager.default.fileExists(atPath: target.url.path))
     }
 
-    @Test("Patch creation validates and summarizes a unified diff")
-    func patch() throws {
+    @Test
+    func `Patch creation validates and summarizes a unified diff`() throws {
         let root = try makeVault()
         let operations = PatchFileOperations()
         let target = try WritableFileTarget.resolve(path: "notes/fix.patch", format: .patch, vaultPath: root)
@@ -277,8 +277,8 @@ struct StructuredFileOperationsTests {
         #expect(summary.contains("+1 / -1"))
     }
 
-    @Test("Log reads tail and only permits append updates")
-    func log() async throws {
+    @Test
+    func `Log reads tail and only permits append updates`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = LogFileOperations()
@@ -317,8 +317,8 @@ struct StructuredFileOperationsTests {
         #expect(try TextFileSupport.string(from: updated.data).hasSuffix("three\nfour"))
     }
 
-    @Test("Text handlers append to empty files without a leading blank line")
-    func appendsToEmptyTextFiles() throws {
+    @Test
+    func `Text handlers append to empty files without a leading blank line`() throws {
         let root = try makeVault()
         let snapshot = FileSnapshot(data: Data(), modifiedDate: nil)
 
@@ -366,8 +366,8 @@ struct StructuredFileOperationsTests {
         #expect(try TextFileSupport.string(from: log.data) == "first")
     }
 
-    @Test("Log reads safely clamp extreme caller-controlled line values")
-    func logExtremeLineWindow() throws {
+    @Test
+    func `Log reads safely clamp extreme caller-controlled line values`() throws {
         let root = try makeVault()
         let operations = LogFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -401,8 +401,8 @@ struct StructuredFileOperationsTests {
         #expect(text.hasSuffix("one\ntwo\nthree"))
     }
 
-    @Test("Newline-dense logs retain only the requested window")
-    func newlineDenseLogIsBounded() throws {
+    @Test
+    func `Newline-dense logs retain only the requested window`() throws {
         let root = try makeVault()
         let operations = LogFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -447,8 +447,8 @@ struct StructuredFileOperationsTests {
         #expect(rendered.utf8.count < 1_024)
     }
 
-    @Test("CRLF is one logical line delimiter")
-    func crlfDoesNotCreateBlankLines() {
+    @Test
+    func `CRLF is one logical line delimiter`() {
         let text = "one\r\ntwo\r\nthree"
 
         #expect(TextLineScanner.lineCount(in: text) == 3)
@@ -461,8 +461,8 @@ struct StructuredFileOperationsTests {
         )
     }
 
-    @Test("Deleted and metadata-only patches report their affected file")
-    func patchSummariesIncludeNonAdditionFiles() throws {
+    @Test
+    func `Deleted and metadata-only patches report their affected file`() throws {
         let deletion = """
         diff --git a/old.txt b/old.txt
         deleted file mode 100644
@@ -492,8 +492,8 @@ struct StructuredFileOperationsTests {
         #expect(modeSummary.contains("Hunks: 0"))
     }
 
-    @Test("Patch filenames containing spaces count one structural file")
-    func patchFilenameWithSpaces() throws {
+    @Test
+    func `Patch filenames containing spaces count one structural file`() throws {
         let diff = """
         diff --git a/old name.txt b/old name.txt
         --- a/old name.txt
@@ -511,8 +511,8 @@ struct StructuredFileOperationsTests {
         #expect(summary.contains("Files: 1"))
     }
 
-    @Test("Malformed Git patch headers are rejected")
-    func rejectsMalformedPatchHeader() throws {
+    @Test
+    func `Malformed Git patch headers are rejected`() throws {
         #expect(throws: PatchFileOperations.PatchError.self) {
             try PatchFileOperations.inspect(
                 data: Data("diff --git nope\n+not a hunk".utf8),
@@ -521,8 +521,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("Canvas reads validate content and flag missing file nodes")
-    func canvasRead() async throws {
+    @Test
+    func `Canvas reads validate content and flag missing file nodes`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = CanvasFileOperations(vaultPath: root)

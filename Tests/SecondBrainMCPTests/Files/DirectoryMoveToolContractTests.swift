@@ -2,8 +2,8 @@ import MCP
 import Testing
 @testable import second_brain_mcp
 
-@Suite("MCP directory move contract")
-struct DirectoryMoveToolContractTests {
+@Suite
+struct `MCP directory move contract` {
     private actor ServiceSpy: DirectoryMoveService {
         var requests: [MoveDirectoryRequest] = []
 
@@ -28,8 +28,8 @@ struct DirectoryMoveToolContractTests {
         func last() -> FileRequestRejection? { values.last }
     }
 
-    @Test("Schema describes one closed replay-safe recursive move")
-    func schema() throws {
+    @Test
+    func `Schema describes one closed replay-safe recursive move`() throws {
         let tool = try #require(DirectoryMoveToolDefinition.build(readOnly: false))
         #expect(tool.name == "move_directory")
         #expect(tool.annotations.idempotentHint == true)
@@ -52,8 +52,8 @@ struct DirectoryMoveToolContractTests {
         #expect(DirectoryMoveToolDefinition.build(readOnly: true) == nil)
     }
 
-    @Test("Controller strictly decodes and routes canonical request values")
-    func controllerRoutes() async throws {
+    @Test
+    func `Controller strictly decodes and routes canonical request values`() async throws {
         let service = ServiceSpy()
         let controller = DirectoryMoveToolController(
             readOnly: false,
@@ -82,8 +82,8 @@ struct DirectoryMoveToolContractTests {
             == "notes/completed/ticket-123")
     }
 
-    @Test("Unknown arguments and read-only mutations are rejected before service")
-    func rejectsBoundaryViolations() async throws {
+    @Test
+    func `Unknown arguments and read-only mutations are rejected before service`() async throws {
         let service = ServiceSpy()
         let rejections = RejectionSpy()
         let readOnly = DirectoryMoveToolController(

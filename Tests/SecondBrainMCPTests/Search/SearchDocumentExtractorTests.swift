@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault search extraction")
-struct SearchDocumentExtractorTests {
-    @Test("Markdown extraction finds front matter and real sections")
-    func markdownSections() throws {
+@Suite
+struct `Vault search extraction` {
+    @Test
+    func `Markdown extraction finds front matter and real sections`() throws {
         let markdown = """
         ---
         title: "Concurrency Guide"
@@ -40,8 +40,8 @@ struct SearchDocumentExtractorTests {
         })
     }
 
-    @Test("HAR extraction sanitizes before content can influence search")
-    func harSanitization() throws {
+    @Test
+    func `HAR extraction sanitizes before content can influence search`() throws {
         let secret = "Bearer " + String(repeating: "s", count: 32)
         let archive = """
         {"log":{"version":"1.2","creator":{"name":"Test"},"entries":[
@@ -61,8 +61,8 @@ struct SearchDocumentExtractorTests {
         #expect(content.contains(HARSensitiveDataSanitizer.redactionMarker))
     }
 
-    @Test("Section extraction is explicitly bounded")
-    func sectionLimit() throws {
+    @Test
+    func `Section extraction is explicitly bounded`() throws {
         let markdown = (1...20).map { "# Heading \($0)\nbody" }
             .joined(separator: "\n")
         let extracted = try SearchDocumentExtractor.extract(
@@ -75,8 +75,8 @@ struct SearchDocumentExtractorTests {
         #expect(extracted.truncated)
     }
 
-    @Test("Generated and common front matter decode into real metadata")
-    func frontMatterDecoding() throws {
+    @Test
+    func `Generated and common front matter decode into real metadata`() throws {
         let generated = MarkdownSupport.generateFrontmatter(
             title: "A \"quoted\" title",
             tags: ["swift,actors", "json"]
@@ -109,8 +109,8 @@ struct SearchDocumentExtractorTests {
         #expect(common.document.title == "Actual Title")
     }
 
-    @Test("Line, tag, and metadata byte ceilings report incomplete coverage")
-    func objectAmplificationLimits() throws {
+    @Test
+    func `Line, tag, and metadata byte ceilings report incomplete coverage`() throws {
         let markdown = """
         ---
         title: "a\(String(repeating: "\u{301}", count: 2_000))"
@@ -142,8 +142,8 @@ struct SearchDocumentExtractorTests {
         #expect(extracted.document.sections.count <= 10)
     }
 
-    @Test("Canvas projects searchable node values without raw JSON noise")
-    func canvasProjection() throws {
+    @Test
+    func `Canvas projects searchable node values without raw JSON noise`() throws {
         let canvas = """
         {"nodes":[
           {"id":"text-1","type":"text","x":9999,"y":0,"width":1,"height":1,"text":"Needle body"},
@@ -168,8 +168,8 @@ struct SearchDocumentExtractorTests {
         #expect(!extracted.document.sections.contains { $0.content.contains("9999") })
     }
 
-    @Test("ATX headings preserve literal hashes and honor fence lengths")
-    func markdownStructureEdges() throws {
+    @Test
+    func `ATX headings preserve literal hashes and honor fence lengths`() throws {
         let markdown = """
         # C#
         body
@@ -196,8 +196,8 @@ struct SearchDocumentExtractorTests {
         })
     }
 
-    @Test("A UTF-8 BOM does not hide Markdown metadata")
-    func markdownByteOrderMark() throws {
+    @Test
+    func `A UTF-8 BOM does not hide Markdown metadata`() throws {
         var data = Data([0xEF, 0xBB, 0xBF])
         data.append(Data("""
         ---
@@ -219,8 +219,8 @@ struct SearchDocumentExtractorTests {
         #expect(extracted.document.sections.compactMap(\.heading) == ["Heading"])
     }
 
-    @Test("Canvas locators preserve the complete stable node identifier")
-    func canvasLocatorIsNotTruncated() throws {
+    @Test
+    func `Canvas locators preserve the complete stable node identifier`() throws {
         let identifier = String(repeating: "node-", count: 150)
         let canvas = """
         {"nodes":[{"id":"\(identifier)","type":"text","x":0,"y":0,

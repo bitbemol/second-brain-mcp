@@ -4,8 +4,8 @@ import Synchronization
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF document navigation")
-struct PDFDocumentNavigationTests {
+@Suite
+struct `PDF document navigation` {
     /// Large-document scale used by the historical PDFKit memory regression.
     ///
     /// This is a simulated page count, not an on-disk byte size: the test creates
@@ -13,8 +13,8 @@ struct PDFDocumentNavigationTests {
     /// test retain all 1,500 pages and fail deterministically.
     private static let memoryRegressionPageCount = 1_500
 
-    @Test("Resolves printed labels to physical pages")
-    func resolvesPrintedPageLabel() {
+    @Test
+    func `Resolves printed labels to physical pages`() {
         let labels = [1: "i", 2: "ii", 15: "1", 16: "2"]
 
         #expect(PDFDocumentNavigation.resolvePage(label: "ii", in: labels) == 2)
@@ -22,8 +22,8 @@ struct PDFDocumentNavigationTests {
         #expect(PDFDocumentNavigation.resolvePage(label: "missing", in: labels) == nil)
     }
 
-    @Test("Document label lookup stops at its first match")
-    func documentLabelLookupStopsEarly() throws {
+    @Test
+    func `Document label lookup stops at its first match`() throws {
         let tracker = PageLifetimeTracker()
         let document = TrackingPDFDocument(pageCount: 1_500, tracker: tracker)
 
@@ -35,8 +35,8 @@ struct PDFDocumentNavigationTests {
         #expect(counts.peak == 1)
     }
 
-    @Test("Document label lookup reports an incomplete bounded scan")
-    func documentLabelLookupIsBounded() throws {
+    @Test
+    func `Document label lookup reports an incomplete bounded scan`() throws {
         let tracker = PageLifetimeTracker()
         let document = TrackingPDFDocument(pageCount: 100, tracker: tracker)
 
@@ -51,16 +51,16 @@ struct PDFDocumentNavigationTests {
         #expect(tracker.counts.live == 0)
     }
 
-    @Test("Empty documents expose no navigation metadata")
-    func emptyDocumentHasNoNavigation() throws {
+    @Test
+    func `Empty documents expose no navigation metadata`() throws {
         let document = PDFDocument()
 
         #expect(PDFDocumentNavigation.pageLabels(in: document) == nil)
         #expect(try PDFDocumentNavigation.outline(in: document) == nil)
     }
 
-    @Test("Outline extraction stops at its entry limit")
-    func outlineExtractionIsBounded() throws {
+    @Test
+    func `Outline extraction stops at its entry limit`() throws {
         // Build the outline entirely in memory. The test needs no PDF fixture and
         // can create more bookmarks than the read operation is willing to return.
         let document = PDFDocument()
@@ -85,8 +85,8 @@ struct PDFDocumentNavigationTests {
         #expect(outline.allSatisfy { $0.pageNumber == 1 })
     }
 
-    @Test("Outline traversal also limits malformed bookmarks")
-    func malformedOutlineTraversalIsBounded() throws {
+    @Test
+    func `Outline traversal also limits malformed bookmarks`() throws {
         let document = PDFDocument()
         let page = PDFPage()
         document.insert(page, at: 0)
@@ -110,8 +110,8 @@ struct PDFDocumentNavigationTests {
         )
     }
 
-    @Test("Page-label scans release PDFKit pages incrementally")
-    func pageLabelScanReleasesPagesIncrementally() {
+    @Test
+    func `Page-label scans release PDFKit pages incrementally`() {
         // The document is a lightweight PDFKit test double. Each page access
         // returns a fresh, autoreleased PDFPage, matching the ownership behavior
         // that caused real large PDFs to consume gigabytes during label scans.

@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Audit logger")
-struct AuditLoggerTests {
-    @Test("Reference reads retain their distinct stored operation")
-    func referenceRead() async throws {
+@Suite
+struct `Audit logger` {
+    @Test
+    func `Reference reads retain their distinct stored operation`() async throws {
         let root = NSTemporaryDirectory() + "AuditLoggerTests-\(UUID().uuidString)"
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let audit = AuditLogger(dataDirectory: dataDirectory)
@@ -25,8 +25,8 @@ struct AuditLoggerTests {
         #expect(contents.contains("references/manual.pdf"))
     }
 
-    @Test("Rotates the audit log at a fixed size")
-    func rotatesBySize() async throws {
+    @Test
+    func `Rotates the audit log at a fixed size`() async throws {
         let root = NSTemporaryDirectory() + "AuditLoggerTests-\(UUID().uuidString)"
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let audit = AuditLogger(
@@ -58,8 +58,8 @@ struct AuditLoggerTests {
         ))
     }
 
-    @Test("Independent logger actors coordinate one process-owned log")
-    func coordinatesIndependentLoggers() async throws {
+    @Test
+    func `Independent logger actors coordinate one process-owned log`() async throws {
         let root = NSTemporaryDirectory() + "AuditLoggerTests-\(UUID().uuidString)"
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let first = AuditLogger(

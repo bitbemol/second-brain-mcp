@@ -3,8 +3,8 @@ import Testing
 @testable import second_brain_mcp
 
 /// Generated, copyright-free acceptance fixtures modeled on a real HAR-heavy vault.
-@Suite("Vault search production acceptance")
-struct SearchProductionAcceptanceTests {
+@Suite
+struct `Vault search production acceptance` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory()
             + "SearchProductionAcceptanceTests-\(UUID().uuidString)"
@@ -59,8 +59,8 @@ struct SearchProductionAcceptanceTests {
         """
     }
 
-    @Test("Smart preserves exact recall after noisy archives exhaust relaxed work")
-    func smartContainsExactResults() async throws {
+    @Test
+    func `Smart preserves exact recall after noisy archives exhaust relaxed work`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let noise = Array(repeating: "benign", count: 1_000).joined(separator: " ")
@@ -109,8 +109,8 @@ struct SearchProductionAcceptanceTests {
         })
     }
 
-    @Test("Fair smart work preserves a late typo-only hit")
-    func lateFuzzyRecall() async throws {
+    @Test
+    func `Fair smart work preserves a late typo-only hit`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<10 {
@@ -136,8 +136,8 @@ struct SearchProductionAcceptanceTests {
         #expect(response.searchedFileCount == 11)
     }
 
-    @Test("Resource diagnostics are bounded ordered and do not hide later notes")
-    func resourceDiagnostics() async throws {
+    @Test
+    func `Resource diagnostics are bounded ordered and do not hide later notes`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<10 {
@@ -170,8 +170,8 @@ struct SearchProductionAcceptanceTests {
         #expect(response.resourceLimitSamples.last?.path == "notes/capture-07.har")
     }
 
-    @Test("Filtered smart recall still contains filtered exact recall")
-    func filteredExactSubset() async throws {
+    @Test
+    func `Filtered smart recall still contains filtered exact recall`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("# Target\nfiltered exact sentinel", "notes/work/target.md", root: root)
@@ -198,8 +198,8 @@ struct SearchProductionAcceptanceTests {
         #expect(smart.results.map(\.path) == ["notes/work/target.md"])
     }
 
-    @Test("Default smart reaches a generated HAR-heavy vault deterministically")
-    func skewedCorpusSmoke() async throws {
+    @Test
+    func `Default smart reaches a generated HAR-heavy vault deterministically`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         for index in 0..<234 {
@@ -239,8 +239,8 @@ struct SearchProductionAcceptanceTests {
         #expect(!first.coverageIncomplete)
     }
 
-    @Test("Relevance rejects one-term noise while preserving complete fuzzy recall")
-    func relevanceFloor() async throws {
+    @Test
+    func `Relevance rejects one-term noise while preserving complete fuzzy recall`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("# Rollout\nrollout", "notes/rollout.md", root: root)
@@ -285,8 +285,8 @@ struct SearchProductionAcceptanceTests {
         #expect(typo.results.first?.termCoverage == 1)
     }
 
-    @Test("Conversational questions ignore filler words and retain the idea")
-    func conversationalRecall() async throws {
+    @Test
+    func `Conversational questions ignore filler words and retain the idea`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -331,8 +331,8 @@ struct SearchProductionAcceptanceTests {
         #expect(semantic.results.first?.completeQueryFields.isEmpty == true)
     }
 
-    @Test("Title specificity outranks long titles and embedded substrings")
-    func preciseTitleRanking() async throws {
+    @Test
+    func `Title specificity outranks long titles and embedded substrings`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write("# Search syntax\noperators", "notes/search-syntax.md", root: root)
@@ -362,8 +362,8 @@ struct SearchProductionAcceptanceTests {
         #expect(literal.results.last?.relevance ?? 1 < literal.results.first?.relevance ?? 0)
     }
 
-    @Test("Fuzzy terms can combine across title and body")
-    func distributedFuzzyTypos() async throws {
+    @Test
+    func `Fuzzy terms can combine across title and body`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -382,8 +382,8 @@ struct SearchProductionAcceptanceTests {
         }
     }
 
-    @Test("Field evidence distinguishes contribution from whole-query matches")
-    func truthfulFieldEvidence() async throws {
+    @Test
+    func `Field evidence distinguishes contribution from whole-query matches`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -403,8 +403,8 @@ struct SearchProductionAcceptanceTests {
         #expect(result.relevance < 0.90)
     }
 
-    @Test("Symbolic credential documentation remains discoverable end to end")
-    func symbolicPlaceholder() async throws {
+    @Test
+    func `Symbolic credential documentation remains discoverable end to end`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(
@@ -421,8 +421,8 @@ struct SearchProductionAcceptanceTests {
         #expect(response.skippedSensitiveFileCount == 0)
     }
 
-    @Test("Generated JSON CSV log and HAR content are searchable safely")
-    func textualFormatMatrix() async throws {
+    @Test
+    func `Generated JSON CSV log and HAR content are searchable safely`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         try write(

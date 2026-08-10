@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault operation coordinator tree moves")
-struct VaultOperationCoordinatorTests {
-    @Test("A directory move excludes note reads until the subtree rename completes")
-    func treeMoveExcludesReads() async throws {
+@Suite
+struct `Vault operation coordinator tree moves` {
+    @Test
+    func `A directory move excludes note reads until the subtree rename completes`() async throws {
         let root = NSTemporaryDirectory() + "VaultOperationCoordinatorTests-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(
@@ -53,8 +53,8 @@ struct VaultOperationCoordinatorTests {
         #expect(await read.entered)
     }
 
-    @Test("Cross-process path lock storage remains bounded under path churn")
-    func boundedPathLockStripes() async throws {
+    @Test
+    func `Cross-process path lock storage remains bounded under path churn`() async throws {
         let root = NSTemporaryDirectory()
             + "VaultOperationCoordinatorStripeTests-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
@@ -98,8 +98,8 @@ struct VaultOperationCoordinatorTests {
         })
     }
 
-    @Test("An externally held stripe cannot create unbounded active operations")
-    func externallyHeldStripeRespectsTotalCapacity() async throws {
+    @Test
+    func `An externally held stripe cannot create unbounded active operations`() async throws {
         let fixture = try VaultCoordinatorFixture(fileCount: 5)
         defer { fixture.remove() }
         let coordinator = VaultOperationCoordinator(
@@ -138,8 +138,8 @@ struct VaultOperationCoordinatorTests {
         #expect(await coordinator.waitingTreeOperationCount == 0)
     }
 
-    @Test("Two coordinator instances exclude writes to the same path")
-    func twoCoordinatorsExcludeSamePath() async throws {
+    @Test
+    func `Two coordinator instances exclude writes to the same path`() async throws {
         let fixture = try VaultCoordinatorFixture(fileCount: 1)
         defer { fixture.remove() }
         let contention = VaultLockContentionProbe()
@@ -172,8 +172,8 @@ struct VaultOperationCoordinatorTests {
         #expect(await secondEntry.entered)
     }
 
-    @Test("A tree writer excludes another coordinator's note reader")
-    func crossCoordinatorTreeWriteExcludesRead() async throws {
+    @Test
+    func `A tree writer excludes another coordinator's note reader`() async throws {
         let fixture = try VaultCoordinatorFixture(fileCount: 1)
         defer { fixture.remove() }
         let contention = VaultLockContentionProbe()
@@ -205,8 +205,8 @@ struct VaultOperationCoordinatorTests {
         #expect(await readEntry.entered)
     }
 
-    @Test("Distinct paths sharing one stripe exclude across coordinators")
-    func forcedStripeCollisionExcludes() async throws {
+    @Test
+    func `Distinct paths sharing one stripe exclude across coordinators`() async throws {
         let fixture = try VaultCoordinatorFixture(fileCount: 2)
         defer { fixture.remove() }
         let contention = VaultLockContentionProbe()

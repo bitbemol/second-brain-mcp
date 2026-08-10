@@ -2,10 +2,10 @@ import CoreGraphics
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF page raster sizing")
-struct PDFPageRasterSizeTests {
-    @Test("Converts PDF points to pixels at the configured resolution")
-    func appliesResolution() {
+@Suite
+struct `PDF page raster sizing` {
+    @Test
+    func `Converts PDF points to pixels at the configured resolution`() {
         let size = PDFPageRasterSize(
             pageWidth: 612,
             pageHeight: 792,
@@ -17,8 +17,8 @@ struct PDFPageRasterSizeTests {
         #expect(size.height == 1_584)
     }
 
-    @Test("Quarter-turn rotations exchange pixel dimensions")
-    func appliesQuarterTurnRotation() {
+    @Test
+    func `Quarter-turn rotations exchange pixel dimensions`() {
         let configuration = configuration(dpi: 144, maximumDimension: 2_000)
         let clockwise = PDFPageRasterSize(
             pageWidth: 612,
@@ -38,8 +38,8 @@ struct PDFPageRasterSizeTests {
         #expect(counterclockwise == clockwise)
     }
 
-    @Test("Long-edge capping preserves the page aspect ratio")
-    func capsLongEdgeProportionally() {
+    @Test
+    func `Long-edge capping preserves the page aspect ratio`() {
         let size = PDFPageRasterSize(
             pageWidth: 1_000,
             pageHeight: 2_000,
@@ -51,8 +51,8 @@ struct PDFPageRasterSizeTests {
         #expect(size.height == 1_000)
     }
 
-    @Test("Half-turn rotations retain the original orientation")
-    func retainsOrientationForHalfTurn() {
+    @Test
+    func `Half-turn rotations retain the original orientation`() {
         let configuration = configuration(dpi: 72, maximumDimension: 2_000)
         let unrotated = PDFPageRasterSize(
             pageWidth: 600,

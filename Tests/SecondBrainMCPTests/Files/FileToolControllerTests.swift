@@ -2,8 +2,8 @@ import MCP
 import Testing
 @testable import second_brain_mcp
 
-@Suite("MCP file tool controller")
-struct FileToolControllerTests {
+@Suite
+struct `MCP file tool controller` {
     private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
 
     private actor FileServiceSpy: FileCRUDService {
@@ -138,8 +138,8 @@ struct FileToolControllerTests {
         )
     }
 
-    @Test("Unknown tools fail at the MCP boundary")
-    func rejectsUnknownTool() async throws {
+    @Test
+    func `Unknown tools fail at the MCP boundary`() async throws {
         let (controller, files, _) = makeController(readOnly: false)
         let result = try await controller.call(.init(name: "legacy_tool"))
 
@@ -148,8 +148,8 @@ struct FileToolControllerTests {
         #expect(await files.callCount() == 0)
     }
 
-    @Test("Read-only mode rejects writes before routing")
-    func enforcesReadOnly() async throws {
+    @Test
+    func `Read-only mode rejects writes before routing`() async throws {
         let (controller, files, rejections) = makeController(readOnly: true)
         let result = try await controller.call(.init(
             name: "create_file",
@@ -171,8 +171,8 @@ struct FileToolControllerTests {
         )])
     }
 
-    @Test("Valid calls reach the shared file service boundary")
-    func dispatchesCreate() async throws {
+    @Test
+    func `Valid calls reach the shared file service boundary`() async throws {
         let (controller, files, rejections) = makeController(readOnly: false)
         let result = try await controller.call(.init(
             name: "create_file",
@@ -194,8 +194,8 @@ struct FileToolControllerTests {
         #expect(await rejections.recordedRejections().isEmpty)
     }
 
-    @Test("Cancellation escapes so MCP can suppress the response")
-    func propagatesCancellation() async {
+    @Test
+    func `Cancellation escapes so MCP can suppress the response`() async {
         let controller = FileToolController(
             readOnly: false,
             rejections: RejectionSpy(),
@@ -213,8 +213,8 @@ struct FileToolControllerTests {
         }
     }
 
-    @Test("Cancellation observed by a synchronous backend cannot return success")
-    func checksCancellationAfterDispatch() async {
+    @Test
+    func `Cancellation observed by a synchronous backend cannot return success`() async {
         let controller = FileToolController(
             readOnly: false,
             rejections: RejectionSpy(),
@@ -235,8 +235,8 @@ struct FileToolControllerTests {
         }
     }
 
-    @Test("Cancellation wins over rejection audit and ordinary backend errors")
-    func cancellationWinsOverErrorMapping() async {
+    @Test
+    func `Cancellation wins over rejection audit and ordinary backend errors`() async {
         let readOnlyController = FileToolController(
             readOnly: true,
             rejections: SelfCancellingRejectionReporter(),

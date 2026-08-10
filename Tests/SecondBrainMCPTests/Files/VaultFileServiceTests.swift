@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Generic files — routed service")
-struct VaultFileServiceTests {
+@Suite
+struct `Generic files — routed service` {
     private func runGit(_ arguments: [String], at root: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -30,8 +30,8 @@ struct VaultFileServiceTests {
         return (root, try await VaultRuntime.bootstrap(vaultPath: root))
     }
 
-    @Test("Read-only runtime neither initializes Git nor permits mutations")
-    func readOnlyRuntimeDoesNotMutateVault() async throws {
+    @Test
+    func `Read-only runtime neither initializes Git nor permits mutations`() async throws {
         let root = NSTemporaryDirectory()
             + "VaultFileServiceTests-read-only-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
@@ -69,8 +69,8 @@ struct VaultFileServiceTests {
         #expect(!FileManager.default.fileExists(atPath: root + "/notes/blocked.md"))
     }
 
-    @Test("Runtime projects the complete capability matrix from registered bindings")
-    func capabilities() async throws {
+    @Test
+    func `Runtime projects the complete capability matrix from registered bindings`() async throws {
         let (_, runtime) = try await makeRuntime()
         let notes: Set<VaultArea> = [.notes]
         let readableMedia: Set<VaultArea> = [.notes, .references]
@@ -116,8 +116,8 @@ struct VaultFileServiceTests {
         ]))
     }
 
-    @Test("MCP discovery exposes only generic file CRUD")
-    func compactMCPSurface() async throws {
+    @Test
+    func `MCP discovery exposes only generic file CRUD`() async throws {
         let (_, runtime) = try await makeRuntime()
         let capabilities = runtime.capabilities
         let tools = FileToolDefinitions.build(
@@ -147,14 +147,14 @@ struct VaultFileServiceTests {
         #expect(readOnlyTools.map(\.name) == [FileToolName.read.rawValue])
     }
 
-    @Test("MCP resources expose only file capabilities")
-    func compactResourceSurface() {
+    @Test
+    func `MCP resources expose only file capabilities`() {
         let uris = Set(FileCapabilitiesResource.list().map(\.uri))
         #expect(uris == ["secondbrain://file-capabilities"])
     }
 
-    @Test("Read-only capability resource omits every mutation")
-    func readOnlyCapabilityResource() async throws {
+    @Test
+    func `Read-only capability resource omits every mutation`() async throws {
         let (_, runtime) = try await makeRuntime()
         let result = try FileCapabilitiesResource.read(
             capabilities: runtime.capabilities,
@@ -172,8 +172,8 @@ struct VaultFileServiceTests {
         #expect(read["areas"] as? [String] == ["notes"])
     }
 
-    @Test("Markdown CRUD routes through generic storage and records snapshots")
-    func markdownLifecycle() async throws {
+    @Test
+    func `Markdown CRUD routes through generic storage and records snapshots`() async throws {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
         let path = "notes/architecture.md"
@@ -218,8 +218,8 @@ struct VaultFileServiceTests {
         #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
     }
 
-    @Test("No-op updates do not create empty commits")
-    func noOpUpdate() async throws {
+    @Test
+    func `No-op updates do not create empty commits`() async throws {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
         let path = "notes/stable.md"
@@ -253,8 +253,8 @@ struct VaultFileServiceTests {
         #expect(commitCount == "1")
     }
 
-    @Test("Sensitive text is rejected before create or update persistence")
-    func sensitiveWritesFailClosed() async throws {
+    @Test
+    func `Sensitive text is rejected before create or update persistence`() async throws {
         let (root, runtime) = try await makeRuntime()
         let rejectedPath = "notes/rejected.md"
         let secret = "Bearer " + String(repeating: "q", count: 32)
@@ -302,8 +302,8 @@ struct VaultFileServiceTests {
         #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
     }
 
-    @Test("Notes reads return the exact stored-byte revision")
-    func noteReadReturnsRevision() async throws {
+    @Test
+    func `Notes reads return the exact stored-byte revision`() async throws {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/revision.md"
         _ = try await runtime.files.create(CreateFileRequest(
@@ -333,8 +333,37 @@ struct VaultFileServiceTests {
         #expect(output.metadata?.replayed == false)
     }
 
-    @Test("A note changed while its reader runs returns no mismatched revision")
-    func noteChangedDuringReadIsRejected() async throws {
+    @Test
+    func `Runtime file operations create no redundant audit log`() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let dataDirectory = try VaultDataDirectory.prepare(
+            vaultPath: root,
+            migrateLegacyData: false
+        )
+        let path = "notes/no-audit.md"
+
+        _ = try await runtime.files.create(CreateFileRequest(
+            mutationID: MutationID(),
+            format: .markdown,
+            path: path,
+            content: "Git is the operation history",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        _ = try await runtime.files.read(ReadFileRequest(
+            format: .markdown,
+            path: path,
+            options: .default
+        ))
+
+        #expect(!FileManager.default.fileExists(
+            atPath: dataDirectory.rootURL.appendingPathComponent("audit.log").path
+        ))
+    }
+
+    @Test
+    func `A note changed while its reader runs returns no mismatched revision`() async throws {
         let root = NSTemporaryDirectory()
             + "VaultFileServiceReadRace-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
@@ -400,8 +429,8 @@ struct VaultFileServiceTests {
         }
     }
 
-    @Test("Stale update and delete revisions fail without exposing the current revision")
-    func staleMutationRevisionsFailClosed() async throws {
+    @Test
+    func `Stale update and delete revisions fail without exposing the current revision`() async throws {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/stale.md"
         let created = try await runtime.files.create(CreateFileRequest(
@@ -460,8 +489,8 @@ struct VaultFileServiceTests {
         ) == "external change")
     }
 
-    @Test("Identical mutation retry replays one durable outcome")
-    func mutationRetryIsIdempotent() async throws {
+    @Test
+    func `Identical mutation retry replays one durable outcome`() async throws {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/replayed.md"
         let request = CreateFileRequest(
@@ -491,8 +520,8 @@ struct VaultFileServiceTests {
         #expect(commitCount == "1")
     }
 
-    @Test("Existing-file rejection does not poison its mutation ID")
-    func existingCreateCanRetryAfterValidationFailure() async throws {
+    @Test
+    func `Existing-file rejection does not poison its mutation ID`() async throws {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/existing.md"
         _ = try await runtime.files.create(CreateFileRequest(
@@ -527,8 +556,8 @@ struct VaultFileServiceTests {
         ).hasSuffix("second"))
     }
 
-    @Test("Concurrent updates from one revision admit exactly one winner")
-    func concurrentUpdatesConflict() async throws {
+    @Test
+    func `Concurrent updates from one revision admit exactly one winner`() async throws {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/concurrent.md"
         let created = try await runtime.files.create(CreateFileRequest(
@@ -579,8 +608,8 @@ struct VaultFileServiceTests {
         #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
     }
 
-    @Test("Unsupported operation is rejected before touching disk")
-    func unsupportedUpdate() async throws {
+    @Test
+    func `Unsupported operation is rejected before touching disk`() async throws {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
         let request = UpdateFileRequest(
@@ -598,8 +627,8 @@ struct VaultFileServiceTests {
         #expect(!FileManager.default.fileExists(atPath: root + "/notes/capture.har"))
     }
 
-    @Test("Every mutation routes through the writable target boundary")
-    func mutationAreaBoundary() async throws {
+    @Test
+    func `Every mutation routes through the writable target boundary`() async throws {
         let (_, runtime) = try await makeRuntime()
         let service = runtime.files
 
@@ -635,8 +664,8 @@ struct VaultFileServiceTests {
         }
     }
 
-    @Test("Delete hooks can reject before persistence")
-    func deleteHookPrecedesPersistence() async throws {
+    @Test
+    func `Delete hooks can reject before persistence`() async throws {
         let root = NSTemporaryDirectory() + "VaultFileServiceDeleteHook-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
             atPath: root + "/notes",

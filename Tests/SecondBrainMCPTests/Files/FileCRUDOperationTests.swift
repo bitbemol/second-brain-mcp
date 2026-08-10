@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("File CRUD operation")
-struct FileCRUDOperationTests {
-    @Test("Mutation classification follows storage behavior")
-    func mutationClassification() {
+@Suite
+struct `File CRUD operation` {
+    @Test
+    func `Mutation classification follows storage behavior`() {
         for operation in [
             FileCRUDOperation.create,
             .update,

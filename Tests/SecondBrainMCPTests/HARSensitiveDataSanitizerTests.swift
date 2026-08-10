@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("HAR sensitive-data sanitization")
-struct HARSensitiveDataSanitizerTests {
-    @Test("Known HAR credential fields are redacted and extensions survive")
-    func sanitizesKnownFields() throws {
+@Suite
+struct `HAR sensitive-data sanitization` {
+    @Test
+    func `Known HAR credential fields are redacted and extensions survive`() throws {
         let bearer = "Bearer " + String(repeating: "a", count: 32)
         let cookie = "session=" + String(repeating: "b", count: 32)
         let queryToken = String(repeating: "c", count: 32)
@@ -64,8 +64,8 @@ struct HARSensitiveDataSanitizerTests {
         )
     }
 
-    @Test("Malformed and trailing-comma JSON is rejected")
-    func rejectsInvalidJSON() {
+    @Test
+    func `Malformed and trailing-comma JSON is rejected`() {
         #expect(throws: HARSensitiveDataSanitizer.InvalidJSON.self) {
             try HARSensitiveDataSanitizer.sanitize(
                 Data(#"{"log":{"entries":[],}}"#.utf8)
@@ -73,8 +73,8 @@ struct HARSensitiveDataSanitizerTests {
         }
     }
 
-    @Test("URL credentials, parameter aliases, and extension tuples are redacted")
-    func sanitizesExpandedContexts() throws {
+    @Test
+    func `URL credentials, parameter aliases, and extension tuples are redacted`() throws {
         let secret = String(repeating: "q", count: 32)
         let archive = """
         {
@@ -115,8 +115,8 @@ struct HARSensitiveDataSanitizerTests {
         #expect(try HARInspector.inspect(data: result.data).entryCount == 1)
     }
 
-    @Test("Duplicate object keys are rejected before materialization")
-    func rejectsDuplicateKeys() {
+    @Test
+    func `Duplicate object keys are rejected before materialization`() {
         let archive = #"{"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[{"request":{"method":"GET","url":"https://example.com","headers":[{"name":"X-Trace","name":"Authorization","value":"secret-value-that-must-not-survive"}]},"response":{"status":200},"time":1}]}}"#
 
         #expect(throws: HARSensitiveDataSanitizer.InvalidJSON.self) {
@@ -131,8 +131,8 @@ struct HARSensitiveDataSanitizerTests {
         }
     }
 
-    @Test("Unknown arbitrary-range numbers survive sanitization")
-    func preservesArbitraryRangeNumbers() throws {
+    @Test
+    func `Unknown arbitrary-range numbers survive sanitization`() throws {
         let archive = #"{"log":{"version":"1.2","creator":{"name":"Browser"},"extension":{"huge":1e400,"exact":123456789012345678901234567890},"entries":[]}}"#
 
         let result = try HARSensitiveDataSanitizer.sanitize(Data(archive.utf8))
@@ -143,8 +143,8 @@ struct HARSensitiveDataSanitizerTests {
         #expect(try HARInspector.inspect(data: result.data).entryCount == 0)
     }
 
-    @Test("Escaped credentials inside embedded JSON remain subject to fallback scanning")
-    func embeddedJSONCannotBypassFallbackPolicy() throws {
+    @Test
+    func `Escaped credentials inside embedded JSON remain subject to fallback scanning`() throws {
         let escaped = String(repeating: "\\u0073", count: 32)
         let archive = """
         {"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[{
@@ -165,8 +165,8 @@ struct HARSensitiveDataSanitizerTests {
         }
     }
 
-    @Test("Number-heavy archives restore preserved spellings in one bounded pass")
-    func restoresManyNumbersEfficiently() throws {
+    @Test
+    func `Number-heavy archives restore preserved spellings in one bounded pass`() throws {
         let values = (0..<10_000).map(String.init).joined(separator: ",")
         let archive = """
         {"log":{"version":"1.2","creator":{"name":"Browser"},
@@ -182,8 +182,8 @@ struct HARSensitiveDataSanitizerTests {
         #expect(text.contains("9999"))
     }
 
-    @Test("JSON and form request bodies redact password fields")
-    func sanitizesTextRequestBodies() throws {
+    @Test
+    func `JSON and form request bodies redact password fields`() throws {
         let secret = String(repeating: "w", count: 32)
         let archive = """
         {"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[
@@ -207,8 +207,8 @@ struct HARSensitiveDataSanitizerTests {
         #expect(try HARInspector.inspect(data: result.data).entryCount == 2)
     }
 
-    @Test("Cancellation is never converted into an invalid-JSON diagnosis")
-    func cancellationPropagates() async {
+    @Test
+    func `Cancellation is never converted into an invalid-JSON diagnosis`() async {
         let archive = Data(
             #"{"log":{"version":"1.2","creator":{"name":"Browser"},"entries":[]}}"#.utf8
         )

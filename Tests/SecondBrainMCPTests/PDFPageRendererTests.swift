@@ -3,10 +3,10 @@ import PDFKit
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF page rendering")
-struct PDFPageRendererTests {
-    @Test("Extreme direct page values are rejected before index conversion")
-    func rejectsExtremePageValues() throws {
+@Suite
+struct `PDF page rendering` {
+    @Test
+    func `Extreme direct page values are rejected before index conversion`() throws {
         // An empty in-memory PDF is sufficient: the historical bug trapped while
         // evaluating `Int.min - 1`, before PDFKit could inspect the document.
         let document = PDFDocument()
@@ -20,8 +20,8 @@ struct PDFPageRendererTests {
         #expect(rendering.retainedPayloadBytes == 0)
     }
 
-    @Test("Rendered PDF text and wire-equivalent payload stay bounded")
-    func aggregatePayloadLimits() throws {
+    @Test
+    func `Rendered PDF text and wire-equivalent payload stay bounded`() throws {
         let data = try generatedSearchPDF(pages: [
             "first page text",
             "second page text",
@@ -68,8 +68,8 @@ struct PDFPageRendererTests {
             <= wireBudget + FileReadRequestLimits.PDFRenderedPayloadEnvelopeBytes)
     }
 
-    @Test("PDF metadata is sanitized while it is bounded")
-    func boundedDisplayMetadata() {
+    @Test
+    func `PDF metadata is sanitized while it is bounded`() {
         let bounded = PDFDisplayText.bounded(
             "A\u{0000}" + String(repeating: "x", count: 100_000),
             maximumCharacters: 8,

@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Image resource policy")
-struct ImageResourcePolicyTests {
-    @Test("Accepts dimensions at the configured megapixel boundary")
-    func acceptsBoundary() throws {
+@Suite
+struct `Image resource policy` {
+    @Test
+    func `Accepts dimensions at the configured megapixel boundary`() throws {
         let inspection = ImageInspection(
             pixelWidth: 5_000,
             pixelHeight: 10_000,
@@ -16,8 +16,8 @@ struct ImageResourcePolicyTests {
         try ImageResourcePolicy.validate(inspection, maximumMegapixels: 50)
     }
 
-    @Test("Reports observed and permitted megapixels when dimensions exceed policy")
-    func rejectsExcessiveDimensions() {
+    @Test
+    func `Reports observed and permitted megapixels when dimensions exceed policy`() {
         let inspection = ImageInspection(
             pixelWidth: 10_000,
             pixelHeight: 10_000,
@@ -42,8 +42,8 @@ struct ImageResourcePolicyTests {
         }
     }
 
-    @Test("Rejects nonpositive dimensions before pixel-count arithmetic")
-    func rejectsInvalidDimensions() {
+    @Test
+    func `Rejects nonpositive dimensions before pixel-count arithmetic`() {
         let inspection = ImageInspection(
             pixelWidth: 0,
             pixelHeight: -1,
@@ -67,8 +67,8 @@ struct ImageResourcePolicyTests {
         }
     }
 
-    @Test("Rejects animated sources beyond the metadata frame ceiling")
-    func rejectsExcessiveAnimationFrames() {
+    @Test
+    func `Rejects animated sources beyond the metadata frame ceiling`() {
         let inspection = ImageInspection(
             pixelWidth: 1,
             pixelHeight: 1,

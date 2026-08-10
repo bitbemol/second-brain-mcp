@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Structured text routed CRUD")
-struct StructuredTextCRUDIntegrationTests {
-    @Test("JSON completes create, read, update, and soft delete")
-    func jsonCRUD() async throws {
+@Suite
+struct `Structured text routed CRUD` {
+    @Test
+    func `JSON completes create, read, update, and soft delete`() async throws {
         let context = try await makeContext()
         defer { context.cleanup() }
         let path = "notes/fixture.json"
@@ -59,8 +59,8 @@ struct StructuredTextCRUDIntegrationTests {
         ))
     }
 
-    @Test("CSV completes create, read, update, and soft delete")
-    func csvCRUD() async throws {
+    @Test
+    func `CSV completes create, read, update, and soft delete`() async throws {
         let context = try await makeContext()
         defer { context.cleanup() }
         let path = "notes/results.csv"

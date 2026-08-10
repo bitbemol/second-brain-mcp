@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF page classification")
-struct PDFPageClassifierTests {
-    @Test("Heading-less title and page-number lists are classified as contents")
-    func headinglessContents() {
+@Suite
+struct `PDF page classification` {
+    @Test
+    func `Heading-less title and page-number lists are classified as contents`() {
         let page = """
         Introducing App Architecture 1
         Model View Controller 12
@@ -17,8 +17,8 @@ struct PDFPageClassifierTests {
         #expect(PDFPageClassifier.kind(for: page) == .tableOfContents)
     }
 
-    @Test("Heading-less page-range lists are classified as contents")
-    func headinglessContentsWithRanges() {
+    @Test
+    func `Heading-less page-range lists are classified as contents`() {
         let page = """
         Introducing App Architecture 1\u{2013}7
         Model View Controller 12-18
@@ -31,8 +31,8 @@ struct PDFPageClassifierTests {
         #expect(PDFPageClassifier.kind(for: page) == .tableOfContents)
     }
 
-    @Test("Ordinary prose containing numbers remains body content")
-    func numberedProse() {
+    @Test
+    func `Ordinary prose containing numbers remains body content`() {
         let page = """
         Model view controller separates responsibilities across three roles.
         The example was revised in 2025.

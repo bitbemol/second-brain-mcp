@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Video frame scheduling")
-struct VideoFrameScheduleTests {
-    @Test("Short clips use the requested frame rate")
-    func shortClip() {
+@Suite
+struct `Video frame scheduling` {
+    @Test
+    func `Short clips use the requested frame rate`() {
         let schedule = VideoFrameSchedule(
             duration: 2,
             framesPerSecond: 10,
@@ -18,8 +18,8 @@ struct VideoFrameScheduleTests {
         #expect(abs(schedule.times[1] - 0.1) < 1e-9)
     }
 
-    @Test("Long clips spread the frame ceiling across the complete video")
-    func longClip() {
+    @Test
+    func `Long clips spread the frame ceiling across the complete video`() {
         let schedule = VideoFrameSchedule(
             duration: 100,
             framesPerSecond: 10,
@@ -33,8 +33,8 @@ struct VideoFrameScheduleTests {
         #expect(schedule.times.last! > 99)
     }
 
-    @Test("A sub-frame clip still produces one frame")
-    func subFrameClip() {
+    @Test
+    func `A sub-frame clip still produces one frame`() {
         let schedule = VideoFrameSchedule(
             duration: 0.05,
             framesPerSecond: 10,
@@ -45,8 +45,8 @@ struct VideoFrameScheduleTests {
         #expect(abs(schedule.frameDelay - 0.05) < 1e-9)
     }
 
-    @Test("Zero duration degrades to one frame without NaN")
-    func zeroDuration() {
+    @Test
+    func `Zero duration degrades to one frame without NaN`() {
         let schedule = VideoFrameSchedule(
             duration: 0,
             framesPerSecond: 10,

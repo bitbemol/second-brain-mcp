@@ -3,9 +3,9 @@ import Testing
 @testable import second_brain_mcp
 
 @Suite
-struct VaultRuntimeRecoveryTests {
+struct `Vault runtime recovery` {
     @Test
-    func writableStartupSnapshotsPendingNoteChanges() async throws {
+    func `Writable startup snapshots pending note changes`() async throws {
         let root = try makeVault()
         let dataDirectory = try productionDataDirectory(for: root)
         defer { cleanup(root: root, dataDirectory: dataDirectory) }
@@ -29,7 +29,7 @@ struct VaultRuntimeRecoveryTests {
     }
 
     @Test
-    func startupLeavesReferenceContentOutsideHistory() async throws {
+    func `Startup leaves reference content outside history`() async throws {
         let root = try makeVault()
         try FileManager.default.createDirectory(
             atPath: root + "/references",

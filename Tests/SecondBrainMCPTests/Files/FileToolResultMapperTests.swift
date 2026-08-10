@@ -3,10 +3,10 @@ import MCP
 import Testing
 @testable import second_brain_mcp
 
-@Suite("MCP file result mapper")
-struct FileToolResultMapperTests {
-    @Test("Content and structured operation metadata preserve their wire shapes")
-    func successfulOutput() throws {
+@Suite
+struct `MCP file result mapper` {
+    @Test
+    func `Content and structured operation metadata preserve their wire shapes`() throws {
         let revision = try #require(FileRevision(
             rawValue: "sha256:" + String(repeating: "a", count: 64)
         ))
@@ -46,14 +46,14 @@ struct FileToolResultMapperTests {
         #expect(metadata["replayed"]?.boolValue == true)
     }
 
-    @Test("Absent operation metadata does not invent structured content")
-    func noMetadata() {
+    @Test
+    func `Absent operation metadata does not invent structured content`() {
         let result = FileToolResultMapper.success(.text("plain"))
         #expect(result.structuredContent == nil)
     }
 
-    @Test("Failure results contain one diagnostic block")
-    func failedOutput() {
+    @Test
+    func `Failure results contain one diagnostic block`() {
         let result = FileToolResultMapper.failure("broken")
 
         #expect(result.isError == true)

@@ -3,9 +3,9 @@ import Testing
 @testable import second_brain_mcp
 
 @Suite
-struct VaultMutationRecoveryTests {
+struct `Vault mutation recovery` {
     @Test
-    func failedSnapshotRetriesAfterValidatingPersistedBytes() async throws {
+    func `A failed snapshot retries after validating persisted bytes`() async throws {
         let context = try makeContext(path: "notes/recover.md", contents: "persisted")
         let identifier = MutationID()
         let fingerprint = MutationRequestFingerprint(rawValue: "recover")
@@ -47,7 +47,7 @@ struct VaultMutationRecoveryTests {
     }
 
     @Test
-    func snapshotRecoveryRefusesChangedPersistedBytes() async throws {
+    func `Snapshot recovery refuses changed persisted bytes`() async throws {
         let context = try makeContext(path: "notes/drift.md", contents: "expected")
         let identifier = MutationID()
         let fingerprint = MutationRequestFingerprint(rawValue: "drift")
@@ -90,7 +90,7 @@ struct VaultMutationRecoveryTests {
     }
 
     @Test
-    func orphanedPrePersistenceReceiptRestartsSafely() async throws {
+    func `An orphaned pre-persistence receipt restarts safely`() async throws {
         let root = try makeVault()
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let receipts = MutationReceiptStore(dataDirectory: dataDirectory)

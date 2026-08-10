@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Mutation receipt retention")
-struct MutationReceiptStoreRetentionTests {
-    @Test("Durable accounting makes saves constant-work after reconciliation")
-    func quotaAccountingDoesNotRescanPerSave() throws {
+@Suite
+struct `Mutation receipt retention` {
+    @Test
+    func `Durable accounting makes saves constant-work after reconciliation`() throws {
         let vault = FileManager.default.temporaryDirectory
             .appendingPathComponent("ReceiptScaleTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -61,8 +61,8 @@ struct MutationReceiptStoreRetentionTests {
         #expect(counter.value == bootstrapWork)
     }
 
-    @Test("Crash-left receipt temporaries are removed before quota admission")
-    func crashTemporaryIsCleanedAndDoesNotConsumeQuota() throws {
+    @Test
+    func `Crash-left receipt temporaries are removed before quota admission`() throws {
         let vault = FileManager.default.temporaryDirectory
             .appendingPathComponent("ReceiptTemporaryTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -111,8 +111,8 @@ struct MutationReceiptStoreRetentionTests {
         }
     }
 
-    @Test("Receipt reconciliation work is bounded even with unexpected entries")
-    func reconciliationEntryWorkIsBounded() throws {
+    @Test
+    func `Receipt reconciliation work is bounded even with unexpected entries`() throws {
         let vault = FileManager.default.temporaryDirectory
             .appendingPathComponent("ReceiptReconciliationBound-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -146,8 +146,8 @@ struct MutationReceiptStoreRetentionTests {
         #expect(counter.value == 2)
     }
 
-    @Test("Hard quota refuses new identities while exact retained retries remain")
-    func quotaFailsClosedWithoutPruningReceipts() throws {
+    @Test
+    func `Hard quota refuses new identities while exact retained retries remain`() throws {
         let vault = FileManager.default.temporaryDirectory
             .appendingPathComponent("ReceiptQuotaTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -201,8 +201,8 @@ struct MutationReceiptStoreRetentionTests {
         )
     }
 
-    @Test("Identity locks use a fixed stripe set instead of one file per UUID")
-    func identityLocksHaveBoundedCardinality() async throws {
+    @Test
+    func `Identity locks use a fixed stripe set instead of one file per UUID`() async throws {
         let vault = FileManager.default.temporaryDirectory
             .appendingPathComponent("ReceiptLockTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(

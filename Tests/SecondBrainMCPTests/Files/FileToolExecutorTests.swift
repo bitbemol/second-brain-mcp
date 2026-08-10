@@ -1,8 +1,8 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("File tool executor")
-struct FileToolExecutorTests {
+@Suite
+struct `File tool executor` {
     private actor ServiceSpy: FileCRUDService {
         private var operations: [FileCRUDOperation] = []
 
@@ -31,8 +31,8 @@ struct FileToolExecutorTests {
         }
     }
 
-    @Test("Decoded requests route to the matching CRUD operation")
-    func routesRequests() async throws {
+    @Test
+    func `Decoded requests route to the matching CRUD operation`() async throws {
         let service = ServiceSpy()
         let executor = FileToolExecutor(files: service)
         let mutationID = try #require(MutationID(

@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Vault search JSON encoding")
-struct VaultSearchJSONEncodingTests {
-    @Test("Canonical response text and byte sizing are identical")
-    func responseEquivalence() throws {
+@Suite
+struct `Vault search JSON encoding` {
+    @Test
+    func `Canonical response text and byte sizing are identical`() throws {
         let response = fixtureResponse()
         let data = try VaultSearchJSONEncoding.responseData(response)
         let text = try VaultSearchJSONEncoding.responseText(response)
@@ -17,8 +17,8 @@ struct VaultSearchJSONEncodingTests {
         #expect(!text.contains("https:\\/\\/example.com"))
     }
 
-    @Test("Canonical result admission size uses the encoded result array")
-    func resultBudgetEquivalence() throws {
+    @Test
+    func `Canonical result admission size uses the encoded result array`() throws {
         let results = fixtureResponse().results
         let data = try VaultSearchJSONEncoding.resultsData(results)
 

@@ -4,10 +4,10 @@ import SQLite3
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Persistent PDF search index")
-struct PDFSearchIndexTests {
-    @Test("Production composition indexes large PDFs under bounded query hydration")
-    func productionConfigurationContract() {
+@Suite
+struct `Persistent PDF search index` {
+    @Test
+    func `Production composition indexes large PDFs under bounded query hydration`() {
         let configuration = VaultRuntime.pdfSearchIndexConfiguration
 
         #expect(configuration == .production)
@@ -32,8 +32,8 @@ struct PDFSearchIndexTests {
             == SearchRequestLimits.maximumLocatorBytes)
     }
 
-    @Test("A warm index survives a new service instance and changed bytes replace old pages")
-    func persistenceAndInvalidation() async throws {
+    @Test
+    func `A warm index survives a new service instance and changed bytes replace old pages`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/book.pdf"
@@ -108,8 +108,8 @@ struct PDFSearchIndexTests {
         #expect(stale.documentsByPath[path]?.document.sections.isEmpty == true)
     }
 
-    @Test("Title truncation is independent from complete page text extraction")
-    func fieldRelativeTitleTruncation() throws {
+    @Test
+    func `Title truncation is independent from complete page text extraction`() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PDFIndexTitleTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -131,8 +131,8 @@ struct PDFSearchIndexTests {
         #expect(extraction.pages.count == 1)
     }
 
-    @Test("Streaming PDF terms exactly match the shared bounded tokenizer")
-    func streamingNormalizedTerms() throws {
+    @Test
+    func `Streaming PDF terms exactly match the shared bounded tokenizer`() throws {
         let source = "HTTPServer fooBar café42 repeated repeated"
         let tokens = try SearchTokenizer.boundedTokens(
             in: source,
@@ -151,8 +151,8 @@ struct PDFSearchIndexTests {
         #expect(projection.truncated == tokens.truncated)
     }
 
-    @Test("PDF index representations obey one aggregate retained-byte ceiling")
-    func aggregateRepresentationCeiling() throws {
+    @Test
+    func `PDF index representations obey one aggregate retained-byte ceiling`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/representation.pdf"
@@ -195,8 +195,8 @@ struct PDFSearchIndexTests {
         #expect(limited.status == .partial)
     }
 
-    @Test("Printed PDF labels are part of the retained representation ceiling")
-    func printedLabelRepresentationAccounting() {
+    @Test
+    func `Printed PDF labels are part of the retained representation ceiling`() {
         let label = String(
             repeating: "l",
             count: PDFIndexExtractor.Configuration.production
@@ -216,8 +216,8 @@ struct PDFSearchIndexTests {
             == label.utf8.count + 12)
     }
 
-    @Test("A safe index is tombstoned when the current PDF becomes sensitive")
-    func sensitiveReplacementRemovesOldPages() async throws {
+    @Test
+    func `A safe index is tombstoned when the current PDF becomes sensitive`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/book.pdf"
@@ -250,8 +250,8 @@ struct PDFSearchIndexTests {
         #expect(try database.record(path: path) == nil)
     }
 
-    @Test("A warm 400-PDF search performs no extraction and one scoped candidate query")
-    func warmSearchBatchesCandidateSQL() async throws {
+    @Test
+    func `A warm 400-PDF search performs no extraction and one scoped candidate query`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let pdf = try generatedSearchPDF(pages: ["shared warm corpus sentinel"])
@@ -306,8 +306,8 @@ struct PDFSearchIndexTests {
         #expect(candidateQueries.value == 1)
     }
 
-    @Test("Repeated phrase terms remain ordered in indexed PDF candidates")
-    func repeatedPhraseTerms() async throws {
+    @Test
+    func `Repeated phrase terms remain ordered in indexed PDF candidates`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/repeated.pdf"
@@ -334,8 +334,8 @@ struct PDFSearchIndexTests {
         #expect(result.candidateLimited == false)
     }
 
-    @Test("Smart indexed search preserves symbol-only literal queries")
-    func smartLiteralFallback() async throws {
+    @Test
+    func `Smart indexed search preserves symbol-only literal queries`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/literal.pdf"
@@ -362,8 +362,8 @@ struct PDFSearchIndexTests {
             .contains("++") == true)
     }
 
-    @Test("Fuzzy vocabulary cache is invalidated after an indexed revision changes")
-    func fuzzyCacheInvalidation() async throws {
+    @Test
+    func `Fuzzy vocabulary cache is invalidated after an indexed revision changes`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/fuzzy.pdf"
@@ -393,8 +393,8 @@ struct PDFSearchIndexTests {
             .contains("focus") == true)
     }
 
-    @Test("PDF candidate expansion follows the final matcher's shared edit policy")
-    func fuzzyPolicyParity() async throws {
+    @Test
+    func `PDF candidate expansion follows the final matcher's shared edit policy`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/fuzzy-policy.pdf"
@@ -439,8 +439,8 @@ struct PDFSearchIndexTests {
         #expect(twoShortEdits.documentsByPath[path]?.document.sections.isEmpty == true)
     }
 
-    @Test("Fuzzy cache observes revisions published by another index actor")
-    func crossActorFuzzyCacheInvalidation() async throws {
+    @Test
+    func `Fuzzy cache observes revisions published by another index actor`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/cross-actor.pdf"
@@ -472,8 +472,8 @@ struct PDFSearchIndexTests {
             .contains("focus") == true)
     }
 
-    @Test("Fuzzy vocabulary traversal reports its SQLite work ceiling")
-    func fuzzyVocabularyWorkCeiling() async throws {
+    @Test
+    func `Fuzzy vocabulary traversal reports its SQLite work ceiling`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/vocabulary.pdf"
@@ -506,8 +506,8 @@ struct PDFSearchIndexTests {
         #expect(result.candidateLimited)
     }
 
-    @Test("Candidate hydration stops at the aggregate text ceiling")
-    func candidateHydrationBytes() async throws {
+    @Test
+    func `Candidate hydration stops at the aggregate text ceiling`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         var targets: [ReadableFileTarget] = []
@@ -534,8 +534,8 @@ struct PDFSearchIndexTests {
         #expect(result.candidateLimited)
     }
 
-    @Test("Exact and FTS candidate SQL report their database-work ceiling")
-    func candidateSQLWorkCeiling() async throws {
+    @Test
+    func `Exact and FTS candidate SQL report their database-work ceiling`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/common-candidates.pdf"
@@ -563,8 +563,8 @@ struct PDFSearchIndexTests {
         }
     }
 
-    @Test("A storage-full revision is not repeatedly re-extracted")
-    func storageFullBackoff() async throws {
+    @Test
+    func `A storage-full revision is not repeatedly re-extracted`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/quota.pdf"
@@ -604,8 +604,8 @@ struct PDFSearchIndexTests {
         #expect(try databaseBundleByteCount(databaseURL) <= 256 * 1_024)
     }
 
-    @Test("A peer generation change releases storage-full backoff")
-    func storageFullBackoffTracksGeneration() async throws {
+    @Test
+    func `A peer generation change releases storage-full backoff`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/quota-peer.pdf"
@@ -643,8 +643,8 @@ struct PDFSearchIndexTests {
         #expect(extractions.value == 2)
     }
 
-    @Test("A full index gates stale PDFs across sibling scopes")
-    func scopedPrunePreservesSiblingBackoff() async throws {
+    @Test
+    func `A full index gates stale PDFs across sibling scopes`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let generated = try generatedSearchPDF(pages: (0..<300).map { number in
@@ -689,8 +689,8 @@ struct PDFSearchIndexTests {
         #expect(extractions.value == 1)
     }
 
-    @Test("Corrupt derived index is rebuilt without touching vault content")
-    func corruptDatabaseRecovery() async throws {
+    @Test
+    func `Corrupt derived index is rebuilt without touching vault content`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -704,8 +704,8 @@ struct PDFSearchIndexTests {
         #expect(try PDFSearchIndexDatabase(url: databaseURL).generation() == 0)
     }
 
-    @Test("Independent index actors coordinate corrupt-index recovery")
-    func concurrentCorruptDatabaseRecovery() async throws {
+    @Test
+    func `Independent index actors coordinate corrupt-index recovery`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -722,8 +722,8 @@ struct PDFSearchIndexTests {
         #expect(try PDFSearchIndexDatabase(url: databaseURL).generation() == 0)
     }
 
-    @Test("A live actor reopens after a peer rebuilds the derived index")
-    func liveActorReopensAfterPeerRecovery() async throws {
+    @Test
+    func `A live actor reopens after a peer rebuilds the derived index`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/recovery.pdf"
@@ -762,8 +762,8 @@ struct PDFSearchIndexTests {
         #expect(extractions.value == 1 || extractions.value == 2)
     }
 
-    @Test("A complete scope prunes derived text for deleted PDFs")
-    func deletedPDFPruning() async throws {
+    @Test
+    func `A complete scope prunes derived text for deleted PDFs`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/deleted.pdf"
@@ -796,8 +796,8 @@ struct PDFSearchIndexTests {
         #expect(try database.record(path: path) == nil)
     }
 
-    @Test("Scope pruning includes descendants beginning with the maximum scalar")
-    func maximumScalarScopePruning() throws {
+    @Test
+    func `Scope pruning includes descendants beginning with the maximum scalar`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let database = try PDFSearchIndexDatabase(
@@ -828,8 +828,8 @@ struct PDFSearchIndexTests {
         #expect(try database.record(path: path) == nil)
     }
 
-    @Test("Invalidated contract rows can still be tombstoned as sensitive")
-    func invalidatedSensitiveTombstone() async throws {
+    @Test
+    func `Invalidated contract rows can still be tombstoned as sensitive`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/invalidated.pdf"
@@ -861,8 +861,8 @@ struct PDFSearchIndexTests {
         #expect(try scalarSQL("SELECT COUNT(*) FROM pdf_document", at: databaseURL) == 0)
     }
 
-    @Test("A forced exhaustive diagnostic rejects divergent FTS payload")
-    func forcedDiagnosticRejectsDivergentFTSPayload() async throws {
+    @Test
+    func `A forced exhaustive diagnostic rejects divergent FTS payload`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let path = "references/divergent.pdf"
@@ -894,8 +894,8 @@ struct PDFSearchIndexTests {
         }
     }
 
-    @Test("Warm opens use bounded trust probes while explicit diagnostics are exhaustive")
-    func warmIntegrityTrustBoundary() throws {
+    @Test
+    func `Warm opens use bounded trust probes while explicit diagnostics are exhaustive`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -929,8 +929,8 @@ struct PDFSearchIndexTests {
         #expect(integrityChecks.value == 2)
     }
 
-    @Test("An unversioned nonempty database is rejected rather than adopted")
-    func unversionedNonemptyDatabase() throws {
+    @Test
+    func `An unversioned nonempty database is rejected rather than adopted`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -948,8 +948,8 @@ struct PDFSearchIndexTests {
         ) == 0)
     }
 
-    @Test("A missing warm schema object triggers safe derived-cache recovery")
-    func missingWarmSchemaRecovery() async throws {
+    @Test
+    func `A missing warm schema object triggers safe derived-cache recovery`() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -966,8 +966,8 @@ struct PDFSearchIndexTests {
             == PDFSearchIndexContract.schemaVersion)
     }
 
-    @Test("Large replace and prune stay inside the peak database bundle quota")
-    func publishedBundleQuota() throws {
+    @Test
+    func `Large replace and prune stay inside the peak database bundle quota`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -1060,8 +1060,8 @@ struct PDFSearchIndexTests {
         #expect(try databaseBundleByteCount(databaseURL) <= maximumBytes)
     }
 
-    @Test("Remove and prune retain the bounded WAL transaction envelope")
-    func destructiveBundleQuotaWithRetainedReadSnapshot() throws {
+    @Test
+    func `Remove and prune retain the bounded WAL transaction envelope`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -1173,8 +1173,8 @@ struct PDFSearchIndexTests {
         #expect(try databaseBundleByteCount(databaseURL) <= maximumBytes)
     }
 
-    @Test("Warm trust probes reject a derived cache with the wrong application identity")
-    func applicationIdentityProbe() throws {
+    @Test
+    func `Warm trust probes reject a derived cache with the wrong application identity`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -1187,8 +1187,8 @@ struct PDFSearchIndexTests {
         }
     }
 
-    @Test("Warm trust probes reject excessive schema index fanout")
-    func boundedWarmIndexEnumeration() throws {
+    @Test
+    func `Warm trust probes reject excessive schema index fanout`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -1204,8 +1204,8 @@ struct PDFSearchIndexTests {
         }
     }
 
-    @Test("Warm trust probes reject oversized schema SQL before decoding it")
-    func boundedWarmSchemaSQL() throws {
+    @Test
+    func `Warm trust probes reject oversized schema SQL before decoding it`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -1229,8 +1229,8 @@ struct PDFSearchIndexTests {
         }
     }
 
-    @Test("Warm generation metadata probe rejects a second row")
-    func boundedWarmGenerationRows() throws {
+    @Test
+    func `Warm generation metadata probe rejects a second row`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.dataDirectory.searchIndexDirectoryURL
@@ -1248,8 +1248,8 @@ struct PDFSearchIndexTests {
         }
     }
 
-    @Test("Publishing many pages prepares a constant number of SQL statements")
-    func publishReusesStatements() throws {
+    @Test
+    func `Publishing many pages prepares a constant number of SQL statements`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let preparations = ExtractionCounter()
@@ -1318,8 +1318,8 @@ struct PDFSearchIndexTests {
             .indexedPageCount == 200)
     }
 
-    @Test("Extended SQLite corruption codes remain rebuildable")
-    func extendedCorruptionClassification() {
+    @Test
+    func `Extended SQLite corruption codes remain rebuildable`() {
         let error = PDFSearchIndexDatabase.DatabaseError(
             operation: "execute",
             message: "corrupt virtual table",
@@ -1328,8 +1328,8 @@ struct PDFSearchIndexTests {
         #expect(error.permitsDerivedIndexRebuild)
     }
 
-    @Test("A hardlinked SQLite sidecar is rejected and never modified")
-    func hardlinkedSidecar() throws {
+    @Test
+    func `A hardlinked SQLite sidecar is rejected and never modified`() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let marker = fixture.root.appendingPathComponent("marker")

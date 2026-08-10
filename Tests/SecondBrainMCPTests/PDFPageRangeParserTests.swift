@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF page range parser")
-struct PDFPageRangeParserTests {
-    @Test("Limits an inclusive range to the requested result count")
-    func limitsInclusiveRange() {
+@Suite
+struct `PDF page range parser` {
+    @Test
+    func `Limits an inclusive range to the requested result count`() {
         let pages = PDFPageRangeParser.pages(
             in: "3-12",
             totalPages: 20,
@@ -14,8 +14,8 @@ struct PDFPageRangeParserTests {
         #expect(pages == [3, 4, 5, 6, 7])
     }
 
-    @Test("Clamps a range to physical document boundaries")
-    func clampsToDocumentBoundaries() {
+    @Test
+    func `Clamps a range to physical document boundaries`() {
         let pages = PDFPageRangeParser.pages(
             in: "0-50",
             totalPages: 3,
@@ -25,8 +25,8 @@ struct PDFPageRangeParserTests {
         #expect(pages == [1, 2, 3])
     }
 
-    @Test("Falls back to the first pages for a malformed range")
-    func malformedRangeUsesDefaultSelection() {
+    @Test
+    func `Falls back to the first pages for a malformed range`() {
         let pages = PDFPageRangeParser.pages(
             in: "chapter-one",
             totalPages: 10,
@@ -44,8 +44,8 @@ struct PDFPageRangeParserTests {
         )
     }
 
-    @Test("Returns no pages for an unavailable selection")
-    func unavailableSelectionIsEmpty() {
+    @Test
+    func `Returns no pages for an unavailable selection`() {
         #expect(
             PDFPageRangeParser.pages(
                 in: "8-4",
@@ -62,8 +62,8 @@ struct PDFPageRangeParserTests {
         )
     }
 
-    @Test("Non-positive limits cannot create an invalid Swift range")
-    func nonPositiveLimitIsEmpty() {
+    @Test
+    func `Non-positive limits cannot create an invalid Swift range`() {
         #expect(
             PDFPageRangeParser.pages(
                 in: "not-a-range",
@@ -80,8 +80,8 @@ struct PDFPageRangeParserTests {
         )
     }
 
-    @Test("Extreme page values cannot overflow selection arithmetic")
-    func extremePageValuesAreSafe() {
+    @Test
+    func `Extreme page values cannot overflow selection arithmetic`() {
         let maximumValue = String(Int.max)
 
         #expect(

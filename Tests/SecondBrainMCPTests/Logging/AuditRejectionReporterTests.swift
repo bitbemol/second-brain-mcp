@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Audit rejection reporter")
-struct AuditRejectionReporterTests {
-    @Test("Transport rejection is translated into backend audit vocabulary")
-    func recordsRejection() async throws {
+@Suite
+struct `Audit rejection reporter` {
+    @Test
+    func `Transport rejection is translated into backend audit vocabulary`() async throws {
         let root = NSTemporaryDirectory() + "AuditRejectionReporterTests-\(UUID().uuidString)"
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
         let reporter = AuditRejectionReporter(

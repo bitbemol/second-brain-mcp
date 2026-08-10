@@ -2,10 +2,10 @@ import PDFKit
 import Testing
 @testable import second_brain_mcp
 
-@Suite("PDF text extraction")
-struct PDFTextExtractorTests {
-    @Test("Ranked PDF search returns body evidence before navigation pages")
-    func rankedBodyPages() throws {
+@Suite
+struct `PDF text extraction` {
+    @Test
+    func `Ranked PDF search returns body evidence before navigation pages`() throws {
         let document = SearchPDFDocument(pageTexts: [
             "Table of Contents\nbinary search ........ 3",
             "Preface",
@@ -27,8 +27,8 @@ struct PDFTextExtractorTests {
         #expect(!result.ocrPerformed)
     }
 
-    @Test("Ranked PDF search discloses scan and text limitations")
-    func rankedCoverageStatus() throws {
+    @Test
+    func `Ranked PDF search discloses scan and text limitations`() throws {
         let partial = SearchPDFDocument(pageTexts: ["first", "target", "later target"])
         let partialResult = try PDFTextExtractor.rankedSearchDocument(
             partial,

@@ -101,11 +101,11 @@ private func pixelSize(of data: Data) -> (width: Int, height: Int)? {
 
 // MARK: - Policy (fake encoder)
 
-@Suite("ImageReader — policy")
-struct ImageReaderPolicyTests {
+@Suite
+struct `ImageReader — policy` {
 
-    @Test("Within-cap PNG is passed through byte-identical")
-    func passThroughPNG() throws {
+    @Test
+    func `Within-cap PNG is passed through byte-identical`() throws {
         let root = try makeVault()
         let bytes = Data("pretend png".utf8)
         try write(bytes, to: "notes/attachments/small.png", in: root)
@@ -121,8 +121,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.first?.timeOffsetSeconds == nil)
     }
 
-    @Test("Within-cap JPEG passes through with image/jpeg mime")
-    func passThroughJPEG() throws {
+    @Test
+    func `Within-cap JPEG passes through with image/jpeg mime`() throws {
         let root = try makeVault()
         let bytes = Data("pretend jpeg".utf8)
         try write(bytes, to: "notes/attachments/photo.jpg", in: root)
@@ -134,8 +134,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.first?.data == bytes)
     }
 
-    @Test("Non-API format (heic) is re-encoded to PNG even when small")
-    func heicReencoded() throws {
+    @Test
+    func `Non-API format (heic) is re-encoded to PNG even when small`() throws {
         let root = try makeVault()
         try write(Data([1, 2, 3]), to: "notes/attachments/photo.heic", in: root)
 
@@ -152,8 +152,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.first?.data == sentinel)
     }
 
-    @Test("Oversized still is downscaled and re-encoded to PNG")
-    func downscale() throws {
+    @Test
+    func `Oversized still is downscaled and re-encoded to PNG`() throws {
         let root = try makeVault()
         try write(Data([0, 1, 2]), to: "notes/attachments/wide.png", in: root)
 
@@ -165,8 +165,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.first?.mimeType == "image/png")
     }
 
-    @Test("Animated GIF returns a sampled PNG frame bundle")
-    func animatedGIF() throws {
+    @Test
+    func `Animated GIF returns a sampled PNG frame bundle`() throws {
         let root = try makeVault()
         try write(Data([0]), to: "notes/attachments/anim.gif", in: root)
 
@@ -179,8 +179,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.last?.sourceIndex == 19)          // last frame
     }
 
-    @Test("Animated GIF surfaces total duration and per-frame time offsets")
-    func gifTiming() throws {
+    @Test
+    func `Animated GIF surfaces total duration and per-frame time offsets`() throws {
         let root = try makeVault()
         try write(Data([0]), to: "notes/attachments/timed.gif", in: root)
 
@@ -197,8 +197,8 @@ struct ImageReaderPolicyTests {
         }
     }
 
-    @Test("Animated GIF with no delay metadata leaves timing nil")
-    func gifNoTiming() throws {
+    @Test
+    func `Animated GIF with no delay metadata leaves timing nil`() throws {
         let root = try makeVault()
         try write(Data([0]), to: "notes/attachments/untimed.gif", in: root)
 
@@ -208,8 +208,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.allSatisfy { $0.timeOffsetSeconds == nil })
     }
 
-    @Test("Single-frame GIF is treated as a still and passes through")
-    func staticGIF() throws {
+    @Test
+    func `Single-frame GIF is treated as a still and passes through`() throws {
         let root = try makeVault()
         let bytes = Data("pretend gif".utf8)
         try write(bytes, to: "notes/attachments/still.gif", in: root)
@@ -222,8 +222,8 @@ struct ImageReaderPolicyTests {
         #expect(r.frames.first?.mimeType == "image/gif")
     }
 
-    @Test("Decode-bomb dimensions are rejected before decoding")
-    func bombRejected() throws {
+    @Test
+    func `Decode-bomb dimensions are rejected before decoding`() throws {
         let root = try makeVault()
         try write(Data([0]), to: "notes/attachments/bomb.png", in: root)
         let reader = ImageReader(encoder: FakeImageEncoder(width: 100_000, height: 100_000))
@@ -232,8 +232,8 @@ struct ImageReaderPolicyTests {
         }
     }
 
-    @Test("Nonpositive dimensions are rejected before source pass-through")
-    func invalidDimensionsRejected() throws {
+    @Test
+    func `Nonpositive dimensions are rejected before source pass-through`() throws {
         let root = try makeVault()
         try write(Data([0]), to: "notes/attachments/invalid.png", in: root)
         let reader = ImageReader(encoder: FakeImageEncoder(width: 0, height: 100))
@@ -243,8 +243,8 @@ struct ImageReaderPolicyTests {
         }
     }
 
-    @Test("Declared and detected concrete formats must agree")
-    func contentMismatchRejected() throws {
+    @Test
+    func `Declared and detected concrete formats must agree`() throws {
         let root = try makeVault()
         try write(Data([0]), to: "notes/attachments/renamed.png", in: root)
         let reader = ImageReader(encoder: FakeImageEncoder(
@@ -265,8 +265,8 @@ struct ImageReaderPolicyTests {
         }
     }
 
-    @Test("Oversized file is rejected before opening")
-    func fileTooLarge() throws {
+    @Test
+    func `Oversized file is rejected before opening`() throws {
         let root = try makeVault()
         try write(Data(count: 1000), to: "notes/attachments/huge.png", in: root)
         let tight = ImageLimits(maxLongEdge: 2576, maxFileBytes: 100, maxMegapixels: 50, gifMaxFrames: 8, gifMaxSourceFrames: 10_000, gifFrameMaxLongEdge: 1280)
@@ -280,11 +280,11 @@ struct ImageReaderPolicyTests {
 
 // MARK: - Real encoder + end-to-end
 
-@Suite("CoreGraphicsImageEncoder")
-struct CoreGraphicsImageEncoderTests {
+@Suite
+struct `CoreGraphicsImageEncoder tests` {
 
-    @Test("inspect reads dimensions, format, frame count")
-    func inspect() throws {
+    @Test
+    func `inspect reads dimensions, format, frame count`() throws {
         let root = try makeVault()
         try write(makePNG(width: 120, height: 80), to: "notes/attachments/real.png", in: root)
         let info = try CoreGraphicsImageEncoder().inspect(url: URL(fileURLWithPath: root + "/notes/attachments/real.png"))
@@ -295,8 +295,8 @@ struct CoreGraphicsImageEncoderTests {
         #expect(info.frameDelays == nil)                   // a still carries no per-frame timing
     }
 
-    @Test("inspect reads per-frame delays from a real animated GIF")
-    func inspectGIFDelays() throws {
+    @Test
+    func `inspect reads per-frame delays from a real animated GIF`() throws {
         let root = try makeVault()
         try write(makeGIF(frames: 5, width: 40, height: 40), to: "notes/attachments/delays.gif", in: root)
         let info = try CoreGraphicsImageEncoder().inspect(url: URL(fileURLWithPath: root + "/notes/attachments/delays.gif"))
@@ -306,8 +306,8 @@ struct CoreGraphicsImageEncoderTests {
         #expect(delays.allSatisfy { abs($0 - 0.1) < 0.02 })   // makeGIF writes 0.1s/frame
     }
 
-    @Test("ImageReader passes a small real PNG through unchanged")
-    func endToEndPassThrough() throws {
+    @Test
+    func `ImageReader passes a small real PNG through unchanged`() throws {
         let root = try makeVault()
         let png = makePNG(width: 300, height: 200)
         try write(png, to: "notes/attachments/screenshot.png", in: root)
@@ -318,8 +318,8 @@ struct CoreGraphicsImageEncoderTests {
         #expect(r.frames.first?.data == png)
     }
 
-    @Test("ImageReader downscales a large real PNG to the cap")
-    func endToEndDownscale() throws {
+    @Test
+    func `ImageReader downscales a large real PNG to the cap`() throws {
         let root = try makeVault()
         try write(makePNG(width: 4000, height: 100), to: "references/wide.png", in: root)
         let r = try ImageReader(encoder: CoreGraphicsImageEncoder()).read(
@@ -331,8 +331,8 @@ struct CoreGraphicsImageEncoderTests {
         #expect(max(size.width, size.height) <= 2576)
     }
 
-    @Test("ImageReader reads a real JPEG (pass-through, image/jpeg)")
-    func endToEndJPEG() throws {
+    @Test
+    func `ImageReader reads a real JPEG (pass-through, image/jpeg)`() throws {
         let root = try makeVault()
         let jpg = makeJPEG(width: 200, height: 150)
         try write(jpg, to: "notes/attachments/photo.jpg", in: root)
@@ -343,8 +343,8 @@ struct CoreGraphicsImageEncoderTests {
         #expect(r.passedThrough == true)
     }
 
-    @Test("ImageReader decomposes a real animated GIF into PNG frames")
-    func endToEndAnimatedGIF() throws {
+    @Test
+    func `ImageReader decomposes a real animated GIF into PNG frames`() throws {
         let root = try makeVault()
         try write(makeGIF(frames: 12, width: 80, height: 60), to: "notes/attachments/anim.gif", in: root)
         let r = try ImageReader(encoder: CoreGraphicsImageEncoder()).read(

@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Markdown support")
-struct MarkdownSupportTests {
-    @Test("Generates frontmatter with normalized tags")
-    func frontmatterWithTags() {
+@Suite
+struct `Markdown support` {
+    @Test
+    func `Generates frontmatter with normalized tags`() {
         let result = MarkdownSupport.generateFrontmatter(
             title: "My Note",
             tags: ["Swift", " Architecture "],
@@ -16,8 +16,8 @@ struct MarkdownSupportTests {
         #expect(result.contains("tags: [\"swift\", \"architecture\"]"))
     }
 
-    @Test("Omits empty tags")
-    func frontmatterWithoutTags() {
+    @Test
+    func `Omits empty tags`() {
         let result = MarkdownSupport.generateFrontmatter(
             title: "My Note",
             tags: ["  ", "\n"],
@@ -26,8 +26,8 @@ struct MarkdownSupportTests {
         #expect(!result.contains("tags:"))
     }
 
-    @Test("Escapes title and tag values onto their existing YAML lines")
-    func frontmatterEscaping() {
+    @Test
+    func `Escapes title and tag values onto their existing YAML lines`() {
         let result = MarkdownSupport.generateFrontmatter(
             title: "Roadmap\"\n---\nadmin: true",
             tags: ["Safe", "bad]\\\n---\nowned: true"],
@@ -40,13 +40,13 @@ struct MarkdownSupportTests {
         #expect(lines[3] == "tags: [\"safe\", \"bad]\\\\\\u000A---\\u000Aowned: true\"]")
     }
 
-    @Test("Derives a readable title from a filename")
-    func filenameTitle() {
+    @Test
+    func `Derives a readable title from a filename`() {
         #expect(MarkdownSupport.titleFromFilename("my_note-name.md") == "my note name")
     }
 
-    @Test("Distinguishes front matter from a thematic break")
-    func frontmatterDetection() {
+    @Test
+    func `Distinguishes front matter from a thematic break`() {
         #expect(MarkdownSupport.hasFrontmatter("---\ntitle: Note\n---\nBody"))
         #expect(!MarkdownSupport.hasFrontmatter("---\n# Heading"))
         #expect(!MarkdownSupport.hasFrontmatter("Text\n---\nMore"))

@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Bounded ranked selection")
-struct BoundedRankedSelectionTests {
-    @Test("Seeded heap selection matches a simple bounded reference")
-    func randomizedDifferential() {
+@Suite
+struct `Bounded ranked selection` {
+    @Test
+    func `Seeded heap selection matches a simple bounded reference`() {
         var random = SeededRandom(state: 0x5EED_CAFE_D15C_A11E)
         var actual = BoundedRankedSelection()
         var expected = ReferenceSelection()
@@ -56,8 +56,8 @@ struct BoundedRankedSelectionTests {
         }
     }
 
-    @Test("One key orders score path page and line consistently")
-    func deterministicOrderingKey() {
+    @Test
+    func `One key orders score path page and line consistently`() {
         let candidates = [
             makeCandidate(path: "notes/b.md", lineStart: 1, score: 10),
             makeCandidate(path: "notes/a.md", lineStart: 5, score: 10),

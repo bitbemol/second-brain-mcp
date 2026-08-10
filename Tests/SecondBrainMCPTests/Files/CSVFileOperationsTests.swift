@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import second_brain_mcp
 
-@Suite("CSV file operations")
-struct CSVFileOperationsTests {
-    @Test("Quoted commas, escaped quotes, and embedded newlines are valid")
-    func quotedFields() throws {
+@Suite
+struct `CSV file operations` {
+    @Test
+    func `Quoted commas, escaped quotes, and embedded newlines are valid`() throws {
         let csv = "name,note,value\r\n"
             + "alice,\"hello, world\",1\r\n"
             + "bob,\"line 1\r\nline 2 and \"\"quoted\"\"\",2\r\n"
@@ -16,8 +16,8 @@ struct CSVFileOperationsTests {
         ))
     }
 
-    @Test("Malformed quoting and inconsistent rows are rejected")
-    func malformedCSV() {
+    @Test
+    func `Malformed quoting and inconsistent rows are rejected`() {
         #expect(throws: CSVDocumentInspector.ValidationError.self) {
             try CSVDocumentInspector.inspect("a,b\nvalue,un\"quoted")
         }
@@ -29,8 +29,8 @@ struct CSVFileOperationsTests {
         }
     }
 
-    @Test("Creation and reading preserve CSV bytes")
-    func losslessCreateAndRead() throws {
+    @Test
+    func `Creation and reading preserve CSV bytes`() throws {
         let target = try makeTarget()
         let source = "id,value\r\n1,alpha\r\n"
         let operations = CSVFileOperations()
@@ -56,8 +56,8 @@ struct CSVFileOperationsTests {
         #expect(returned == source)
     }
 
-    @Test("CSV replace, append, and exact patches validate the final table")
-    func updateModes() throws {
+    @Test
+    func `CSV replace, append, and exact patches validate the final table`() throws {
         let target = try makeTarget()
         let operations = CSVFileOperations()
         let original = Data("id,value\n1,alpha".utf8)
@@ -102,8 +102,8 @@ struct CSVFileOperationsTests {
         }
     }
 
-    @Test("CSV append uses only CR or LF as a record boundary")
-    func appendRecordBoundary() throws {
+    @Test
+    func `CSV append uses only CR or LF as a record boundary`() throws {
         let target = try makeTarget()
         let existing = "a,b\u{2028}"
         let snapshot = FileSnapshot(
@@ -127,8 +127,8 @@ struct CSVFileOperationsTests {
         ).rowCount == 2)
     }
 
-    @Test("Leading UTF-8 BOM survives CSV reads and patches")
-    func byteOrderMarkIsPreserved() throws {
+    @Test
+    func `Leading UTF-8 BOM survives CSV reads and patches`() throws {
         let target = try makeTarget()
         let operations = CSVFileOperations()
         let original = Data([0xef, 0xbb, 0xbf])
@@ -168,8 +168,8 @@ struct CSVFileOperationsTests {
         #expect(patched.data.starts(with: [0xef, 0xbb, 0xbf]))
     }
 
-    @Test("Oversized CSV updates fail before table inspection")
-    func oversizedUpdate() throws {
+    @Test
+    func `Oversized CSV updates fail before table inspection`() throws {
         let target = try makeTarget()
         let snapshot = FileSnapshot(data: Data("a".utf8), modifiedDate: nil)
         let oversized = String(

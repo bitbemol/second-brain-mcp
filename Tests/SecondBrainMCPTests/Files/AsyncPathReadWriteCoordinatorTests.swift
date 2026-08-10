@@ -1,10 +1,10 @@
 import Testing
 @testable import second_brain_mcp
 
-@Suite("Async path reader/writer coordinator")
-struct AsyncPathReadWriteCoordinatorTests {
-    @Test("Readers for the same path overlap")
-    func sameKeyReadersOverlap() async throws {
+@Suite
+struct `Async path reader/writer coordinator` {
+    @Test
+    func `Readers for the same path overlap`() async throws {
         let coordinator = AsyncPathReadWriteCoordinator()
         let overlap = PathOverlapProbe()
 
@@ -27,8 +27,8 @@ struct AsyncPathReadWriteCoordinatorTests {
         #expect(await coordinator.activePathCount == 0)
     }
 
-    @Test("A queued writer excludes access and prevents later-reader barging")
-    func writerFairness() async throws {
+    @Test
+    func `A queued writer excludes access and prevents later-reader barging`() async throws {
         let coordinator = AsyncPathReadWriteCoordinator()
         let initialReader = PathHold()
         let writerHold = PathHold()
@@ -75,8 +75,8 @@ struct AsyncPathReadWriteCoordinatorTests {
         #expect(await coordinator.activePathCount == 0)
     }
 
-    @Test("Exclusive operations for different paths overlap")
-    func differentKeysOverlap() async throws {
+    @Test
+    func `Exclusive operations for different paths overlap`() async throws {
         let coordinator = AsyncPathReadWriteCoordinator()
         let overlap = PathOverlapProbe()
 
@@ -100,8 +100,8 @@ struct AsyncPathReadWriteCoordinatorTests {
         #expect(await coordinator.activePathCount == 0)
     }
 
-    @Test("Canceling a queued waiter skips its operation and removes path state")
-    func queuedCancellationCleansState() async throws {
+    @Test
+    func `Canceling a queued waiter skips its operation and removes path state`() async throws {
         let coordinator = AsyncPathReadWriteCoordinator()
         let holderGate = PathHold()
         let operationProbe = PathCancellationProbe()
@@ -139,8 +139,8 @@ struct AsyncPathReadWriteCoordinatorTests {
         #expect(await coordinator.activePathCount == 0)
     }
 
-    @Test("A saturated path queue rejects excess callers without losing queued work")
-    func boundedQueue() async throws {
+    @Test
+    func `A saturated path queue rejects excess callers without losing queued work`() async throws {
         let coordinator = AsyncPathReadWriteCoordinator(
             maximumWaitersPerPath: 1,
             maximumTotalWaiters: 1
@@ -171,8 +171,8 @@ struct AsyncPathReadWriteCoordinatorTests {
         #expect(await coordinator.activePathCount == 0)
     }
 
-    @Test("The reader holder cap queues excess readers without breaking progress")
-    func boundedReaderHolders() async throws {
+    @Test
+    func `The reader holder cap queues excess readers without breaking progress`() async throws {
         let coordinator = AsyncPathReadWriteCoordinator(
             maximumReadersPerPath: 1,
             maximumWaitersPerPath: 1,

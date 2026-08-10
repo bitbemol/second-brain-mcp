@@ -3,8 +3,8 @@ import MCP
 import Testing
 @testable import second_brain_mcp
 
-@Suite("MCP file consistency contract")
-struct FileToolContractTests {
+@Suite
+struct `MCP file consistency contract` {
     private let capabilities = FileCapabilities(formats: [
         .init(format: .markdown, operations: [
             .create: [.notes],
@@ -29,8 +29,8 @@ struct FileToolContractTests {
         ]),
     ])
 
-    @Test("The four tools advertise required consistency inputs")
-    func inputSchemas() throws {
+    @Test
+    func `The four tools advertise required consistency inputs`() throws {
         let tools = Dictionary(uniqueKeysWithValues: FileToolDefinitions.build(
             capabilities: capabilities,
             readOnly: false
@@ -84,8 +84,8 @@ struct FileToolContractTests {
         }
     }
 
-    @Test("Structured result schemas expose revision and replay metadata")
-    func outputSchemas() throws {
+    @Test
+    func `Structured result schemas expose revision and replay metadata`() throws {
         let tools = Dictionary(uniqueKeysWithValues: FileToolDefinitions.build(
             capabilities: capabilities,
             readOnly: false
@@ -109,8 +109,8 @@ struct FileToolContractTests {
         }
     }
 
-    @Test("Capabilities describe revisions, compare-and-swap, and durable replay")
-    func capabilityResource() throws {
+    @Test
+    func `Capabilities describe revisions, compare-and-swap, and durable replay`() throws {
         let result = try FileCapabilitiesResource.read(
             capabilities: capabilities,
             readOnly: false

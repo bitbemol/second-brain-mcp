@@ -8,8 +8,8 @@ import CoreGraphics
 import UniformTypeIdentifiers
 @testable import second_brain_mcp
 
-@Suite("VideoImporter")
-struct VideoImporterTests {
+@Suite
+struct `VideoImporter tests` {
 
     // MARK: - Helpers
 
@@ -184,8 +184,8 @@ struct VideoImporterTests {
 
     // MARK: - Policy (fake encoder)
 
-    @Test("Happy path prepares GIF data and leaves the source untouched")
-    func happyPath() async throws {
+    @Test
+    func `Happy path prepares GIF data and leaves the source untouched`() async throws {
         let root = try makeVault()
         let src = srcPath("clip.mov")
         try Data(count: 4096).write(to: URL(fileURLWithPath: src))   // source is faked; bytes don't matter
@@ -204,8 +204,8 @@ struct VideoImporterTests {
         #expect(exists(src))
     }
 
-    @Test("Concurrent requests serialize complete video conversions")
-    func serializesConversions() async throws {
+    @Test
+    func `Concurrent requests serialize complete video conversions`() async throws {
         let root = try makeVault()
         let sources = try (0..<4).map { index in
             let source = srcPath("clip-\(index).mov")
@@ -230,8 +230,8 @@ struct VideoImporterTests {
         #expect(await probe.maximumActive == 1)
     }
 
-    @Test("Video inspection and encoding preserve cancellation")
-    func preservesCancellation() async throws {
+    @Test
+    func `Video inspection and encoding preserve cancellation`() async throws {
         let root = try makeVault()
         let source = srcPath("cancel.mov")
         try Data(count: 64).write(to: URL(fileURLWithPath: source))
@@ -249,8 +249,8 @@ struct VideoImporterTests {
         }
     }
 
-    @Test("A non-video source (no video track) is rejected, nothing written")
-    func rejectsNonVideo() async throws {
+    @Test
+    func `A non-video source (no video track) is rejected, nothing written`() async throws {
         let root = try makeVault()
         let src = srcPath("audio.m4a")
         try Data(count: 1024).write(to: URL(fileURLWithPath: src))
@@ -268,8 +268,8 @@ struct VideoImporterTests {
         }
     }
 
-    @Test("A clip longer than the duration cap is rejected")
-    func rejectsTooLong() async throws {
+    @Test
+    func `A clip longer than the duration cap is rejected`() async throws {
         let root = try makeVault()
         let src = srcPath("long.mov")
         try Data(count: 1024).write(to: URL(fileURLWithPath: src))
@@ -296,8 +296,8 @@ struct VideoImporterTests {
         }
     }
 
-    @Test("The output-size guard rejects an oversized GIF, nothing written")
-    func rejectsOversizedOutput() async throws {
+    @Test
+    func `The output-size guard rejects an oversized GIF, nothing written`() async throws {
         let root = try makeVault()
         let src = srcPath("clip.mov")
         try Data(count: 1024).write(to: URL(fileURLWithPath: src))
@@ -325,8 +325,8 @@ struct VideoImporterTests {
         }
     }
 
-    @Test("Source larger than the size cap is rejected before conversion")
-    func rejectsOversizeSource() async throws {
+    @Test
+    func `Source larger than the size cap is rejected before conversion`() async throws {
         let root = try makeVault()
         let src = srcPath("big.mov")
         try Data(count: 2000).write(to: URL(fileURLWithPath: src))
@@ -356,8 +356,8 @@ struct VideoImporterTests {
         }
     }
 
-    @Test("Missing source is rejected")
-    func rejectsMissingSource() async throws {
+    @Test
+    func `Missing source is rejected`() async throws {
         let root = try makeVault()
         let enc = FakeVideoEncoder(inspection: validInspection(), gif: gifData(byteCount: 64))
         let importer = VideoImporter(
@@ -369,8 +369,8 @@ struct VideoImporterTests {
         }
     }
 
-    @Test("A source inside the vault is rejected")
-    func rejectsInVaultSource() async throws {
+    @Test
+    func `A source inside the vault is rejected`() async throws {
         let root = try makeVault()
         try FileManager.default.createDirectory(atPath: root + "/notes/_attachments", withIntermediateDirectories: true)
         let inVault = root + "/notes/_attachments/existing.mov"
@@ -389,8 +389,8 @@ struct VideoImporterTests {
 
     // MARK: - End-to-end with the real AVFoundation encoder
 
-    @Test("Real encoder: inspect reports duration/dims/hasVideoTrack")
-    func realEncoderInspect() async throws {
+    @Test
+    func `Real encoder: inspect reports duration/dims/hasVideoTrack`() async throws {
         let mov = try await makeTinyMOV(width: 64, height: 48, frames: 10, fps: 10)
         defer { try? FileManager.default.removeItem(at: mov) }
 
@@ -400,8 +400,8 @@ struct VideoImporterTests {
         #expect(abs(info.durationSeconds - 1.0) < 0.25)   // 10 frames @ 10fps ≈ 1s
     }
 
-    @Test("Real encoder: makeGIF returns GIF8 bytes decoding to N frames")
-    func realEncoderMakeGIF() async throws {
+    @Test
+    func `Real encoder: makeGIF returns GIF8 bytes decoding to N frames`() async throws {
         let mov = try await makeTinyMOV(width: 64, height: 48, frames: 10, fps: 10)
         defer { try? FileManager.default.removeItem(at: mov) }
 
@@ -418,8 +418,8 @@ struct VideoImporterTests {
         #expect(gifFrameCount(gif) == schedule.times.count)
     }
 
-    @Test("Real encoder prepares a generated MOV as GIF data")
-    func realEncoderPreparation() async throws {
+    @Test
+    func `Real encoder prepares a generated MOV as GIF data`() async throws {
         let root = try makeVault()
         let mov = try await makeTinyMOV(width: 48, height: 32, frames: 8, fps: 8)
         defer { try? FileManager.default.removeItem(at: mov) }
