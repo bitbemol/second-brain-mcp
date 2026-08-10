@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients compact, ranked search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Every successful changed-byte mutation is committed to git; a post-persistence Git failure is surfaced explicitly and blocks later mutations until recovery.
+A local MCP server in Swift that gives MCP clients locator-only content search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes await a recoverable Git snapshot, and snapshot failures are surfaced explicitly.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -12,16 +12,14 @@ stdio-capable MCP client ──> SecondBrainMCP
 ## Features
 
 - **Compact file and directory tools** — four format-aware file CRUD tools plus one atomic `move_directory` operation for complete note subtrees
-- **Ranked vault search** — `search_vault` supports smart, exact, phrase, lexical, and conservative fuzzy matching across safe note snapshots and page-aware PDF references
+- **Locator-only vault search** — `search_vault` searches content but returns only note/file paths or physical PDF page numbers for follow-up with `read_file`
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
-- **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
-- **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
-- **Git auto-commit** — every successful changed-byte write creates a scoped commit with `[SecondBrainMCP]` prefix
+- **Multi-agent-safe vault access** — concurrent reads overlap, complete mutations are exclusive through their Git snapshot, and exact-byte revisions reject stale updates and deletes
+- **Git snapshots** — note changes request a local `Vault snapshot`; concurrent agents may share one recovery point, and `references/` is never included
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed
-- **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
+- **Atomic PDF page reading** — each requested physical page returns bounded extracted text plus a PNG image; single pages, ordered page sets, and inclusive ranges are supported
 - **Read-only mode** — `--read-only` hides write tools and disables vault migration/Git mutation in the backend
 - **Path security** — symlink resolution, traversal prevention, extension allowlists
-- **Audit log** — best-effort operation records live under `~/Library/Application Support/SecondBrainMCP/`
 - **Works alongside Obsidian, iA Writer, Logseq** — the vault is plain Markdown; app config directories are ignored
 - **Custom instructions** — drop an `INSTRUCTIONS.md` in your vault root to define your own conventions
 
@@ -140,7 +138,7 @@ If new tools still don't appear, confirm the client's `command` points at `.buil
 └── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Writable startup prepares Git metadata as needed; read-only startup leaves the vault untouched. Size-rotated audit logs live outside the vault under `~/Library/Application Support/SecondBrainMCP/`.
+Only `notes/` and `references/` need to exist. Writable startup prepares Git metadata as needed; read-only startup leaves the vault untouched.
 
 ## CLI Flags
 
@@ -151,48 +149,39 @@ Only `notes/` and `references/` need to exist. Writable startup prepares Git met
 
 ## File API
 
-The public API has four generic file CRUD tools, one atomic directory-move tool, and one read-only search tool. File CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. Directory moves operate on the subtree path itself and therefore do not require or guess a file format.
+The public API has four generic file CRUD tools, one atomic directory-move tool, and one read-only search tool. File CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. CRUD schemas and decoders reject unknown arguments, and `update_file` requires an explicit `mode`. Directory moves operate on the subtree path itself and therefore do not require or guess a file format.
 
-Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse that UUID only when retrying the exact same request after a timeout or lost response. Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions.
+Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions. A mutation call returns only after its filesystem change and required Git snapshot finish. If the transport loses that response, read the target state before deciding whether another mutation is needed.
 
 | Tool | Purpose |
 |------|---------|
-| `search_vault` | Rank matching notes and PDF references by title, heading, tags, path, or content without returning a mutation revision |
-| `create_file` | Validate/transform input, atomically create under `notes/`, and git-commit |
+| `search_vault` | Locate matching whole-file atoms or physical PDF pages without returning their content |
+| `create_file` | Validate/transform input, atomically create under `notes/`, and request a vault snapshot |
 | `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
-| `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then git-commit |
-| `move_directory` | Atomically rename a complete `notes/` subtree—including nested files and directories—and create one scoped Git commit |
+| `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then request a vault snapshot |
+| `move_directory` | Atomically rename a complete `notes/` subtree—including nested files and directories—and request a vault snapshot |
 
 ### Directory moves
 
-Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path`, the exact unused `destination_path`, and a fresh `mutation_id`. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123`; no file contents need to be returned to the model or recreated individually. Missing destination parents are created safely, the destination is never overwritten, and a move into its own subtree is rejected.
+Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path` and exact unused `destination_path`; there is no `format` argument because this is a structural operation over a set of file atoms. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123` without returning or recreating any file content. Missing destination parents are created safely, the destination is never overwritten, moves into the source subtree are rejected, and case- or Unicode-equivalent source and destination paths are treated as the same directory. Success returns only `source_path` and `destination_path`.
 
-The complete subtree is validated before the descriptor-based no-follow rename and again after Git staging, so an untracked credential-bearing file cannot hitch a ride into history. Existing files receive the same Git-candidate policy as startup snapshots, including structured HAR credential checks and strict encoding for obvious text/configuration paths. A vault-wide shared/exclusive tree lease prevents cooperating reads or writes from observing half of the path change. Successful moves are immediately discoverable through `search_vault` using the destination `path_prefix`; search itself remains read-only.
+The complete subtree is validated before the descriptor-based no-follow rename, so hidden/package descendants and credential-bearing files are rejected before the move. The global mutation lease remains held through the rename and Git snapshot, so cooperating reads cannot observe a half-completed operation. Pending note changes may deliberately share that snapshot. Empty directories move on the filesystem, but Git has no directory objects and therefore cannot preserve an empty directory by itself. Successful files are immediately discoverable through `search_vault` at their destination paths; search itself remains read-only.
 
 ### Search
 
-Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and `minimum_relevance` defaults to `0.60` on a normalized `0...1` scale. Set the floor to `0` only when broad partial recall is more useful than precision. Omitted `areas` defaults to fast note-only discovery; selecting `references`, requesting the PDF format, or using a `references/` path prefix enables PDF search. Omitted `fields` and `formats` include every value supported inside the effective area selection. `path_prefix` can narrow traversal to a canonical, non-hidden, non-package directory. `max_hits_per_file` defaults to one and can retain up to five independently relevant passages from a large file.
+`search_vault` is a locator, not a reader. It searches content but returns only the atomic elements that contain a match: `path` and `format` for whole-file atoms, plus the one-based physical `page` for a PDF page. Use those values with `read_file` to retrieve the content.
 
-| Strategy | Behavior |
-|----------|----------|
-| `smart` | Removes conversational filler, preserves whole-token literal hits, ranks cohesive lexical coverage, repairs conservative per-token typos, then adds a local note-only semantic fallback when a conversational query has no strong ordinary result |
-| `exact` | Case/diacritic-insensitive literal substring; punctuation remains significant and whole-token occurrences outrank embedded substrings |
-| `phrase` | Adjacent ordered terms across punctuation and whitespace |
-| `lexical` | Word coverage ranked by field importance |
-| `fuzzy` | Bounded typo matching, including adjacent transpositions; one- and two-character terms remain exact-only |
+Every request selects exactly one `location`: `notes` or `references`. It must also supply at least one search criterion: a text `query`, one or more `tags`, `created_from`, or `created_through`. Tags and created-date filters apply only to Markdown notes. Literal text matching is case-, diacritic-, and width-insensitive; every whitespace-separated query term must occur in the same atom. Exact phrases and repeated occurrences only determine stable result order.
 
-Search covers Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV under `notes/`, plus PDFs under `references/`. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include a bounded complete node ID, kind, and field; an unrepresentable locator is omitted rather than truncated. Identifier tokenization understands camel/Pascal case, acronym boundaries, snake case, digits, and punctuation-preserving compact code queries. Sentence punctuation remains conversational input. Each result includes `area`, `relevance` (ranking strength, not probability), `term_coverage`, contributing `matched_fields`, and `complete_query_fields` that individually satisfied the whole query. Semantic-only results truthfully report zero literal term coverage and no complete-query fields. Ranking rewards terms that occur in one tight passage, penalizes evidence assembled across unrelated fields, and lets a strong semantic paraphrase outrank weak generic-term noise without disturbing confident literal results. Bounded candidate admission uses the same deterministic score and source ordering as the final response, so a post-selection reranker cannot change which top results survived the resource ceiling. Smart search performs a corpus-wide whole-literal pass before fair per-file phrase/lexical/fuzzy work, so expensive evidence files cannot hide later literal or typo hits. Live notes remain bounded by 8 MiB per file, 128 MiB aggregate snapshots, 64 MiB retained projections, and 100,000 retained sections.
+Readable textual formats automatically participate without a search-specific format registry. Markdown notes are one atom each and expose their shared frontmatter `created` date and tags to metadata filters. JSON, CSV, HAR, Canvas, patch/diff, and log files are each searched as one whole-file atom. A format that needs a different representation can register a search atom provider without changing the public search contract.
 
-PDF page text is extracted once into a versioned per-vault SQLite/FTS5 index under `~/Library/Application Support/SecondBrainMCP/`, never inside the vault or Git repository. Persistent ingestion accepts the complete 512 MiB PDF format limit so large books remain searchable; each query separately hydrates at most 10,000 candidate pages and 64 MiB of indexed page text before the live corpus applies its own 64 MiB retained-projection ceiling. Each search validates the current descriptor identity; a new or changed PDF is copied to an immutable private snapshot, hashed, safely extracted one autorelease-scoped page at a time, and atomically replaces its previous index revision. Warm searches reuse unchanged pages and issue batched scoped candidate queries instead of reopening every PDF. A warm open performs bounded validation of the exact required application/schema identity, generation metadata, tables, and critical FTS query paths without rescanning a multi-gigabyte cache. Creation and rebuild perform exhaustive canonical-to-FTS verification; that exhaustive comparison is also available as an explicit diagnostic, but is deliberately not a guarantee made by ordinary warm opens. The configured private storage ceiling is a conservative peak envelope for the main database, WAL, and shared-memory sidecar together: the main file retains transaction headroom, each publication is preflighted from its bounded retained representations before `BEGIN`, and WAL is checkpointed before and after committing. Path-only searches read no file bytes, while title-only searches refresh bounded document metadata without enumerating pages. A first explicit PDF-body search may still wait while cold or changed files are extracted; that work is serialized with direct PDF reads so concurrent agents and MCP processes cannot multiply PDFKit or temporary-disk work. Corrupt or incompatible derived data is safely rebuilt; if the private index cannot be trusted, rebuilt, or opened, PDF content degrades with explicit incomplete coverage instead of falling back to an unbounded live full-library scan.
+PDF references are represented as one atom per physical page. Page text is cached by exact file revision under the vault's private `~/Library/Application Support/SecondBrainMCP/` data directory, never inside the vault or Git. Embedded PDF text is preferred; pages without embedded text use Vision OCR. Search returns only the matching page number. `read_file(format: pdf)` retrieves physical pages with exactly one text block and one bounded PNG image per page, preserving diagrams and non-text content for the model. Select one page with `page`, an ordered set with `pages`, or an inclusive range such as `page_range: "7-10"`; the selectors are mutually exclusive, default to page 1, and are capped at 20 pages per call.
 
-PDF results include the physical page, a non-trivial bounded printed page label, page role, and `pdf_text_extraction_status`. Body pages rank above tables of contents, indexes, bibliographies, and glossaries. `pdf_summary` separately counts metadata-only, fully extracted, partial, textless, and unavailable PDFs even when no PDF page matched. Search stores text and locators only—never rendered page images and never implicit OCR. After choosing a result, call `read_file(format: pdf, page: ...)`; that operation makes a fresh stable snapshot and returns bounded page text plus a rendered JPEG so the LLM can inspect diagrams and other visual content. Direct PDF query reads accept at most 1,024 UTF-8 query bytes, rank substantive pages first, and report matching-page, scan, extraction, rendering, and OCR facts.
+`limit` defaults to 20 and is capped at 50. When `next_cursor` is present, repeat the identical criteria with that cursor; for an unchanged vault, every matching atom remains reachable until a response omits `next_cursor`. The cursor is bound to both the request and a deterministic fingerprint of the searchable corpus. If the vault changes between pages, the cursor is rejected as stale instead of silently skipping a result; restart the search from its first page.
 
-When more ranked hits exist, `next_cursor` continues the same request; cursors are bound to the query, strategy, filters, relevance floor, passage count, and exact admitted file revisions. A changed corpus rejects the continuation instead of silently duplicating or skipping ranked hits. `omitted_result_count_lower_bound` states how many ranked hits are known to remain. This makes result sets larger than the per-call cap reachable without weakening the 64 KiB MCP response ceiling.
+Search results contain no snippets, file content, scores, diagnostics, or mutation revisions. Search discovers where information lives; `read_file` retrieves it and supplies the revision required for a later note update or delete.
 
-Coverage is explicit in every response. `more_results_available` means matching results were omitted by a result or encoded-output limit. `coverage_incomplete` means some requested searchable content could not be fully evaluated. `resource_limited_file_count` is the number of known files wholly or partially omitted by a resource ceiling; it is necessarily a lower bound if directory traversal itself ends before every entry is discovered. `resource_limit_samples` gives at most eight stable, non-sensitive `{path, reason, impact}` examples and is never exhaustive. A partially evaluated file can appear in both `searched_file_count` and `resource_limited_file_count`, so the counters are facts rather than a partition to sum. `skipped_file_count` covers eligible-file safe-read, availability, containment, or parse failures, while `skipped_sensitive_file_count` remains separate. The legacy `truncated` field is the union of `more_results_available` and `coverage_incomplete`.
-
-Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. HAR is shape-bounded and sanitized before matching, PDF extraction is byte/page/text bounded, and legacy searchable content containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share a bounded in-process queue and one cancellation-aware vault-scoped cross-process permit, so concurrent agents or MCP processes cannot multiply the corpus memory ceiling; canceled queued calls leave the line immediately. The complete MCP result—including compatibility JSON text and structured content—is byte-bounded.
 
 ### Formats and operations
 
@@ -210,25 +199,19 @@ Search results are discovery data, not mutation authorization: they intentionall
 | `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
 | `pdf` | `.pdf` | — | references | — | — |
 
-The matrix is generated from registered operation bindings rather than maintained separately at runtime. Read `secondbrain://file-capabilities` for the server's effective capabilities and allowed vault areas for each operation. Internal handler identities stay private, so they can be refactored without changing the API. In `--read-only` mode, mutating operations disappear from both tool discovery and this resource.
+The matrix and each format's create input and update modes come from one exhaustive backend catalog. MCP tool discovery projects that contract directly into the four CRUD schemas, and `VaultFileService` enforces the same create contract before dispatch, so advertised and accepted inputs cannot drift. Adding a format does not require a resource or a second frontend registry. Internal handler identities stay private. In `--read-only` mode, mutating tools disappear from discovery.
 
 Format-specific CRUD behavior stays behind the four endpoints:
 
-- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return a request/status/host/timing summary, with sanitized raw JSON only when requested.
+- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return the complete sanitized HAR JSON as one atomic document.
 - Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
-- Patch input must be a unified diff; reads report affected files, hunks, additions, and deletions.
+- Patch input must be a unified diff; reads return the complete validated diff as one atomic document.
 - Logs default to the last 500 lines, support bounded line ranges, and can only be appended.
 - JSON accepts any valid top-level JSON value, preserves its original representation, and validates replacements or exact text patches before persistence.
 - CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
 - Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
-- PDF reads return extracted text plus rendered page images and support page, printed-page, range, and ranked query navigation with truncation/extraction status.
-
-## Resources
-
-| URI | Description |
-|-----|-------------|
-| `secondbrain://file-capabilities` | Effective file formats, extensions, CRUD operations, and vault areas |
+- PDF reads return exactly bounded text plus a PNG image for each selected physical page. `page`, `pages`, and `page_range` provide single-page, ordered-set, and inclusive-range retrieval; content queries belong to `search_vault`.
 
 ## Custom Instructions
 
@@ -261,26 +244,160 @@ Sources/SecondBrainMCP/
 │   ├── Application/main.swift
 │   ├── Configuration/                  # Argument parsing
 │   └── MCP/
-│       ├── Files/                      # Four generic CRUD tools + capabilities
-│       └── Search/                     # One ranked read-only search tool
+│       ├── MCPServerSetup.swift        # Transport lifecycle and tool dispatch
+│       ├── Directories/                # Atomic subtree-move adapter
+│       ├── Files/                      # Four catalog-derived generic CRUD tools
+│       └── Search/                     # Locator-only search schema and adapter
 ├── Backend/                            # Internal behavior; never imports MCP
-│   ├── Concurrency/                    # Reusable cancellation-aware async gates
+│   ├── Infrastructure/VaultRuntime.swift # Composition root and dependency injection
+│   ├── Concurrency/                    # Reusable gates and vault access coordination
+│   ├── Directories/                    # Validated atomic subtree movement
 │   ├── Files/
 │   │   ├── Ingress/                    # Stored-text request-to-bytes policy
 │   │   ├── Operations/                 # Format-specific validation/transformation
-│   │   ├── Routing/                    # Catalog, bindings, and routed service
-│   │   ├── Storage/                    # Generic snapshots, persistence, and soft deletion
+│   │   ├── Routing/                    # Catalog, operation families, routed service
+│   │   ├── Storage/                    # Generic snapshots, persistence, soft deletion
 │   │   ├── Targets/                    # Validated readable/writable vault paths
-│   │   ├── Transactions/               # Mutation, Git, and audit sequencing
+│   │   ├── Transactions/               # Prepared persistence and Git sequencing
 │   │   └── Validation/                 # Vault and external-source security
-│   ├── Media/                          # Image and video processing
-│   ├── Search/                         # Bounded corpus extraction and ranking
-│   └── …                               # Canvas, references, Git, logging, infrastructure
+│   ├── Search/                         # Atom providers, literal matching, pagination
+│   ├── VaultVersioning/                # Sole Git subprocess boundary
+│   └── Canvas/, HAR/, Media/, References/ # Specialized format processing
 └── Shared/                             # Cross-boundary values and small utilities
-    ├── Files/                          # Formats, requests, capabilities, and outputs
+    ├── Files/                          # File CRUD and directory-move contracts
     ├── Search/                         # Search request/result/service contracts
+    ├── References/                     # Shared PDF navigation values
     └── Logging/                        # Shared stderr logger
 ```
+
+### Layer and protocol boundaries
+
+Solid arrows show runtime requests and data flow. Dashed arrows show composition or shared
+coordination. The Shared nodes are protocols and values, not another orchestration layer.
+
+```mermaid
+flowchart TB
+    Client["MCP client<br/>stdio JSON-RPC"]
+
+    subgraph Frontend["Frontend — transport boundary<br/>Sources/SecondBrainMCP/Frontend"]
+        direction LR
+        Startup["Application + Configuration<br/>startup and CLI arguments"]
+        Server["MCP/MCPServerSetup.swift<br/>server lifecycle and dispatch"]
+        FileAdapter["MCP/Files<br/>CRUD schemas, decoding, result mapping"]
+        SearchAdapter["MCP/Search<br/>locator schema, decoding, result mapping"]
+        MoveAdapter["MCP/Directories<br/>move schema, decoding, result mapping"]
+        Startup --> Server
+        Server --> FileAdapter
+        Server --> SearchAdapter
+        Server --> MoveAdapter
+    end
+
+    subgraph Shared["Shared — stable protocol boundary<br/>Sources/SecondBrainMCP/Shared"]
+        direction LR
+        FilePort["Files/FileCRUDService<br/>formats, requests, outputs"]
+        SearchPort["Search/VaultSearchService<br/>locator requests and results"]
+        MovePort["Files/DirectoryMoveService<br/>subtree move contract"]
+    end
+
+    subgraph Backend["Backend — policy and execution<br/>Sources/SecondBrainMCP/Backend"]
+        direction LR
+        Runtime["Infrastructure/VaultRuntime<br/>composition root"]
+        FileCore["Files<br/>routing, validation, storage, transactions"]
+        SearchCore["Search<br/>atoms, matching, cursor pagination"]
+        MoveCore["Directories<br/>validated atomic subtree move"]
+        Specialized["Canvas + HAR + Media + References<br/>format-specific processing"]
+        Access["VaultAccessCoordinator<br/>shared reads / exclusive mutations"]
+        Versioning["VaultVersioning<br/>sole Git boundary"]
+    end
+
+    Vault[("Vault filesystem<br/>notes / references / .trash")]
+    Git[(".git snapshots")]
+
+    Client --> Server
+    FileAdapter --> FilePort --> FileCore
+    SearchAdapter --> SearchPort --> SearchCore
+    MoveAdapter --> MovePort --> MoveCore
+
+    Runtime -. "constructs and injects" .-> FileCore
+    Runtime -. "constructs and injects" .-> SearchCore
+    Runtime -. "constructs and injects" .-> MoveCore
+    Access -. "coordinates" .-> FileCore
+    Access -. "coordinates" .-> SearchCore
+    Access -. "coordinates" .-> MoveCore
+
+    FileCore --> Specialized
+    FileCore --> Vault
+    SearchCore --> Vault
+    MoveCore --> Vault
+    FileCore --> Versioning
+    MoveCore --> Versioning
+    Versioning --> Git
+```
+
+The boundary rule is simple: Frontend understands MCP but not vault policy; Shared defines the
+plain Swift contracts both sides agree on; Backend implements those contracts and owns all vault
+behavior. Search and directory moves use their own protocols because neither operation is atomic
+file CRUD.
+
+### Catalog-driven CRUD
+
+All four public file tools share one frontend pipeline. The backend catalog is the only place that
+decides which operations and format-specific hooks exist.
+
+```mermaid
+flowchart TD
+    Tools["create_file / read_file / update_file / delete_file<br/>Frontend/MCP/Files"]
+    Port["FileCRUDService<br/>Shared/Files"]
+    Service["VaultFileService<br/>Backend/Files/Routing<br/>safe targets, revisions, coordination"]
+
+    Factory["FileFormatCatalogFactory<br/>exhaustive FileFormat registration"]
+    TextFamily["StoredTextFileOperationFamily<br/>ordinary UTF-8 formats"]
+    ImageFamily["ImageFileOperationFamily<br/>shared image behavior"]
+    Explicit["Explicit bindings<br/>PDF and other exceptional behavior"]
+    Catalog["FileFormatCatalog<br/>operation lookup by format"]
+
+    Create["Create<br/>declared input + preparation hook"]
+    Read["Read<br/>exact-content default<br/>optional special reader"]
+    Update["Update<br/>generic edit engine<br/>declared modes + final validation"]
+    Delete["Delete<br/>shared recoverable soft delete"]
+
+    ReadLease["Shared read lease"]
+    MutationLease["Exclusive mutation lease"]
+    Store["VaultCRUDStore<br/>sole generic persistence component"]
+    Executor["VaultMutationExecutor<br/>owns mutation sequencing"]
+    Versioning["VaultVersioning"]
+    Vault[("Vault filesystem")]
+    Git[(".git snapshot")]
+    Result["Awaited result<br/>mapped back to MCP"]
+
+    Tools --> Port --> Service --> Catalog
+    Factory -. "assembles at startup" .-> TextFamily
+    Factory -. "assembles at startup" .-> ImageFamily
+    Factory -. "assembles at startup" .-> Explicit
+    TextFamily --> Catalog
+    ImageFamily --> Catalog
+    Explicit --> Catalog
+
+    Catalog --> Create
+    Catalog --> Read
+    Catalog --> Update
+    Catalog --> Delete
+
+    Read --> ReadLease --> Vault --> Result
+    Create --> MutationLease
+    Update --> MutationLease
+    Delete --> MutationLease
+    MutationLease --> Executor
+    Executor -->|"1. persist prepared bytes"| Store --> Vault
+    Executor -->|"2. await required snapshot"| Versioning --> Git
+    Versioning --> Result
+```
+
+The operation families supply the common behavior. A catalog case declares only what differs:
+creation validation or transformation, an exceptional read, allowed update modes, final-content
+validation, or specialized append semantics. Delete is destructive but generic; HAR and log reads
+are non-mutating but specialized. This is why specialization follows format policy rather than a
+simple read-versus-write split.
 
 Dependencies flow inward as `Frontend → Backend → Shared`. Frontend translates CLI/MCP
 inputs into plain Swift values. Backend owns vault behavior, routing, processing, and persistence.
@@ -289,42 +406,25 @@ does not belong there. Backend and Shared never depend on Frontend.
 
 `VaultRuntime` is the backend composition root. `FileFormatDefinition` is the wiring point: each
 concrete format registers only the operations it supports and binds those operations to reusable
-functions. `VaultFileService` validates and routes requests; `TextFileIngress` converts stored-text
-create requests into bounded inline bytes before their semantic handler; and
-`VaultMutationExecutor` serializes the prepared storage mutation, Git commit, and audit record.
+functions. `VaultFileService` validates registered create contracts, routes requests, and supplies
+read handlers with one immutable byte snapshot used for both content and revision. `TextFileIngress`
+converts stored-text create requests into bounded inline bytes before their semantic handler; and
+`VaultMutationExecutor` performs the prepared persistence and awaits any required vault snapshot.
 Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
 persistence component for the generic API. Writable targets cannot represent `references/`.
 
-**Concurrency model:** reads of the same note may overlap, while a fair keyed reader/writer actor
-gives each note mutation exclusive access and prevents later readers from bypassing a queued writer
-inside one runtime. Persistent advisory locks extend exclusion across independent MCP processes;
-OS scheduling does not promise strict FIFO ordering between separate processes. Lock-file naming is
-a versioned cooperating-host protocol: after an upgrade, fully stop and restart every MCP host for
-the vault before resuming mutations; mixed old/new hosts are not supported. A separate
-vault-wide cross-process mutation lock keeps filesystem persistence, the Git index/commit, audit logging, and
-the durable retry receipt in one ordered critical phase. Exact-byte revisions reject stale edits by
-every cooperating MCP caller. The store also rechecks bytes immediately before persistence to catch
-ordinary external edits, but an application that ignores these locks can still write inside the
-final compare-to-rename window; filesystem path replacement has no universal cross-application CAS.
-Reference reads bypass note locks and remain concurrent because `references/` has no writable
-representation.
+**Concurrency model:** one `VaultAccessCoordinator` is created per `VaultRuntime` and injected
+through the `VaultAccessCoordinating` protocol. Shared leases let reads overlap. A mutation waits
+for existing reads, then holds the exclusive lease through validation, preparation, filesystem
+persistence, and Git snapshot. Once a mutation is queued, later reads wait behind it. Independent
+MCP processes use shared/exclusive modes on the same advisory lock file. OS scheduling does not
+promise strict FIFO ordering between separate processes, so mixed old/new hosts must be fully
+restarted after an upgrade.
 
-Cancellation while queued performs no mutation. Once persistence begins, the critical phase runs to
-completion even if its MCP caller stops listening; retrying the exact request with the same
-`mutation_id` returns its durable result instead of applying it again. The server writes an
-in-progress intent before that point of no return. If the process stops unexpectedly during that
-narrow phase, a surviving active marker blocks other mutations and permits only conservative exact-request
-recovery rather than risking a duplicate mutation. Sudden machine or storage power loss is outside
-this transaction guarantee because vault bytes, Git objects/refs, and the external receipt directory
-are not one jointly synchronized filesystem transaction.
-
-Completed receipts are retained for exact retries and are never silently expired. Their private
-store has a hard 65,536-record / 512 MiB admission ceiling, with capacity reserved when an intent is
-created so finalization cannot fail after vault persistence. At the ceiling, new mutation IDs fail
-closed while every retained retry remains available; export or archival policy must be an explicit
-administrative decision because deleting a receipt also deletes that ID's replay proof. Identity
-locks use a fixed 256-stripe set, so retry coordination itself does not create one permanent file per
-UUID. A constant-size durable quota ledger is reconciled against the receipt directory on the first
-admission after bootstrap or after a detected crash/out-of-band change; ordinary saves update it in
-constant work instead of rescanning every retained receipt. Reconciliation is entry-bounded and
-removes only recognizable, validated crash-left receipt temporaries.
+Queued cancellation performs no mutation. Cancellation is checked again before prepared persistence
+starts; once persistence starts, the persistence-and-snapshot chain finishes before the exclusive
+lease is released. Exact-byte revisions reject stale cooperating edits, and the store rechecks bytes
+immediately before persistence. Applications that ignore the MCP lock can still write inside the
+final compare-to-rename window because filesystem path replacement has no universal cross-application
+compare-and-swap. If a response is lost, callers must read the target and decide from its current
+state whether another mutation is necessary.

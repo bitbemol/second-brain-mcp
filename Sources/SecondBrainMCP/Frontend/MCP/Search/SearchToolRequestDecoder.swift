@@ -1,62 +1,30 @@
 import MCP
 
-/// Strictly decodes the public search arguments into a shared request.
 enum SearchToolRequestDecoder {
-    enum DecodingError: Error, CustomStringConvertible, Sendable {
-        case invalid(String)
-
-        var description: String {
-            switch self {
-            case .invalid(let message): message
-            }
+    struct DecodingError: Error, CustomStringConvertible {
+        let description: String
+        static func invalid(_ message: String) -> DecodingError {
+            DecodingError(description: message)
         }
     }
 
     static func decode(_ params: CallTool.Parameters) throws -> VaultSearchRequest {
         let values = params.arguments ?? [:]
-        let allowed = Set(SearchToolArgument.allCases.map(\.rawValue))
-        guard values.keys.allSatisfy(allowed.contains) else {
+        let known = Set(SearchToolArgument.allCases.map(\.rawValue))
+        guard values.keys.allSatisfy(known.contains) else {
             throw DecodingError.invalid("Search request contains an unknown parameter")
         }
-        let query = try requiredString(.query, in: values)
-
-        let strategy: SearchStrategy
-        if let raw = try string(.strategy, in: values) {
-            guard let parsed = SearchStrategy(rawValue: raw) else {
-                throw DecodingError.invalid("Unsupported search strategy")
-            }
-            strategy = parsed
-        } else {
-            strategy = .smart
+        let rawLocation = try requiredString(.location, in: values)
+        guard let location = VaultArea(rawValue: rawLocation) else {
+            throw DecodingError.invalid("location must be notes or references")
         }
-
         return VaultSearchRequest(
-            query: query,
-            strategy: strategy,
-            fields: try enumArray(
-                .fields,
-                in: values,
-                as: SearchField.self,
-                maximumCount: SearchField.allCases.count
-            ),
-            formats: try enumArray(
-                .formats,
-                in: values,
-                as: FileFormat.self,
-                maximumCount: FileFormat.allCases.count
-            ),
-            areas: try enumArray(
-                .areas,
-                in: values,
-                as: VaultArea.self,
-                maximumCount: VaultArea.allCases.count
-            ),
-            pathPrefix: try string(.pathPrefix, in: values),
-            limit: try integer(.limit, in: values)
-                ?? SearchRequestLimits.defaultResults,
-            minimumRelevance: try number(.minimumRelevance, in: values)
-                ?? SearchRequestLimits.defaultMinimumRelevance,
-            maxHitsPerFile: try integer(.maxHitsPerFile, in: values) ?? 1,
+            location: location,
+            query: try string(.query, in: values),
+            tags: try strings(.tags, in: values) ?? [],
+            createdFrom: try string(.createdFrom, in: values),
+            createdThrough: try string(.createdThrough, in: values),
+            limit: try integer(.limit, in: values) ?? SearchRequestLimits.defaultResults,
             cursor: try string(.cursor, in: values)
         )
     }
@@ -65,17 +33,10 @@ enum SearchToolRequestDecoder {
         _ argument: SearchToolArgument,
         in values: [String: Value]
     ) throws -> String {
-        guard let value = values[argument] else {
-            throw DecodingError.invalid(
-                "Missing required parameter: \(argument.rawValue)"
-            )
+        guard let value = try string(argument, in: values) else {
+            throw DecodingError.invalid("Missing required parameter: \(argument.rawValue)")
         }
-        guard let string = value.stringValue else {
-            throw DecodingError.invalid(
-                "Invalid parameter '\(argument.rawValue)': expected string"
-            )
-        }
-        return string
+        return value
     }
 
     private static func string(
@@ -104,55 +65,24 @@ enum SearchToolRequestDecoder {
         return integer
     }
 
-    private static func number(
+    private static func strings(
         _ argument: SearchToolArgument,
         in values: [String: Value]
-    ) throws -> Double? {
+    ) throws -> [String]? {
         guard let value = values[argument] else { return nil }
-        let number: Double
-        if let double = value.doubleValue {
-            number = double
-        } else if let integer = value.intValue {
-            number = Double(integer)
-        } else {
+        guard let array = value.arrayValue,
+              array.count <= SearchRequestLimits.maximumTags else {
             throw DecodingError.invalid(
-                "Invalid parameter '\(argument.rawValue)': expected number"
+                "Invalid parameter '\(argument.rawValue)': expected a bounded array"
             )
         }
-        guard number.isFinite, (0...1).contains(number) else {
-            throw DecodingError.invalid(
-                "Invalid parameter '\(argument.rawValue)': expected number from 0 through 1"
-            )
-        }
-        return number
-    }
-
-    private static func enumArray<Element: RawRepresentable>(
-        _ argument: SearchToolArgument,
-        in values: [String: Value],
-        as type: Element.Type,
-        maximumCount: Int
-    ) throws -> [Element]? where Element.RawValue == String {
-        guard let value = values[argument] else { return nil }
-        guard let array = value.arrayValue else {
-            throw DecodingError.invalid(
-                "Invalid parameter '\(argument.rawValue)': expected array of strings"
-            )
-        }
-        guard array.count <= maximumCount else {
-            throw DecodingError.invalid(
-                "Parameter '\(argument.rawValue)' contains too many values"
-            )
-        }
-        var decoded: [Element] = []
-        for item in array {
-            guard let raw = item.stringValue, let element = Element(rawValue: raw) else {
+        return try array.map { item in
+            guard let value = item.stringValue else {
                 throw DecodingError.invalid(
-                    "Invalid value in '\(argument.rawValue)'"
+                    "Invalid parameter '\(argument.rawValue)': expected strings"
                 )
             }
-            decoded.append(element)
+            return value
         }
-        return decoded
     }
 }

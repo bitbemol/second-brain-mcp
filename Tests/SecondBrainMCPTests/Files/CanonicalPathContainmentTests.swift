@@ -1,31 +1,31 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Canonical path containment")
-struct CanonicalPathContainmentTests {
-    @Test("Accepts the exact root and separator-delimited descendants")
-    func acceptsContainedPaths() {
+@Suite
+struct `Canonical path containment` {
+    @Test
+    func `Accepts the exact root and separator-delimited descendants`() {
         #expect(CanonicalPathContainment.contains(path: "/vault", within: "/vault"))
         #expect(CanonicalPathContainment.contains(path: "/vault/note.md", within: "/vault"))
         #expect(CanonicalPathContainment.contains(path: "/vault/deep/note.md", within: "/vault"))
     }
 
-    @Test("Rejects siblings that only share the root prefix")
-    func rejectsLookalikePrefixes() {
+    @Test
+    func `Rejects siblings that only share the root prefix`() {
         #expect(!CanonicalPathContainment.contains(path: "/vault-copy", within: "/vault"))
         #expect(!CanonicalPathContainment.contains(path: "/vault-copy/note.md", within: "/vault"))
         #expect(!CanonicalPathContainment.contains(path: "/other/vault", within: "/vault"))
     }
 
-    @Test("Normalizes trailing root separators")
-    func normalizesTrailingSeparators() {
+    @Test
+    func `Normalizes trailing root separators`() {
         #expect(CanonicalPathContainment.contains(path: "/vault", within: "/vault///"))
         #expect(CanonicalPathContainment.contains(path: "/vault/note.md", within: "/vault///"))
         #expect(!CanonicalPathContainment.contains(path: "/vault-copy", within: "/vault///"))
     }
 
-    @Test("Filesystem root contains every absolute path but no relative path")
-    func handlesFilesystemRoot() {
+    @Test
+    func `Filesystem root contains every absolute path but no relative path`() {
         #expect(CanonicalPathContainment.contains(path: "/", within: "/"))
         #expect(CanonicalPathContainment.contains(path: "/tmp/file", within: "/"))
         #expect(!CanonicalPathContainment.contains(path: "tmp/file", within: "/"))

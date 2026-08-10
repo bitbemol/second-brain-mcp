@@ -60,21 +60,4 @@ struct LogFileOperations: Sendable {
         )
     }
 
-    /// Appends new UTF-8 content to the current snapshot.
-    ///
-    /// - Throws: `FileRoutingError.operationNotSupported` for non-append modes.
-    func prepareUpdate(
-        _ request: UpdateFileRequest,
-        target: WritableFileTarget,
-        snapshot: FileSnapshot
-    ) throws -> PreparedFileWrite {
-        guard request.mode == .append else {
-            throw FileRoutingError.operationNotSupported(format: .log, operation: .update, area: .notes)
-        }
-        guard let content = request.content else { throw TextFileSupport.TextError.missingContent }
-        let existing = try TextFileSupport.string(from: snapshot.data)
-        let updated = TextFileSupport.appending(content, to: existing)
-        let data = Data(updated.utf8)
-        return PreparedFileWrite(data: data, output: .text("Appended to \(target.relativePath)"))
-    }
 }

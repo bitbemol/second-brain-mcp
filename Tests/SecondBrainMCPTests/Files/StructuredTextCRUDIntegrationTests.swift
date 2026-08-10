@@ -1,18 +1,18 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Structured text routed CRUD")
-struct StructuredTextCRUDIntegrationTests {
-    @Test("JSON completes create, read, update, and soft delete")
-    func jsonCRUD() async throws {
+@Suite
+struct `Structured text routed CRUD` {
+    @Test
+    func `JSON completes create, read, update, and soft delete`() async throws {
         let context = try await makeContext()
         defer { context.cleanup() }
         let path = "notes/fixture.json"
         let original = "{\n  \"enabled\": false,\n  \"count\": 1\n}\n"
 
         let created = try await context.service.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .json,
             path: path,
             content: original,
@@ -31,7 +31,7 @@ struct StructuredTextCRUDIntegrationTests {
         #expect(read.metadata?.revision == createdRevision)
 
         let updated = try await context.service.update(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: createdRevision,
             format: .json,
             path: path,
@@ -49,7 +49,7 @@ struct StructuredTextCRUDIntegrationTests {
         ).contains("\"enabled\": true"))
 
         _ = try await context.service.delete(DeleteFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: updatedRevision,
             format: .json,
             path: path
@@ -59,15 +59,15 @@ struct StructuredTextCRUDIntegrationTests {
         ))
     }
 
-    @Test("CSV completes create, read, update, and soft delete")
-    func csvCRUD() async throws {
+    @Test
+    func `CSV completes create, read, update, and soft delete`() async throws {
         let context = try await makeContext()
         defer { context.cleanup() }
         let path = "notes/results.csv"
         let original = "id,result\n1,pass"
 
         let created = try await context.service.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .csv,
             path: path,
             content: original,
@@ -86,7 +86,7 @@ struct StructuredTextCRUDIntegrationTests {
         #expect(read.metadata?.revision == createdRevision)
 
         let updated = try await context.service.update(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: createdRevision,
             format: .csv,
             path: path,
@@ -102,7 +102,7 @@ struct StructuredTextCRUDIntegrationTests {
         ) == "id,result\n1,pass\n2,fail")
 
         _ = try await context.service.delete(DeleteFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: updatedRevision,
             format: .csv,
             path: path
@@ -110,6 +110,59 @@ struct StructuredTextCRUDIntegrationTests {
         #expect(!FileManager.default.fileExists(
             atPath: context.root.appendingPathComponent(path).path
         ))
+    }
+
+    @Test
+    func `Generic text editing preserves BOM and rejects invalid final content`() async throws {
+        let context = try await makeContext()
+        defer { context.cleanup() }
+        let path = "notes/bom.json"
+        let original = "\u{FEFF}{\"value\":1}"
+
+        let created = try await context.service.create(CreateFileRequest(
+            format: .json,
+            path: path,
+            content: original,
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let createdRevision = try #require(created.metadata?.revision)
+        let read = try await context.service.read(ReadFileRequest(
+            format: .json,
+            path: path,
+            options: .default
+        ))
+        #expect(try outputText(read) == original)
+
+        let updated = try await context.service.update(UpdateFileRequest(
+            expectedRevision: createdRevision,
+            format: .json,
+            path: path,
+            content: nil,
+            mode: .patch,
+            replacements: [
+                TextReplacement(oldText: "1", newText: "2"),
+            ]
+        ))
+        let updatedRevision = try #require(updated.metadata?.revision)
+        let storedURL = context.root.appendingPathComponent(path)
+        let validBytes = try Data(contentsOf: storedURL)
+        #expect(validBytes.starts(with: [0xEF, 0xBB, 0xBF]))
+
+        await #expect(throws: JSONFileOperations.InvalidJSON.self) {
+            _ = try await context.service.update(UpdateFileRequest(
+                expectedRevision: updatedRevision,
+                format: .json,
+                path: path,
+                content: nil,
+                mode: .patch,
+                replacements: [
+                    TextReplacement(oldText: "2", newText: "}"),
+                ]
+            ))
+        }
+        #expect(try Data(contentsOf: storedURL) == validBytes)
     }
 
     private struct Context {
@@ -139,15 +192,12 @@ struct StructuredTextCRUDIntegrationTests {
         )
 
         let dataDirectory = try makeTestDataDirectory(vaultPath: root.path)
-        let git = GitRepository(repoPath: root.path)
-        try await git.ensureRepository()
-        let audit = AuditLogger(dataDirectory: dataDirectory)
+        let versioning = try GitRepository(repositoryURL: root)
+        try await versioning.recordSnapshot()
         let store = VaultCRUDStore(vaultPath: root.path)
         let limits = ImageLimits.default
         let externalSources = ExternalFileSourceValidator(vaultPath: root.path)
         let catalog = FileFormatCatalogFactory.build(
-            vaultPath: root.path,
-            store: store,
             imageReader: ImageReader(
                 encoder: CoreGraphicsImageEncoder(),
                 limits: limits
@@ -163,24 +213,16 @@ struct StructuredTextCRUDIntegrationTests {
             ),
             pdfReader: PDFReader()
         )
-        let processMutationLock = POSIXAdvisoryFileLock(
-            url: dataDirectory.lockDirectoryURL
-                .appendingPathComponent("vault-mutations.lock")
+        let access = VaultAccessCoordinator(
+            lockURL: dataDirectory.lockDirectoryURL
+                .appendingPathComponent("vault-access.lock")
         )
         let service = VaultFileService(
             vaultPath: root.path,
             catalog: catalog,
             store: store,
-            mutations: VaultMutationExecutor(
-                git: git,
-                audit: audit,
-                processMutationLock: processMutationLock,
-                receipts: MutationReceiptStore(dataDirectory: dataDirectory)
-            ),
-            operations: VaultOperationCoordinator(
-                lockDirectoryURL: dataDirectory.lockDirectoryURL
-            ),
-            audit: audit
+            mutations: VaultMutationExecutor(versioning: versioning),
+            access: access
         )
         return Context(
             root: root,

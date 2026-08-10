@@ -6,17 +6,14 @@ import MCP
 /// collaborators own decoding, execution policy, and MCP result conversion.
 struct FileToolController: Sendable {
     private let readOnly: Bool
-    private let rejections: any FileRequestRejectionReporting
     private let executor: FileToolExecutor
 
     /// Creates a controller for one initialized vault runtime.
     init(
         readOnly: Bool,
-        rejections: any FileRequestRejectionReporting,
         files: any FileCRUDService
     ) {
         self.readOnly = readOnly
-        self.rejections = rejections
         self.executor = FileToolExecutor(files: files)
     }
 
@@ -29,11 +26,6 @@ struct FileToolController: Sendable {
         }
 
         if readOnly, tool.operation.isMutation {
-            await rejections.record(FileRequestRejection(
-                operation: VaultOperation(tool.operation),
-                path: FileToolRequestDecoder.path(from: params),
-                reason: .readOnly
-            ))
             try Task.checkCancellation()
             return FileToolResultMapper.failure(
                 "Server is running in read-only mode; '\(params.name)' is not permitted."

@@ -1,9 +1,9 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Generic files — formats and targets")
-struct FileFormatTests {
+@Suite
+struct `Generic files — formats and targets` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "FileFormatTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
@@ -11,8 +11,8 @@ struct FileFormatTests {
         return root
     }
 
-    @Test("Concrete formats expose extension aliases")
-    func aliases() {
+    @Test
+    func `Concrete formats expose extension aliases`() {
         #expect(FileFormat.jpeg.extensions == ["jpg", "jpeg"])
         #expect(FileFormat.patch.extensions == ["patch", "diff"])
         #expect(FileFormat.json.extensions == ["json"])
@@ -24,8 +24,8 @@ struct FileFormatTests {
         #expect(FileFormat.csv.accepts(path: "notes/a.csv"))
     }
 
-    @Test("Image format normalization derives every alias from extensions")
-    func imageNormalization() {
+    @Test
+    func `Image format normalization derives every alias from extensions`() {
         for format in FileFormat.allCases where format.isImage {
             for fileExtension in format.extensions {
                 #expect(FileFormat.imageFormat(
@@ -38,16 +38,16 @@ struct FileFormatTests {
         #expect(FileFormat.imageFormat(matching: "unknown") == nil)
     }
 
-    @Test("Declared format and extension must agree")
-    func mismatch() throws {
+    @Test
+    func `Declared format and extension must agree`() throws {
         let root = try makeVault()
         #expect(throws: FileRoutingError.self) {
             try ReadableFileTarget.resolve(path: "notes/capture.log", format: .har, vaultPath: root)
         }
     }
 
-    @Test("Writable targets expose notes as their only structural area")
-    func writableArea() throws {
+    @Test
+    func `Writable targets expose notes as their only structural area`() throws {
         let root = try makeVault()
         let target = try WritableFileTarget.resolve(
             path: "notes/page.md",
@@ -71,8 +71,8 @@ struct FileFormatTests {
         }
     }
 
-    @Test("Writable targets reject symlinks into references")
-    func writableSymlinkCannotCrossAreaBoundary() throws {
+    @Test
+    func `Writable targets reject symlinks into references`() throws {
         let root = try makeVault()
         try Data("reference".utf8).write(
             to: URL(fileURLWithPath: root + "/references/book.pdf")
@@ -99,8 +99,8 @@ struct FileFormatTests {
         #expect(readable.url.path == root + "/references/book.pdf")
     }
 
-    @Test("Writable targets reject symlinks within notes")
-    func writableSymlinkKeepsStorageAndGitPathsAligned() throws {
+    @Test
+    func `Writable targets reject symlinks within notes`() throws {
         let root = try makeVault()
         try FileManager.default.createDirectory(
             atPath: root + "/notes/real",

@@ -2,9 +2,9 @@ import Foundation
 
 /// Applies the write-boundary secret policy to bytes that already exist on disk.
 ///
-/// Startup snapshots, directory moves, and commit-only recovery do not all pass
-/// through ordinary CRUD preparation. They use this policy before Git can make
-/// existing bytes durable.
+/// Directory moves and exact post-persistence recovery do not pass through
+/// ordinary CRUD preparation. They use this policy before existing bytes may be
+/// accepted for a later vault snapshot.
 enum PersistedFileSecurityPolicy {
     /// Existing bytes cannot safely enter Git history.
     struct Violation: Error, CustomStringConvertible, Sendable {

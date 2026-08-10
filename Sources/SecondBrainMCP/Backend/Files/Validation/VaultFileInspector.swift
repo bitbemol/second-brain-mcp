@@ -1,26 +1,18 @@
-import CryptoKit
-import Darwin
 import Foundation
 
-/// Private immutable vault-file copy for frameworks that reopen pathnames.
+/// Private immutable vault-file copy for frameworks that require a URL.
 struct VaultTemporaryFileSnapshot: Sendable {
     let url: URL
     let byteCount: Int
-    let metadata: RegularFileMetadata
-    let revision: FileRevision
     private let directoryURL: URL
 
     fileprivate init(
         url: URL,
         byteCount: Int,
-        metadata: RegularFileMetadata,
-        revision: FileRevision,
         directoryURL: URL
     ) {
         self.url = url
         self.byteCount = byteCount
-        self.metadata = metadata
-        self.revision = revision
         self.directoryURL = directoryURL
     }
 
@@ -135,12 +127,12 @@ enum VaultFileInspector {
         }
     }
 
-    /// Streams one stable descriptor into private storage for URL-only decoders.
+    /// Copies already captured bytes into private storage for URL-only decoders.
     static func temporarySnapshot(
-        _ target: ReadableFileTarget,
-        maximumBytes: Int
+        _ snapshot: FileSnapshot,
+        target: ReadableFileTarget
     ) throws -> VaultTemporaryFileSnapshot {
-        try target.revalidate()
+        try Task.checkCancellation()
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("SecondBrainMCP-vault-\(UUID().uuidString)")
         let filename = "snapshot.\(target.url.pathExtension)"
@@ -153,64 +145,16 @@ enum VaultFileInspector {
             )
             guard FileManager.default.createFile(
                 atPath: snapshotURL.path,
-                contents: nil,
+                contents: snapshot.data,
                 attributes: [.posixPermissions: 0o600]
             ) else {
                 throw CocoaError(.fileWriteUnknown)
             }
-            let output = try FileHandle(forWritingTo: snapshotURL)
-            defer { try? output.close() }
-            let copied = try BoundedFileReader.withStableFileDescriptor(
-                fromCanonical: target.url,
-                maximumBytes: maximumBytes,
-                path: target.relativePath
-            ) { descriptor, _ in
-                var copiedBytes = 0
-                var digest = SHA256()
-                var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
-                while true {
-                    try Task.checkCancellation()
-                    let remaining = maximumBytes - copiedBytes
-                    let requested = min(buffer.count, max(remaining, 1))
-                    let count = buffer.withUnsafeMutableBytes { bytes in
-                        Darwin.read(descriptor, bytes.baseAddress, requested)
-                    }
-                    if count == 0 { break }
-                    if count < 0 {
-                        if errno == EINTR { continue }
-                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-                    }
-                    copiedBytes += count
-                    guard copiedBytes <= maximumBytes else {
-                        throw FileResourcePolicy.Violation(
-                            path: target.relativePath,
-                            bytes: copiedBytes,
-                            limit: maximumBytes
-                        )
-                    }
-                    let chunk = Data(buffer.prefix(count))
-                    digest.update(data: chunk)
-                    try output.write(contentsOf: chunk)
-                }
-                return (copiedBytes, digest.finalize())
-            }
-            guard copied.value.0 == copied.metadata.byteCount else {
-                throw BoundedFileReader.ReadError.changedDuringRead
-            }
-            let digest = copied.value.1.map { String(format: "%02x", $0) }.joined()
             return VaultTemporaryFileSnapshot(
                 url: snapshotURL,
-                byteCount: copied.value.0,
-                metadata: copied.metadata,
-                revision: FileRevision(validatedSHA256Hex: digest),
+                byteCount: snapshot.data.count,
                 directoryURL: directoryURL
             )
-        } catch BoundedFileReader.ReadError.notFound {
-            try? FileManager.default.removeItem(at: directoryURL)
-            throw InspectionError.notFound(target.relativePath)
-        } catch BoundedFileReader.ReadError.notARegularFile {
-            try? FileManager.default.removeItem(at: directoryURL)
-            throw InspectionError.notARegularFile(target.relativePath)
         } catch {
             try? FileManager.default.removeItem(at: directoryURL)
             throw error

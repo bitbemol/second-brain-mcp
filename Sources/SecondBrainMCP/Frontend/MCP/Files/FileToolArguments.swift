@@ -9,6 +9,8 @@ struct FileToolArguments: Sendable {
     enum ValidationError: Error, CustomStringConvertible, Sendable {
         /// A required argument is absent.
         case missingRequired(FileToolArgument)
+        /// A present argument is not part of this operation's schema.
+        case unknown(String)
         /// A present argument has the wrong JSON type.
         case invalidType(argument: FileToolArgument, expected: String)
 
@@ -17,6 +19,8 @@ struct FileToolArguments: Sendable {
             switch self {
             case .missingRequired(let argument):
                 "Missing required parameter: \(argument.rawValue)"
+            case .unknown(let argument):
+                "Unknown parameter: \(argument)"
             case .invalidType(let argument, let expected):
                 "Invalid parameter '\(argument.rawValue)': expected \(expected)"
             }
@@ -28,6 +32,17 @@ struct FileToolArguments: Sendable {
     /// Captures the raw argument object from one MCP tool call.
     init(_ params: CallTool.Parameters) {
         self.values = params.arguments ?? [:]
+    }
+
+    /// Rejects fields outside one operation's explicit schema.
+    func requireOnly(_ allowed: Set<FileToolArgument>) throws {
+        let allowedNames = Set(allowed.map(\.rawValue))
+        if let unknown = values.keys
+            .filter({ !allowedNames.contains($0) })
+            .sorted()
+            .first {
+            throw ValidationError.unknown(unknown)
+        }
     }
 
     /// Returns an optional string, rejecting a present non-string value.
@@ -46,11 +61,6 @@ struct FileToolArguments: Sendable {
     /// Returns an optional integer, rejecting a present non-integer value.
     func integer(_ argument: FileToolArgument) throws -> Int? {
         try value(argument, expected: "integer", using: \.intValue)
-    }
-
-    /// Returns an optional Boolean, rejecting a present non-Boolean value.
-    func boolean(_ argument: FileToolArgument) throws -> Bool? {
-        try value(argument, expected: "boolean", using: \.boolValue)
     }
 
     /// Returns an optional array, rejecting a present non-array value.

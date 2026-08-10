@@ -1,10 +1,10 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Shared text file support")
-struct TextFileSupportTests {
-    @Test("Appending inserts only a missing line boundary")
-    func appendsWithOneLineBoundary() {
+@Suite
+struct `Shared text file support` {
+    @Test
+    func `Appending inserts only a missing line boundary`() {
         #expect(TextFileSupport.appending("first", to: "") == "first")
         #expect(TextFileSupport.appending("", to: "first") == "first")
         #expect(TextFileSupport.appending("second", to: "first") == "first\nsecond")
@@ -13,8 +13,8 @@ struct TextFileSupportTests {
         #expect(TextFileSupport.appending("second", to: "first\r") == "first\rsecond")
     }
 
-    @Test("Empty patch targets are rejected before exact-match scanning")
-    func rejectsEmptyPatchTarget() {
+    @Test
+    func `Empty patch targets are rejected before exact-match scanning`() {
         do {
             _ = try TextFileSupport.apply(
                 [TextReplacement(oldText: "", newText: "injected")],
@@ -32,8 +32,8 @@ struct TextFileSupportTests {
         }
     }
 
-    @Test("Identity replacements still require an exact target")
-    func validatesIdentityReplacementTarget() {
+    @Test
+    func `Identity replacements still require an exact target`() {
         #expect(throws: TextFileSupport.TextError.self) {
             try TextFileSupport.apply(
                 [TextReplacement(oldText: "missing", newText: "missing")],
@@ -42,8 +42,8 @@ struct TextFileSupportTests {
         }
     }
 
-    @Test("Ordered replacements observe the preceding replacement")
-    func appliesOrderedReplacements() throws {
+    @Test
+    func `Ordered replacements observe the preceding replacement`() throws {
         let result = try TextFileSupport.apply(
             [
                 TextReplacement(oldText: "alpha", newText: "beta"),

@@ -1,20 +1,18 @@
 import MCP
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("MCP file request decoder")
-struct FileToolRequestDecoderTests {
-    private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
+@Suite
+struct `MCP file request decoder` {
     private let revision = "sha256:" + String(repeating: "a", count: 64)
 
-    @Test("Create arguments decode into shared request values")
-    func createRequest() throws {
+    @Test
+    func `Create arguments decode into shared request values`() throws {
         let params = CallTool.Parameters(
             name: "create_file",
             arguments: [
                 "format": .string("gif"),
                 "path": .string("notes/demo.gif"),
-                "mutation_id": .string(mutationID),
                 "source": .string("/tmp/demo.mov"),
                 "tags": .array([.string("demo"), .string("video")]),
                 "transform": .string("video_to_gif"),
@@ -31,22 +29,19 @@ struct FileToolRequestDecoderTests {
 
         #expect(request.format == .gif)
         #expect(request.path == "notes/demo.gif")
-        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.source == "/tmp/demo.mov")
         #expect(request.tags == ["demo", "video"])
         #expect(request.transform == .videoToGIF)
     }
 
-    @Test("Read arguments preserve format-specific options")
-    func readRequest() throws {
+    @Test
+    func `Read arguments preserve format-specific options`() throws {
         let params = CallTool.Parameters(
             name: "read_file",
             arguments: [
                 "format": .string("pdf"),
                 "path": .string("references/manual.pdf"),
-                "page": .int(7),
-                "query": .string("architecture"),
-                "max_pages": .int(3),
+                "pages": .array([.int(7), .int(9)]),
             ]
         )
 
@@ -59,19 +54,17 @@ struct FileToolRequestDecoderTests {
         }
 
         #expect(request.format == .pdf)
-        #expect(request.options.page == 7)
-        #expect(request.options.query == "architecture")
-        #expect(request.options.maxPages == 3)
+        #expect(request.options.page == nil)
+        #expect(request.options.pages == [7, 9])
     }
 
-    @Test("Update replacements decode in input order")
-    func updateRequest() throws {
+    @Test
+    func `Update replacements decode in input order`() throws {
         let params = CallTool.Parameters(
             name: "update_file",
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/page.md"),
-                "mutation_id": .string(mutationID),
                 "expected_revision": .string(revision),
                 "mode": .string("patch"),
                 "replacements": .array([
@@ -92,21 +85,19 @@ struct FileToolRequestDecoderTests {
         }
 
         #expect(request.mode == .patch)
-        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.expectedRevision.rawValue == revision)
         #expect(request.replacements.count == 1)
         #expect(request.replacements.first?.oldText == "before")
         #expect(request.replacements.first?.newText == "after")
     }
 
-    @Test("Delete requires and preserves mutation consistency values")
-    func deleteRequest() throws {
+    @Test
+    func `Delete requires and preserves its expected revision`() throws {
         let params = CallTool.Parameters(
             name: "delete_file",
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/page.md"),
-                "mutation_id": .string(mutationID.uppercased()),
                 "expected_revision": .string(revision),
             ]
         )
@@ -119,35 +110,11 @@ struct FileToolRequestDecoderTests {
             return
         }
 
-        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.expectedRevision.rawValue == revision)
     }
 
-    @Test("Mutation identities and expected revisions are strict")
-    func mutationConsistencyValidation() {
-        expectError(
-            "Missing required parameter: mutation_id",
-            decoding: CallTool.Parameters(
-                name: FileToolName.create.rawValue,
-                arguments: [
-                    "format": .string("markdown"),
-                    "path": .string("notes/page.md"),
-                ]
-            ),
-            for: .create
-        )
-        expectError(
-            "Invalid mutation_id: expected a UUID",
-            decoding: CallTool.Parameters(
-                name: FileToolName.create.rawValue,
-                arguments: [
-                    "format": .string("markdown"),
-                    "path": .string("notes/page.md"),
-                    "mutation_id": .string("retry-this"),
-                ]
-            ),
-            for: .create
-        )
+    @Test
+    func `Expected revisions are strict`() {
         expectError(
             "Missing required parameter: expected_revision",
             decoding: CallTool.Parameters(
@@ -155,8 +122,7 @@ struct FileToolRequestDecoderTests {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
-                    "mutation_id": .string(mutationID),
-                ]
+                    ]
             ),
             for: .delete
         )
@@ -167,16 +133,32 @@ struct FileToolRequestDecoderTests {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
-                    "mutation_id": .string(mutationID),
-                    "expected_revision": .string("sha256:ABC"),
+                        "expected_revision": .string("sha256:ABC"),
                 ]
             ),
             for: .delete
         )
     }
 
-    @Test("Invalid update mode retains its boundary error")
-    func invalidUpdateMode() {
+    @Test
+    func `Update mode is required instead of silently defaulting`() {
+        expectError(
+            "Missing required parameter: mode",
+            decoding: CallTool.Parameters(
+                name: FileToolName.update.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/page.md"),
+                    "expected_revision": .string(revision),
+                    "content": .string("replacement"),
+                ]
+            ),
+            for: .update
+        )
+    }
+
+    @Test
+    func `Invalid update mode retains its boundary error`() {
         let params = CallTool.Parameters(
             name: "update_file",
             arguments: [
@@ -194,10 +176,9 @@ struct FileToolRequestDecoderTests {
     }
 
     @Test(
-        "Every CRUD decoder shares required path validation",
         arguments: FileToolName.allCases
     )
-    func missingPath(tool: FileToolName) {
+    func `Every CRUD decoder shares required path validation`(tool: FileToolName) {
         let params = CallTool.Parameters(
             name: tool.rawValue,
             arguments: ["format": .string("markdown")]
@@ -210,8 +191,8 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Identity decoding distinguishes missing and unsupported formats")
-    func invalidFormats() {
+    @Test
+    func `Identity decoding distinguishes missing and unsupported formats`() {
         expectError(
             "Missing required parameter: format",
             decoding: CallTool.Parameters(
@@ -233,8 +214,24 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Invalid create transforms receive a focused diagnostic")
-    func invalidCreateTransform() {
+    @Test
+    func `Removed PDF selectors are rejected instead of ignored`() {
+        expectError(
+            "Unknown parameter: book_page",
+            decoding: CallTool.Parameters(
+                name: FileToolName.read.rawValue,
+                arguments: [
+                    "format": .string("pdf"),
+                    "path": .string("references/manual.pdf"),
+                    "book_page": .string("xii"),
+                ]
+            ),
+            for: .read
+        )
+    }
+
+    @Test
+    func `Invalid create transforms receive a focused diagnostic`() {
         expectError(
             "Invalid create transform: transcode",
             decoding: CallTool.Parameters(
@@ -249,8 +246,8 @@ struct FileToolRequestDecoderTests {
         )
     }
 
-    @Test("Present arguments with wrong JSON types are rejected")
-    func invalidArgumentTypes() {
+    @Test
+    func `Present arguments with wrong JSON types are rejected`() {
         expectError(
             "Invalid parameter 'mode': expected string",
             decoding: CallTool.Parameters(
@@ -264,26 +261,13 @@ struct FileToolRequestDecoderTests {
             for: .update
         )
         expectError(
-            "Invalid parameter 'raw': expected boolean",
-            decoding: CallTool.Parameters(
-                name: FileToolName.read.rawValue,
-                arguments: [
-                    "format": .string("har"),
-                    "path": .string("notes/capture.har"),
-                    "raw": .string("true"),
-                ]
-            ),
-            for: .read
-        )
-        expectError(
             "Invalid parameter 'tags': expected array of strings",
             decoding: CallTool.Parameters(
                 name: FileToolName.create.rawValue,
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
-                    "mutation_id": .string(mutationID),
-                    "tags": .array([.string("valid"), .int(1)]),
+                        "tags": .array([.string("valid"), .int(1)]),
                 ]
             ),
             for: .create
@@ -295,6 +279,7 @@ struct FileToolRequestDecoderTests {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
+                    "mode": .string("patch"),
                     "replacements": .string("not-an-array"),
                 ]
             ),

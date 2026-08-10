@@ -1,0 +1,18 @@
+{
+  "description": "Keep project-file mutations inside Xcode MCP.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/xcode_mcp_guard.py\"",
+            "timeout": 5,
+            "statusMessage": "Enforcing Xcode MCP project-file policy"
+          }
+        ]
+      }
+    ]
+  }
+}

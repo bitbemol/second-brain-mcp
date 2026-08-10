@@ -3,10 +3,10 @@ import Foundation
 import ImageIO
 import Testing
 import UniformTypeIdentifiers
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("ImageImporter preparation")
-struct ImageImporterTests {
+@Suite
+struct `ImageImporter preparation` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "ImageImporter-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
@@ -55,8 +55,8 @@ struct ImageImporterTests {
         }
     }
 
-    @Test("Prepares a real PNG without touching its source")
-    func preparesPNG() async throws {
+    @Test
+    func `Prepares a real PNG without touching its source`() async throws {
         let root = try makeVault()
         let source = sourcePath("image.png")
         try makeImageData(width: 120, height: 80, type: .png)
@@ -73,8 +73,8 @@ struct ImageImporterTests {
         #expect(FileManager.default.fileExists(atPath: source))
     }
 
-    @Test("Re-encodes JPEG input as clean PNG data")
-    func preparesJPEG() async throws {
+    @Test
+    func `Re-encodes JPEG input as clean PNG data`() async throws {
         let root = try makeVault()
         let source = sourcePath("image.jpg")
         try makeImageData(width: 64, height: 64, type: .jpeg)
@@ -89,8 +89,8 @@ struct ImageImporterTests {
         #expect(Array(prepared.data.prefix(4)) == [0x89, 0x50, 0x4E, 0x47])
     }
 
-    @Test("Resizes oversized input during preparation")
-    func resizesOversizedImage() async throws {
+    @Test
+    func `Resizes oversized input during preparation`() async throws {
         let root = try makeVault()
         let source = sourcePath("large.png")
         try makeImageData(width: 400, height: 200, type: .png)
@@ -119,8 +119,8 @@ struct ImageImporterTests {
         #expect(prepared.note?.contains("resized long edge") == true)
     }
 
-    @Test("Re-encoding strips appended payloads")
-    func stripsPayload() async throws {
+    @Test
+    func `Re-encoding strips appended payloads`() async throws {
         let root = try makeVault()
         let source = sourcePath("polyglot.png")
         var data = makeImageData(width: 64, height: 48, type: .png)
@@ -135,8 +135,8 @@ struct ImageImporterTests {
         #expect(!contains(prepared.data, text: "HIDDEN_PAYLOAD"))
     }
 
-    @Test("Rejects non-images")
-    func rejectsNonImage() async throws {
+    @Test
+    func `Rejects non-images`() async throws {
         let root = try makeVault()
         let source = sourcePath("fake.png")
         try Data("#!/bin/sh".utf8).write(to: URL(fileURLWithPath: source))
@@ -150,8 +150,8 @@ struct ImageImporterTests {
         }
     }
 
-    @Test("Rejects missing and non-regular sources")
-    func rejectsInvalidSources() async throws {
+    @Test
+    func `Rejects missing and non-regular sources`() async throws {
         let root = try makeVault()
         let importer = ImageImporter(
             sourceValidator: ExternalFileSourceValidator(vaultPath: root),
@@ -168,8 +168,8 @@ struct ImageImporterTests {
         }
     }
 
-    @Test("Applies size checks to a symlink target")
-    func checksSymlinkTargetSize() async throws {
+    @Test
+    func `Applies size checks to a symlink target`() async throws {
         let root = try makeVault()
         let target = sourcePath("large.bin")
         try Data(count: 2_000).write(to: URL(fileURLWithPath: target))
@@ -200,8 +200,8 @@ struct ImageImporterTests {
         }
     }
 
-    @Test("Follows image symlinks but rejects sources inside the vault")
-    func enforcesSourceBoundary() async throws {
+    @Test
+    func `Follows image symlinks but rejects sources inside the vault`() async throws {
         let root = try makeVault()
         let external = sourcePath("external.png")
         try makeImageData(width: 30, height: 30, type: .png)

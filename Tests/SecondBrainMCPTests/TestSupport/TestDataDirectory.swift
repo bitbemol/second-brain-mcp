@@ -1,5 +1,5 @@
 import Foundation
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 /// Creates isolated process data for tests without writing to Application Support.
 func makeTestDataDirectory(vaultPath: String) throws -> VaultDataDirectory {

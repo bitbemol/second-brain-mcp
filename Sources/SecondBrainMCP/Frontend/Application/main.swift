@@ -28,9 +28,7 @@ do {
         files: runtime.files,
         directories: runtime.directories,
         search: runtime.search,
-        capabilities: runtime.capabilities,
-        searchCapabilities: runtime.searchCapabilities,
-        rejections: runtime.rejections
+        capabilities: runtime.capabilities
     )
 
 } catch {

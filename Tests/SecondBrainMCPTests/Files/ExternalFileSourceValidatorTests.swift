@@ -1,9 +1,9 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("External file source validation")
-struct ExternalFileSourceValidatorTests {
+@Suite
+struct `External file source validation` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "ExternalSource-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
@@ -17,8 +17,8 @@ struct ExternalFileSourceValidatorTests {
         NSTemporaryDirectory() + "ExternalSourceFile-\(UUID().uuidString)-\(name)"
     }
 
-    @Test("Resolves symbolic links and reports target size")
-    func resolvesCanonicalRegularFile() throws {
+    @Test
+    func `Resolves symbolic links and reports target size`() throws {
         let root = try makeVault()
         let target = externalPath("target.bin")
         let link = externalPath("alias.bin")
@@ -37,8 +37,8 @@ struct ExternalFileSourceValidatorTests {
         #expect(source.byteCount == 321)
     }
 
-    @Test("Rejects missing and non-regular sources")
-    func rejectsInvalidFilesystemEntries() throws {
+    @Test
+    func `Rejects missing and non-regular sources`() throws {
         let root = try makeVault()
         let validator = ExternalFileSourceValidator(vaultPath: root)
 
@@ -56,8 +56,8 @@ struct ExternalFileSourceValidatorTests {
         }
     }
 
-    @Test("Rejects sources that resolve inside the vault")
-    func rejectsVaultSourcesWithoutPrefixConfusion() throws {
+    @Test
+    func `Rejects sources that resolve inside the vault`() throws {
         let root = try makeVault()
         let internalPath = root + "/notes/internal.bin"
         try Data([1]).write(to: URL(fileURLWithPath: internalPath))
@@ -77,8 +77,8 @@ struct ExternalFileSourceValidatorTests {
         #expect(try validator.validate(path: similarPrefix, maximumBytes: 1_000).url.path == similarPrefix)
     }
 
-    @Test("Applies the byte limit to a symbolic link target")
-    func checksResolvedTargetSize() throws {
+    @Test
+    func `Applies the byte limit to a symbolic link target`() throws {
         let root = try makeVault()
         let target = externalPath("large.bin")
         let link = externalPath("large-link.bin")
@@ -102,8 +102,8 @@ struct ExternalFileSourceValidatorTests {
         }
     }
 
-    @Test("Snapshots remain stable after the caller replaces the source")
-    func snapshotsStableContent() throws {
+    @Test
+    func `Snapshots remain stable after the caller replaces the source`() throws {
         let root = try makeVault()
         let path = externalPath("changing.bin")
         try Data("original".utf8).write(to: URL(fileURLWithPath: path))
@@ -124,8 +124,8 @@ struct ExternalFileSourceValidatorTests {
         #expect(!FileManager.default.fileExists(atPath: snapshotPath))
     }
 
-    @Test("Snapshots preserve legitimate external symbolic-link imports")
-    func snapshotsResolvedSymbolicLink() throws {
+    @Test
+    func `Snapshots preserve legitimate external symbolic-link imports`() throws {
         let root = try makeVault()
         let target = externalPath("snapshot-target.bin")
         let link = externalPath("snapshot-link.bin")
@@ -143,8 +143,8 @@ struct ExternalFileSourceValidatorTests {
         #expect(try String(contentsOf: snapshot.url, encoding: .utf8) == "linked content")
     }
 
-    @Test("A parent replaced after validation cannot redirect the source open")
-    func snapshotRejectsRacedParentSymlink() throws {
+    @Test
+    func `A parent replaced after validation cannot redirect the source open`() throws {
         let root = try makeVault()
         let sourceDirectory = URL(fileURLWithPath: externalPath("parent"))
         let movedDirectory = sourceDirectory.appendingPathExtension("moved")

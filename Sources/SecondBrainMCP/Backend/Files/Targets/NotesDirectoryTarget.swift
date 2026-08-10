@@ -10,9 +10,9 @@ struct NotesDirectoryTarget: Equatable, Sendable {
     let relativePath: String
     let vaultPath: String
 
-    /// Canonicalizes a friendly relative spelling and rejects hidden, root, and
-    /// symbolic-link paths. The final directory may be absent for destinations.
-    static func resolve(path: String, vaultPath: String) throws -> NotesDirectoryTarget {
+    /// Canonicalizes and validates a friendly vault-relative spelling without
+    /// consulting the filesystem.
+    static func canonicalize(path: String) throws -> String {
         guard !path.isEmpty else { throw PathValidationError.emptyPath }
         guard path.utf8.count <= DirectoryMoveRequestLimits.maximumPathBytes else {
             throw DirectoryMoveError.pathTooLong
@@ -49,7 +49,13 @@ struct NotesDirectoryTarget: Equatable, Sendable {
         guard canonicalPath.utf8.count <= DirectoryMoveRequestLimits.maximumPathBytes else {
             throw DirectoryMoveError.pathTooLong
         }
+        return canonicalPath
+    }
 
+    /// Resolves a canonical spelling and rejects symbolic-link paths. The final
+    /// directory may be absent for destinations.
+    static func resolve(path: String, vaultPath: String) throws -> NotesDirectoryTarget {
+        let canonicalPath = try canonicalize(path: path)
         let resolved = try PathValidator.resolve(
             relativePath: canonicalPath,
             root: vaultPath
@@ -93,11 +99,11 @@ enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
     case sourceNotFound(String)
     case sourceNotDirectory(String)
     case destinationExists(String)
+    case sourceAndDestinationAreSame
     case destinationInsideSource
     case hiddenDirectory(String)
     case resourceLimit(String)
     case unsafeFilesystemOperation(String)
-    case recoveryRequired(MutationID)
 
     var description: String {
         switch self {
@@ -111,6 +117,8 @@ enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
             "Source is not a regular directory: \(path)"
         case .destinationExists(let path):
             "Destination already exists: \(path)"
+        case .sourceAndDestinationAreSame:
+            "Source and destination resolve to the same directory"
         case .destinationInsideSource:
             "A directory cannot be moved into its own subtree"
         case .hiddenDirectory(let path):
@@ -119,8 +127,6 @@ enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
             "Directory move exceeds its bounded resource policy: \(detail)"
         case .unsafeFilesystemOperation(let operation):
             "Directory move could not safely \(operation)"
-        case .recoveryRequired(let identifier):
-            "Directory move \(identifier) has an ambiguous prior outcome and requires manual reconciliation"
         }
     }
 }

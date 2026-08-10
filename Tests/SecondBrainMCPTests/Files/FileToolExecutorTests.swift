@@ -1,8 +1,8 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("File tool executor")
-struct FileToolExecutorTests {
+@Suite
+struct `File tool executor` {
     private actor ServiceSpy: FileCRUDService {
         private var operations: [FileCRUDOperation] = []
 
@@ -31,19 +31,15 @@ struct FileToolExecutorTests {
         }
     }
 
-    @Test("Decoded requests route to the matching CRUD operation")
-    func routesRequests() async throws {
+    @Test
+    func `Decoded requests route to the matching CRUD operation`() async throws {
         let service = ServiceSpy()
         let executor = FileToolExecutor(files: service)
-        let mutationID = try #require(MutationID(
-            rawValue: "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
-        ))
         let revision = try #require(FileRevision(
             rawValue: "sha256:" + String(repeating: "a", count: 64)
         ))
 
         _ = try await executor.execute(.create(CreateFileRequest(
-            mutationID: mutationID,
             format: .markdown,
             path: "notes/page.md",
             content: "body",
@@ -57,7 +53,6 @@ struct FileToolExecutorTests {
             options: .default
         )))
         _ = try await executor.execute(.update(UpdateFileRequest(
-            mutationID: mutationID,
             expectedRevision: revision,
             format: .markdown,
             path: "notes/page.md",
@@ -66,7 +61,6 @@ struct FileToolExecutorTests {
             replacements: []
         )))
         _ = try await executor.execute(.delete(DeleteFileRequest(
-            mutationID: mutationID,
             expectedRevision: revision,
             format: .markdown,
             path: "notes/page.md"

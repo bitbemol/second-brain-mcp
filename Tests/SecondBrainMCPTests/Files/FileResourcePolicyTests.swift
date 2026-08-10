@@ -1,11 +1,11 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("File resource policy")
-struct FileResourcePolicyTests {
-    @Test("Every concrete format belongs to an explicit file-size tier")
-    func formatTiers() {
+@Suite
+struct `File resource policy` {
+    @Test
+    func `Every concrete format belongs to an explicit file-size tier`() {
         for format in [FileFormat.markdown, .canvas, .patch, .json, .csv] {
             #expect(format.maximumFileBytes == 10 * 1024 * 1024)
         }
@@ -17,8 +17,8 @@ struct FileResourcePolicyTests {
         #expect(FileFormat.pdf.maximumFileBytes == 512 * 1024 * 1024)
     }
 
-    @Test("Production media defaults derive from stored-format limits")
-    func mediaDefaultsUseFormatPolicy() {
+    @Test
+    func `Production media defaults derive from stored-format limits`() {
         #expect(ImageLimits.default.maxFileBytes == FileFormat.png.maximumFileBytes)
         #expect(
             VideoImportConfiguration.default.maxOutputBytes
@@ -26,8 +26,8 @@ struct FileResourcePolicyTests {
         )
     }
 
-    @Test("Text ingress enforces the selected format tier")
-    func textIngressLimit() throws {
+    @Test
+    func `Text ingress enforces the selected format tier`() throws {
         let ingress = TextFileIngress()
         let limit = FileFormat.markdown.maximumFileBytes
         let root = NSTemporaryDirectory() + "TextFileIngressTests-\(UUID().uuidString)"
@@ -42,7 +42,7 @@ struct FileResourcePolicyTests {
         )
         let accepted = String(repeating: "a", count: limit)
         let acceptedRequest = CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: target.relativePath,
             content: accepted,
@@ -54,7 +54,7 @@ struct FileResourcePolicyTests {
         #expect(throws: FileResourcePolicy.Violation.self) {
             try ingress.prepare(
                 CreateFileRequest(
-                    mutationID: MutationID(),
+
                     format: .markdown,
                     path: target.relativePath,
                     content: accepted + "a",

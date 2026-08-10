@@ -11,27 +11,21 @@ struct MCPServerSetup {
     ///   - directories: Atomic recursive directory-move boundary.
     ///   - search: Shared read-only vault search boundary.
     ///   - capabilities: Immutable format capability manifest.
-    ///   - searchCapabilities: Searchable formats derived from the manifest.
-    ///   - rejections: Boundary-level rejection reporter.
     /// - Throws: Transport or handler-registration errors.
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
         directories: any DirectoryMoveService,
         search: any VaultSearchService,
-        capabilities: FileCapabilities,
-        searchCapabilities: SearchCapabilities,
-        rejections: any FileRequestRejectionReporting
+        capabilities: FileCapabilities
     ) async throws {
         let fileTools = FileToolController(
             readOnly: config.readOnly,
-            rejections: rejections,
             files: files
         )
         let searchTool = SearchToolController(search: search)
         let directoryTool = DirectoryMoveToolController(
             readOnly: config.readOnly,
-            rejections: rejections,
             directories: directories
         )
         let customInstructions = CustomInstructionsLoader.load(
@@ -42,12 +36,12 @@ struct MCPServerSetup {
             version: "2.1.0",
             instructions: """
             This is a personal knowledge vault with format-aware file access. \
-            Use search_vault to discover notes, then create_file, read_file, update_file, \
-            delete_file, or move_directory with an explicit \
-            concrete format. Read secondbrain://file-capabilities before operating when \
-            format support is uncertain. Every file mutation that changes vault bytes is \
-            automatically committed to git. Every mutation requires a fresh caller-generated mutation_id UUID; \
-            reuse it only when retrying that exact request after a lost response. Before \
+            Use search_vault to discover notes, then use the file CRUD tools with an explicit \
+            concrete format. Use move_directory for a complete notes subtree; it does not take a format. \
+            The CRUD tool schemas describe each format's accepted inputs and update modes. Every \
+            file mutation that changes vault bytes is \
+            automatically committed to git before the tool returns. If a mutation response is lost, \
+            read the current vault state before deciding whether another mutation is needed. Before \
             update_file or delete_file, read the note and return its structured revision \
             as expected_revision. Use move_directory to relocate an entire notes subtree \
             in one call; do not recreate or move its files individually. A revision conflict requires reading and reconsidering \
@@ -55,7 +49,6 @@ struct MCPServerSetup {
             always relative to the vault root (for example, "notes/projects/app.md").
             """ + (customInstructions.map { "\n\n" + $0 } ?? ""),
             capabilities: .init(
-                resources: .init(subscribe: false, listChanged: false),
                 tools: .init(listChanged: false)
             )
         )
@@ -71,7 +64,7 @@ struct MCPServerSetup {
             ) {
                 tools.append(directoryDefinition)
             }
-            tools.append(SearchToolDefinition.build(capabilities: searchCapabilities))
+            tools.append(SearchToolDefinition.build())
             return ListTools.Result(tools: tools)
         }
 
@@ -83,20 +76,6 @@ struct MCPServerSetup {
                 return try await directoryTool.call(params)
             }
             return try await fileTools.call(params)
-        }
-
-        await server.withMethodHandler(ListResources.self) { _ in
-            ListResources.Result(resources: FileCapabilitiesResource.list())
-        }
-
-        await server.withMethodHandler(ReadResource.self) { params in
-            guard params.uri == "secondbrain://file-capabilities" else {
-                throw MCPError.invalidParams("Unknown resource URI: \(params.uri)")
-            }
-            return try FileCapabilitiesResource.read(
-                capabilities: capabilities,
-                readOnly: config.readOnly
-            )
         }
 
         let transport = StdioTransport()

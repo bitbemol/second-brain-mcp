@@ -1,308 +1,159 @@
+import AppKit
+import CryptoKit
 import Foundation
 import PDFKit
+import Vision
 
-/// Builds bounded page-aware search projections from immutable PDF snapshots.
-enum PDFSearchDocumentExtractor {
-    static func extract(
-        data: Data,
-        path: String,
-        maximumPages: Int,
-        maximumTextBytes: Int,
-        maximumMetadataCharacters: Int,
-        maximumMetadataBytes: Int
-    ) throws -> ExtractedSearchDocument {
-        try Task.checkCancellation()
-        guard let document = PDFDocument(data: data) else {
-            return metadataOnly(
-                path: path,
-                status: .cannotOpen,
-                maximumMetadataCharacters: maximumMetadataCharacters,
-                maximumMetadataBytes: maximumMetadataBytes
+/// Produces one searchable atom per physical PDF page and caches derived text.
+struct PDFSearchAtomProvider: SearchAtomProvider {
+    private struct Manifest: Codable {
+        let revision: String
+        let pageCount: Int
+    }
+
+    private let cacheRoot: URL
+    private let admission: PDFReadAdmission
+
+    init(cacheRoot: URL, admission: PDFReadAdmission) {
+        self.cacheRoot = cacheRoot
+        self.admission = admission
+    }
+
+    func atoms(
+        for target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) async throws -> [SearchAtom] {
+        let texts: [String] = try await admission.withPermit {
+            try self.pageTexts(for: target, snapshot: snapshot)
+        }
+        return texts.enumerated().map { index, text in
+            SearchAtom(
+                locator: VaultSearchResult(
+                    path: target.relativePath,
+                    format: .pdf,
+                    page: index + 1
+                ),
+                text: text,
+                metadata: nil
             )
         }
-        let title = try title(
-            from: document,
-            path: path,
-            maximumCharacters: maximumMetadataCharacters,
-            maximumBytes: maximumMetadataBytes
-        )
-        guard !document.isLocked else {
-            return makeDocument(
-                path: path,
-                title: title.value,
-                sections: [],
-                status: .locked,
-                truncatedFields: Set([SearchField.content]).union(
-                    title.truncated ? [.title] : []
-                )
-            )
+    }
+
+    private func pageTexts(
+        for target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) throws -> [String] {
+        let directory = cacheDirectory(for: target.relativePath)
+        if let cached = try? cachedPages(
+            in: directory,
+            revision: snapshot.revision.rawValue
+        ) {
+            return cached
         }
 
-        let retainedPages = min(max(document.pageCount, 0), max(maximumPages, 0))
-        var sections: [SearchSection] = []
-        sections.reserveCapacity(min(retainedPages, 256))
-        var retainedTextBytes = 0
-        var stoppedForText = false
-        var unavailablePage = false
-        var emptyPageCount = 0
-        var locatorLimited = false
-
-        for index in 0..<retainedPages {
+        guard let document = PDFDocument(data: snapshot.data) else {
+            throw SearchAtomProviderError.invalidPDF(target.relativePath)
+        }
+        var pages: [String] = []
+        pages.reserveCapacity(document.pageCount)
+        for index in 0..<document.pageCount {
             try Task.checkCancellation()
-            let remainingTextBytes = max(maximumTextBytes - retainedTextBytes, 0)
-            let projection: (
-                text: String,
-                label: String?,
-                exceedsLimit: Bool,
-                labelTruncated: Bool
-            )? = autoreleasepool {
-                guard let page = document.page(at: index) else { return nil }
-                guard page.numberOfCharacters <= remainingTextBytes else {
-                    return ("", nil, true, false)
-                }
-                var text = page.string ?? ""
-                text.makeContiguousUTF8()
-                let label = page.label.map {
-                    PDFDisplayText.bounded(
-                        $0,
-                        maximumCharacters: .max,
-                        maximumBytes: SearchRequestLimits.maximumLocatorBytes
-                    )
-                }
-                return (
-                    text,
-                    label?.value,
-                    false,
-                    label?.truncated ?? false
-                )
+            let text = try autoreleasepool {
+                guard let page = document.page(at: index) else { return "" }
+                let embedded = page.string?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !embedded.isEmpty { return Self.bounded(embedded) }
+                return try Self.recognizedText(on: page)
             }
-            guard let projection else {
-                unavailablePage = true
-                continue
-            }
-            if projection.exceedsLimit {
-                stoppedForText = true
-                break
-            }
-            let retainedLabel: String?
-            if projection.labelTruncated {
-                locatorLimited = true
-                retainedLabel = nil
-            } else if let label = projection.label, !label.isEmpty {
-                try SensitiveContentPolicy.validate(
-                    Data(label.utf8),
-                    format: .markdown,
-                    path: path
-                )
-                retainedLabel = label
-            } else {
-                retainedLabel = nil
-            }
-            let rawByteCount = projection.text.utf8.count
-            guard rawByteCount <= remainingTextBytes else {
-                stoppedForText = true
-                break
-            }
-            retainedTextBytes += rawByteCount
-            let text = projection.text.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            guard !text.isEmpty else {
-                emptyPageCount += 1
-                continue
-            }
-            try SensitiveContentPolicy.validate(
-                Data(text.utf8),
-                format: .markdown,
-                path: path
-            )
-            let physicalPage = index + 1
-            let printedPage = retainedLabel == String(physicalPage)
-                ? nil : retainedLabel
-            sections.append(SearchSection(
-                heading: nil,
-                location: nil,
-                content: text,
-                lineStart: 1,
-                lineEnd: TextLineScanner.lineCount(in: text),
-                physicalPage: physicalPage,
-                printedPage: printedPage,
-                pdfPageKind: PDFPageClassifier.kind(for: text)
-            ))
+            pages.append(text)
         }
-
-        let pageLimited = retainedPages < document.pageCount
-        let missingTextInMixedDocument = !sections.isEmpty && emptyPageCount > 0
-        let isPartial = pageLimited || stoppedForText || unavailablePage
-            || locatorLimited || missingTextInMixedDocument
-        let status: PDFTextExtractionStatus
-        if isPartial {
-            status = .partial
-        } else if sections.isEmpty {
-            status = .noExtractableText
-        } else {
-            status = .extracted
-        }
-        var truncatedFields: Set<SearchField> = []
-        if title.truncated { truncatedFields.insert(.title) }
-        if isPartial { truncatedFields.insert(.content) }
-        return makeDocument(
-            path: path,
-            title: title.value,
-            sections: sections,
-            status: status,
-            truncatedFields: truncatedFields
+        try store(
+            pages,
+            revision: snapshot.revision.rawValue,
+            in: directory
         )
+        return pages
     }
 
-    /// Extracts only the PDF's bounded title metadata without enumerating pages.
-    static func extractMetadata(
-        data: Data,
-        path: String,
-        maximumMetadataCharacters: Int,
-        maximumMetadataBytes: Int
-    ) throws -> ExtractedSearchDocument {
-        try Task.checkCancellation()
-        guard let document = PDFDocument(data: data) else {
-            return metadataOnly(
-                path: path,
-                status: .cannotOpen,
-                maximumMetadataCharacters: maximumMetadataCharacters,
-                maximumMetadataBytes: maximumMetadataBytes
+    private func cachedPages(in directory: URL, revision: String) throws -> [String] {
+        let manifestData = try Data(
+            contentsOf: directory.appendingPathComponent("manifest.json")
+        )
+        let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
+        guard manifest.revision == revision, manifest.pageCount >= 0 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        guard manifest.pageCount > 0 else { return [] }
+        return try (1...manifest.pageCount).map { page in
+            let data = try Data(contentsOf: pageURL(page, in: directory))
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            return text
+        }
+    }
+
+    private func store(_ pages: [String], revision: String, in directory: URL) throws {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        for (index, text) in pages.enumerated() {
+            try Data(text.utf8).write(
+                to: pageURL(index + 1, in: directory),
+                options: .atomic
             )
         }
-        let title = try title(
-            from: document,
-            path: path,
-            maximumCharacters: maximumMetadataCharacters,
-            maximumBytes: maximumMetadataBytes
-        )
-        return makeDocument(
-            path: path,
-            title: title.value,
-            sections: [],
-            status: .metadataOnly,
-            truncatedFields: Set([SearchField.content]).union(
-                title.truncated ? [.title] : []
-            )
+        let manifest = Manifest(revision: revision, pageCount: pages.count)
+        try JSONEncoder().encode(manifest).write(
+            to: directory.appendingPathComponent("manifest.json"),
+            options: .atomic
         )
     }
 
-    /// Builds a filename-only projection when opening the PDF is unnecessary
-    /// or impossible, recording which uninspected fields remain incomplete.
-    static func metadataOnly(
-        path: String,
-        status: PDFTextExtractionStatus,
-        maximumMetadataCharacters: Int,
-        maximumMetadataBytes: Int
-    ) -> ExtractedSearchDocument {
-        let title = bounded(
-            nil,
-            fallback: MarkdownSupport.titleFromFilename(
-                (path as NSString).lastPathComponent
-            ),
-            maximumCharacters: maximumMetadataCharacters,
-            maximumBytes: maximumMetadataBytes
-        )
-        var truncatedFields: Set<SearchField> = [.content]
-        if status == .cannotOpen || status == .contentSkippedFileBytes {
-            truncatedFields.insert(.title)
+    private func cacheDirectory(for path: String) -> URL {
+        let digest = SHA256.hash(data: Data(path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return cacheRoot
+            .appendingPathComponent("pdf-pages", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
+    }
+
+    private func pageURL(_ page: Int, in directory: URL) -> URL {
+        directory.appendingPathComponent(String(format: "page-%05d.txt", page))
+    }
+
+    private static func recognizedText(on page: PDFPage) throws -> String {
+        let image = page.thumbnail(of: NSSize(width: 1_800, height: 1_800), for: .mediaBox)
+        guard let cgImage = image.cgImage(
+            forProposedRect: nil,
+            context: nil,
+            hints: nil
+        ) else {
+            return ""
         }
-        if title.truncated { truncatedFields.insert(.title) }
-        return makeDocument(
-            path: path,
-            title: title.value,
-            sections: [],
-            status: status,
-            truncatedFields: truncatedFields
-        )
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        try VNImageRequestHandler(cgImage: cgImage).perform([request])
+        let text = request.results?
+            .compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: "\n") ?? ""
+        return bounded(text)
     }
 
-    private static func title(
-        from document: PDFDocument,
-        path: String,
-        maximumCharacters: Int,
-        maximumBytes: Int
-    ) throws -> (value: String, truncated: Bool) {
-        let title = boundedTitle(
-            document.documentAttributes?[PDFDocumentAttribute.titleAttribute]
-                as? String,
-            path: path,
-            maximumCharacters: maximumCharacters,
-            maximumBytes: maximumBytes
-        )
-        try SensitiveContentPolicy.validate(
-            Data(title.value.utf8),
-            format: .markdown,
-            path: path
-        )
-        return title
-    }
-
-    private static func makeDocument(
-        path: String,
-        title: String,
-        sections: [SearchSection],
-        status: PDFTextExtractionStatus,
-        truncatedFields: Set<SearchField>
-    ) -> ExtractedSearchDocument {
-        ExtractedSearchDocument(
-            document: SearchDocument(
-                path: path,
-                format: .pdf,
-                title: title,
-                tags: [],
-                sections: sections,
-                pdfTextExtractionStatus: status
-            ),
-            truncatedFields: truncatedFields
-        )
-    }
-
-    private static func bounded(
-        _ value: String?,
-        fallback: String,
-        maximumCharacters: Int,
-        maximumBytes: Int
-    ) -> (value: String, truncated: Bool) {
-        let source = value.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
-        let result = PDFDisplayText.bounded(
-            source,
-            maximumCharacters: maximumCharacters,
-            maximumBytes: maximumBytes
-        )
-        return (result.value, result.truncated)
-    }
-
-    private static func boundedTitle(
-        _ value: String?,
-        path: String,
-        maximumCharacters: Int,
-        maximumBytes: Int
-    ) -> (value: String, truncated: Bool) {
-        var sourceWasTruncated = false
-        if let value, !value.isEmpty {
-            let bounded = PDFDisplayText.bounded(
-                value,
-                maximumCharacters: maximumCharacters,
-                maximumBytes: maximumBytes
-            )
-            let trimmed = bounded.value.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            if !trimmed.isEmpty {
-                return (trimmed, bounded.truncated)
-            }
-            sourceWasTruncated = bounded.truncated
+    private static func bounded(_ value: String) -> String {
+        let maximumBytes = 2 * 1_024 * 1_024
+        guard value.utf8.count > maximumBytes else { return value }
+        var result = ""
+        result.reserveCapacity(maximumBytes)
+        for scalar in value.unicodeScalars {
+            let next = String(scalar)
+            guard result.utf8.count + next.utf8.count <= maximumBytes else { break }
+            result.unicodeScalars.append(scalar)
         }
-        let fallback = bounded(
-            nil,
-            fallback: MarkdownSupport.titleFromFilename(
-                (path as NSString).lastPathComponent
-            ),
-            maximumCharacters: maximumCharacters,
-            maximumBytes: maximumBytes
-        )
-        return (fallback.value, fallback.truncated || sourceWasTruncated)
+        return result
     }
 }

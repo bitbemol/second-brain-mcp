@@ -1,12 +1,12 @@
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Image read planning")
-struct ImageReadPlanTests {
+@Suite
+struct `Image read planning` {
     private let limits = ImageLimits.default
 
-    @Test("Native stills within the dimension cap pass through")
-    func nativeStillPassesThrough() {
+    @Test
+    func `Native stills within the dimension cap pass through`() {
         let plan = ImageReadPlan(
             format: .jpeg,
             inspection: inspection(width: 800, height: 600, format: "jpeg"),
@@ -25,8 +25,8 @@ struct ImageReadPlanTests {
         #expect(plan.totalDurationSeconds == nil)
     }
 
-    @Test("Oversized and non-native stills use bounded PNG encoding")
-    func convertedStillsUsePNG() {
+    @Test
+    func `Oversized and non-native stills use bounded PNG encoding`() {
         let oversized = ImageReadPlan(
             format: .png,
             inspection: inspection(width: 5_000, height: 1_000, format: "png"),
@@ -44,8 +44,8 @@ struct ImageReadPlanTests {
         #expect(!nonNative.passedThrough)
     }
 
-    @Test("Animated GIFs use sampled PNG frames and retain timing")
-    func animatedGIFUsesSampledFrames() {
+    @Test
+    func `Animated GIFs use sampled PNG frames and retain timing`() {
         let delays = Array(repeating: 0.1, count: 20)
         let plan = ImageReadPlan(
             format: .gif,
@@ -67,8 +67,8 @@ struct ImageReadPlanTests {
         #expect(abs((plan.totalDurationSeconds ?? 0) - 2) < 0.0001)
     }
 
-    @Test("A single-frame GIF remains a native still")
-    func singleFrameGIFPassesThrough() {
+    @Test
+    func `A single-frame GIF remains a native still`() {
         let plan = ImageReadPlan(
             format: .gif,
             inspection: inspection(

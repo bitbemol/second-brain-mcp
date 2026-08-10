@@ -1,95 +1,61 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Vault runtime recovery bootstrap")
-struct VaultRuntimeRecoveryTests {
-    @Test("An unresolved active transaction starts without snapshotting dirty state")
-    func unresolvedTransactionSkipsGitBootstrap() async throws {
+@Suite
+struct `Vault runtime recovery` {
+    @Test
+    func `Writable startup snapshots pending note changes`() async throws {
         let root = try makeVault()
-        let git = GitRepository(repoPath: root)
-        try await git.ensureRepository()
         let dataDirectory = try productionDataDirectory(for: root)
         defer { cleanup(root: root, dataDirectory: dataDirectory) }
-        let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
-        let identifier = MutationID()
-        let fingerprint = MutationRequestFingerprint(rawValue: "unresolved-startup")
-        try receipts.saveInProgress(
-            identifier: identifier,
-            fingerprint: fingerprint
-        )
-        try receipts.saveActiveTransaction(
-            identifier: identifier,
-            fingerprint: fingerprint
-        )
-        try Data("must not be snapshotted".utf8).write(
+        try Data("pending".utf8).write(
             to: URL(fileURLWithPath: root)
-                .appendingPathComponent("notes/unresolved.md"),
+                .appendingPathComponent("notes/pending.md"),
             options: .atomic
         )
 
         _ = try await VaultRuntime.bootstrap(vaultPath: root)
 
-        #expect(try receipts.activeTransaction()?.identifier == identifier)
-        #expect(try !runGit(["status", "--porcelain"], at: root).isEmpty)
-    }
-
-    @Test("A completed receipt clears its stale marker before normal bootstrap")
-    func completedTransactionAllowsGitBootstrap() async throws {
-        let root = try makeVault()
-        let git = GitRepository(repoPath: root)
-        try await git.ensureRepository()
-        let dataDirectory = try productionDataDirectory(for: root)
-        defer { cleanup(root: root, dataDirectory: dataDirectory) }
-        let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
-        let identifier = MutationID()
-        let fingerprint = MutationRequestFingerprint(rawValue: "completed-startup")
-        let path = "notes/completed-startup.md"
-        let data = Data("safe to snapshot".utf8)
-        try data.write(
-            to: URL(fileURLWithPath: root).appendingPathComponent(path),
-            options: .atomic
+        #expect(
+            try runGit(["status", "--porcelain", "--", "notes"], at: root)
+                .isEmpty
         )
-        try receipts.save(
-            identifier: identifier,
-            fingerprint: fingerprint,
-            output: FileOperationOutput.text("Created")
-                .withMetadata(FileOperationMetadata(
-                    path: path,
-                    area: .notes,
-                    revision: FileSnapshot(data: data, modifiedDate: nil).revision,
-                    mutationID: identifier,
-                    replayed: false
-                ))
-        )
-        try receipts.saveActiveTransaction(
-            identifier: identifier,
-            fingerprint: fingerprint
-        )
-
-        _ = try await VaultRuntime.bootstrap(vaultPath: root)
-
-        #expect(try receipts.activeTransaction() == nil)
-        #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
         #expect(
             try runGit(["log", "-1", "--pretty=%s"], at: root)
-                .contains("Snapshot of uncommitted changes on startup")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == "Vault snapshot"
         )
     }
 
-    @Test("Corrupt active recovery state fails bootstrap loudly")
-    func corruptActiveMarkerFailsBootstrap() async throws {
+    @Test
+    func `Startup leaves reference content outside history`() async throws {
         let root = try makeVault()
-        let dataDirectory = try productionDataDirectory(for: root)
-        defer { cleanup(root: root, dataDirectory: dataDirectory) }
-        try Data("{".utf8).write(
-            to: dataDirectory.rootURL.appendingPathComponent("active-mutation.json"),
+        try FileManager.default.createDirectory(
+            atPath: root + "/references",
+            withIntermediateDirectories: true
+        )
+        try Data("large immutable reference".utf8).write(
+            to: URL(fileURLWithPath: root)
+                .appendingPathComponent("references/book.txt"),
             options: .atomic
         )
+        try Data("tracked note".utf8).write(
+            to: URL(fileURLWithPath: root)
+                .appendingPathComponent("notes/note.md"),
+            options: .atomic
+        )
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
 
-        await #expect(throws: MutationReceiptStore.ReceiptError.self) {
-            _ = try await VaultRuntime.bootstrap(vaultPath: root)
-        }
+        _ = try await VaultRuntime.bootstrap(vaultPath: root)
+
+        #expect(
+            try runGit(
+                ["ls-tree", "-r", "--name-only", "HEAD", "--", "references"],
+                at: root
+            ).isEmpty
+        )
     }
 
     private func makeVault() throws -> String {
@@ -104,8 +70,7 @@ struct VaultRuntimeRecoveryTests {
 
     private func productionDataDirectory(for root: String) throws -> VaultDataDirectory {
         try VaultDataDirectory.prepare(
-            vaultPath: root,
-            migrateLegacyData: false
+            vaultPath: root
         )
     }
 

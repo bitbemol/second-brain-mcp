@@ -1,13 +1,11 @@
 import Foundation
 
-/// One rendered, user-facing PDF page.
+/// The two useful representations of one physical PDF page.
 struct RenderedPDFPage: Sendable {
     /// One-based physical page number.
     let pageNumber: Int
-    /// Printed page label, such as `xii` or `42`, when available.
-    let bookLabel: String?
-    /// JPEG representation of the rendered page.
-    let jpegData: Data
-    /// Extracted page text, or `nil` for scanned and image-only pages.
-    let extractedText: String?
+    /// Bounded, display-safe embedded text. Empty for image-only pages.
+    let text: String
+    /// Bounded PNG representation of the complete page.
+    let pngData: Data
 }

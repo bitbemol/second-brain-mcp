@@ -1,10 +1,9 @@
 import MCP
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("MCP file tool controller")
-struct FileToolControllerTests {
-    private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
+@Suite
+struct `MCP file tool controller` {
 
     private actor FileServiceSpy: FileCRUDService {
         private var calls = 0
@@ -37,24 +36,6 @@ struct FileToolControllerTests {
 
         func lastCreateRequest() -> CreateFileRequest? {
             createRequests.last
-        }
-    }
-
-    private actor RejectionSpy: FileRequestRejectionReporting {
-        private var rejections: [FileRequestRejection] = []
-
-        func record(_ rejection: FileRequestRejection) {
-            rejections.append(rejection)
-        }
-
-        func recordedRejections() -> [FileRequestRejection] {
-            rejections
-        }
-    }
-
-    private actor SelfCancellingRejectionReporter: FileRequestRejectionReporting {
-        func record(_ rejection: FileRequestRejection) {
-            withUnsafeCurrentTask { $0?.cancel() }
         }
     }
 
@@ -124,23 +105,20 @@ struct FileToolControllerTests {
 
     private func makeController(
         readOnly: Bool
-    ) -> (FileToolController, FileServiceSpy, RejectionSpy) {
+    ) -> (FileToolController, FileServiceSpy) {
         let files = FileServiceSpy()
-        let rejections = RejectionSpy()
         return (
             FileToolController(
                 readOnly: readOnly,
-                rejections: rejections,
                 files: files
             ),
-            files,
-            rejections
+            files
         )
     }
 
-    @Test("Unknown tools fail at the MCP boundary")
-    func rejectsUnknownTool() async throws {
-        let (controller, files, _) = makeController(readOnly: false)
+    @Test
+    func `Unknown tools fail at the MCP boundary`() async throws {
+        let (controller, files) = makeController(readOnly: false)
         let result = try await controller.call(.init(name: "legacy_tool"))
 
         #expect(result.isError == true)
@@ -148,9 +126,9 @@ struct FileToolControllerTests {
         #expect(await files.callCount() == 0)
     }
 
-    @Test("Read-only mode rejects writes before routing")
-    func enforcesReadOnly() async throws {
-        let (controller, files, rejections) = makeController(readOnly: true)
+    @Test
+    func `Read-only mode rejects writes before routing`() async throws {
+        let (controller, files) = makeController(readOnly: true)
         let result = try await controller.call(.init(
             name: "create_file",
             arguments: [
@@ -163,23 +141,16 @@ struct FileToolControllerTests {
         #expect(result.isError == true)
         #expect(firstText(in: result)?.contains("read-only mode") == true)
         #expect(await files.callCount() == 0)
-        let recorded = await rejections.recordedRejections()
-        #expect(recorded == [FileRequestRejection(
-            operation: .create,
-            path: "notes/blocked.md",
-            reason: .readOnly
-        )])
     }
 
-    @Test("Valid calls reach the shared file service boundary")
-    func dispatchesCreate() async throws {
-        let (controller, files, rejections) = makeController(readOnly: false)
+    @Test
+    func `Valid calls reach the shared file service boundary`() async throws {
+        let (controller, files) = makeController(readOnly: false)
         let result = try await controller.call(.init(
             name: "create_file",
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/dispatched.md"),
-                "mutation_id": .string(mutationID),
                 "content": .string("# Dispatched"),
             ]
         ))
@@ -189,16 +160,13 @@ struct FileToolControllerTests {
         let request = await files.lastCreateRequest()
         #expect(request?.format == .markdown)
         #expect(request?.path == "notes/dispatched.md")
-        #expect(request?.mutationID.rawValue == mutationID)
         #expect(request?.content == "# Dispatched")
-        #expect(await rejections.recordedRejections().isEmpty)
     }
 
-    @Test("Cancellation escapes so MCP can suppress the response")
-    func propagatesCancellation() async {
+    @Test
+    func `Cancellation escapes so MCP can suppress the response`() async {
         let controller = FileToolController(
             readOnly: false,
-            rejections: RejectionSpy(),
             files: CancellingFileService()
         )
 
@@ -213,11 +181,10 @@ struct FileToolControllerTests {
         }
     }
 
-    @Test("Cancellation observed by a synchronous backend cannot return success")
-    func checksCancellationAfterDispatch() async {
+    @Test
+    func `Cancellation observed by a synchronous backend cannot return success`() async {
         let controller = FileToolController(
             readOnly: false,
-            rejections: RejectionSpy(),
             files: SelfCancellingFileService()
         )
         let task = Task {
@@ -235,30 +202,10 @@ struct FileToolControllerTests {
         }
     }
 
-    @Test("Cancellation wins over rejection audit and ordinary backend errors")
-    func cancellationWinsOverErrorMapping() async {
-        let readOnlyController = FileToolController(
-            readOnly: true,
-            rejections: SelfCancellingRejectionReporter(),
-            files: FileServiceSpy()
-        )
-        let rejectionTask = Task {
-            try await readOnlyController.call(.init(
-                name: "create_file",
-                arguments: [
-                    "format": .string("markdown"),
-                    "path": .string("notes/cancelled.md"),
-                    "content": .string("cancelled"),
-                ]
-            ))
-        }
-        await #expect(throws: CancellationError.self) {
-            _ = try await rejectionTask.value
-        }
-
+    @Test
+    func `Cancellation wins over ordinary backend errors`() async {
         let failingController = FileToolController(
             readOnly: false,
-            rejections: RejectionSpy(),
             files: CancelThenFailFileService()
         )
         let failureTask = Task {

@@ -1,3 +1,5 @@
+import Foundation
+
 /// A format-specific create function that validates or transforms input bytes.
 ///
 /// The function must not persist the returned data.
@@ -9,11 +11,21 @@ typealias CreateFileFunction = @Sendable (CreateFileRequest, WritableFileTarget)
 /// external sources, required inline content, and enforced its resource limit.
 typealias StoredTextCreateResolver = @Sendable (TextFileCreateInput, WritableFileTarget) throws -> PreparedFileWrite
 
-/// A format-specific read function that interprets an already validated target.
-typealias ReadFileFunction = @Sendable (ReadFileRequest, ReadableFileTarget) async throws -> FileOperationOutput
+/// A format-specific read function that interprets the service's one immutable snapshot.
+typealias ReadFileFunction = @Sendable (
+    ReadFileRequest,
+    ReadableFileTarget,
+    FileSnapshot
+) async throws -> FileOperationOutput
 
 /// A persistence-free read resolver that interprets a generic file snapshot.
 typealias StoredReadResolver = @Sendable (ReadFileRequest, ReadableFileTarget, FileSnapshot) throws -> FileOperationOutput
+
+/// Optional structural validation shared by generic text reads and updates.
+typealias StoredTextValidator = @Sendable (Data, String) throws -> Void
+
+/// Optional format-specific append joining used by the generic text update engine.
+typealias StoredTextAppender = @Sendable (String, String) -> String
 
 /// A format-specific update function that prepares replacement bytes from a snapshot.
 ///

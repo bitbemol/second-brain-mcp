@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 
 import PackageDescription
 
@@ -7,23 +7,22 @@ let package = Package(
     platforms: [
         .macOS(.v26)
     ],
-    products: [
-        .executable(name: "second-brain-mcp", targets: ["SecondBrainMCP"])
-    ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0")
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "1.0.0")
     ],
     targets: [
         .executableTarget(
-            name: "SecondBrainMCP",
+            name: "second-brain-mcp",
             dependencies: [
-                .product(name: "MCP", package: "swift-sdk")
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Subprocess", package: "swift-subprocess")
             ],
-            linkerSettings: [.linkedLibrary("sqlite3")]
+            path: "Sources/SecondBrainMCP"
         ),
         .testTarget(
             name: "SecondBrainMCPTests",
-            dependencies: ["SecondBrainMCP"]
+            dependencies: ["second-brain-mcp"]
         )
     ]
 )

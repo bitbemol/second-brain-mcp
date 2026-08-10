@@ -1,9 +1,9 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Generic files — structured format operations")
-struct StructuredFileOperationsTests {
+@Suite
+struct `Generic files — structured format operations` {
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "StructuredFileOperationsTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
@@ -14,8 +14,8 @@ struct StructuredFileOperationsTests {
         TextFileCreateInput(data: Data(content.utf8), tags: tags)
     }
 
-    @Test("HAR creation validates structure and reading summarizes entries")
-    func har() async throws {
+    @Test
+    func `HAR creation validates structure and reading returns atomic JSON`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = HARFileOperations()
@@ -38,18 +38,21 @@ struct StructuredFileOperationsTests {
             target: target.readable,
             snapshot: snapshot
         )
-        guard case .text(let summary) = output.contents.first else {
-            Issue.record("Expected HAR summary text")
+        guard case .text(let returned) = output.contents.first else {
+            Issue.record("Expected HAR JSON")
             return
         }
-        #expect(summary.contains("Entries: 2"))
-        #expect(summary.contains("GET=1"))
-        #expect(summary.contains("500=1"))
-        #expect(!summary.contains("\"entries\""))
+        let returnedObject = try #require(
+            JSONSerialization.jsonObject(with: Data(returned.utf8)) as? NSDictionary
+        )
+        let expectedObject = try #require(
+            JSONSerialization.jsonObject(with: Data(content.utf8)) as? NSDictionary
+        )
+        #expect(returnedObject == expectedObject)
     }
 
-    @Test("Malformed HAR is rejected before persistence")
-    func invalidHAR() throws {
+    @Test
+    func `Malformed HAR is rejected before persistence`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(path: "notes/bad.har", format: .har, vaultPath: root)
@@ -69,8 +72,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("HAR creation stores sanitized bytes and reports the intervention")
-    func sanitizedHAR() throws {
+    @Test
+    func `HAR creation stores sanitized bytes and reports the intervention`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -102,8 +105,8 @@ struct StructuredFileOperationsTests {
         #expect(output.contains("Sanitized 1 sensitive value"))
     }
 
-    @Test("Raw reads sanitize legacy HAR bytes and reject unknown secret locations")
-    func legacyHARRawRead() throws {
+    @Test
+    func `Raw reads sanitize legacy HAR bytes and reject unknown secret locations`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -122,17 +125,7 @@ struct StructuredFileOperationsTests {
         let rawRequest = ReadFileRequest(
             format: .har,
             path: target.relativePath,
-            options: ReadFileOptions(
-                raw: true,
-                tailLines: nil,
-                startLine: nil,
-                maxLines: nil,
-                page: nil,
-                bookPage: nil,
-                pageRange: nil,
-                query: nil,
-                maxPages: nil
-            )
+            options: .default
         )
         let output = try operations.read(
             rawRequest,
@@ -143,7 +136,7 @@ struct StructuredFileOperationsTests {
             )
         )
         guard case .text(let raw) = output.contents.first else {
-            Issue.record("Expected sanitized raw HAR")
+            Issue.record("Expected sanitized HAR JSON")
             return
         }
         #expect(!raw.contains(secret))
@@ -165,8 +158,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("HAR summaries reject credentials in projected legacy fields")
-    func legacyHARSummaryDoesNotDiscloseSecrets() throws {
+    @Test
+    func `HAR summaries reject credentials in projected legacy fields`() throws {
         let root = try makeVault()
         let operations = HARFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -198,8 +191,8 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("Patch failures never echo caller-supplied search text")
-    func patchFailureDoesNotEchoSearchText() {
+    @Test
+    func `Patch failures never echo caller-supplied search text`() {
         let secret = "Bearer " + String(repeating: "p", count: 32)
         do {
             _ = try TextFileSupport.apply(
@@ -212,31 +205,28 @@ struct StructuredFileOperationsTests {
         }
     }
 
-    @Test("Opaque text formats cannot import arbitrary external paths")
-    func rejectsExternalTextSource() async throws {
+    @Test
+    func `Opaque text formats cannot import arbitrary external paths`() async throws {
         let root = try makeVault()
         let source = NSTemporaryDirectory() + "external-secret-\(UUID().uuidString).log"
         try Data("private".utf8).write(to: URL(fileURLWithPath: source))
         let operations = LogFileOperations()
         let family = StoredTextFileOperationFamily(
-            store: VaultCRUDStore(vaultPath: root),
             delete: DeleteOperationBinding(
-                id: .softDelete,
                 allowedAreas: [.notes],
                 execute: { _, _ in }
             )
         )
         let definition = family.definition(
             format: .log,
-            handler: .log,
             create: operations.prepareCreate,
             read: operations.read,
-            update: operations.prepareUpdate
+            updateModes: [.append]
         )
         let create = try #require(definition.operations.create)
         let target = try WritableFileTarget.resolve(path: "notes/import.log", format: .log, vaultPath: root)
         let request = CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .log,
             path: target.relativePath,
             content: nil,
@@ -251,8 +241,8 @@ struct StructuredFileOperationsTests {
         #expect(!FileManager.default.fileExists(atPath: target.url.path))
     }
 
-    @Test("Patch creation validates and summarizes a unified diff")
-    func patch() throws {
+    @Test
+    func `Patch creation validates and summarizes a unified diff`() throws {
         let root = try makeVault()
         let operations = PatchFileOperations()
         let target = try WritableFileTarget.resolve(path: "notes/fix.patch", format: .patch, vaultPath: root)
@@ -277,8 +267,8 @@ struct StructuredFileOperationsTests {
         #expect(summary.contains("+1 / -1"))
     }
 
-    @Test("Log reads tail and only permits append updates")
-    func log() async throws {
+    @Test
+    func `Log reads a bounded tail`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = LogFileOperations()
@@ -289,7 +279,7 @@ struct StructuredFileOperationsTests {
         )
         try await store.create(target: target, data: prepared.data)
 
-        let options = ReadFileOptions(raw: false, tailLines: 2, startLine: nil, maxLines: nil, page: nil, bookPage: nil, pageRange: nil, query: nil, maxPages: nil)
+        let options = ReadFileOptions(tailLines: 2)
         let readSnapshot = try await store.snapshot(target.readable)
         let output = try operations.read(
             ReadFileRequest(format: .log, path: target.relativePath, options: options),
@@ -303,71 +293,10 @@ struct StructuredFileOperationsTests {
         #expect(!text.contains("\none\n"))
         #expect(text.contains("two\nthree"))
 
-        let snapshot = try await store.snapshot(target.readable)
-        let update = UpdateFileRequest(
-            mutationID: MutationID(),
-            expectedRevision: snapshot.revision,
-            format: .log,
-            path: target.relativePath,
-            content: "four",
-            mode: .append,
-            replacements: []
-        )
-        let updated = try operations.prepareUpdate(update, target: target, snapshot: snapshot)
-        #expect(try TextFileSupport.string(from: updated.data).hasSuffix("three\nfour"))
     }
 
-    @Test("Text handlers append to empty files without a leading blank line")
-    func appendsToEmptyTextFiles() throws {
-        let root = try makeVault()
-        let snapshot = FileSnapshot(data: Data(), modifiedDate: nil)
-
-        let markdownTarget = try WritableFileTarget.resolve(
-            path: "notes/empty.md",
-            format: .markdown,
-            vaultPath: root
-        )
-        let markdownRequest = UpdateFileRequest(
-            mutationID: MutationID(),
-            expectedRevision: snapshot.revision,
-            format: .markdown,
-            path: markdownTarget.relativePath,
-            content: "first",
-            mode: .append,
-            replacements: []
-        )
-        let markdown = try MarkdownFileOperations().prepareUpdate(
-            markdownRequest,
-            target: markdownTarget,
-            snapshot: snapshot
-        )
-
-        let logTarget = try WritableFileTarget.resolve(
-            path: "notes/empty.log",
-            format: .log,
-            vaultPath: root
-        )
-        let logRequest = UpdateFileRequest(
-            mutationID: MutationID(),
-            expectedRevision: snapshot.revision,
-            format: .log,
-            path: logTarget.relativePath,
-            content: "first",
-            mode: .append,
-            replacements: []
-        )
-        let log = try LogFileOperations().prepareUpdate(
-            logRequest,
-            target: logTarget,
-            snapshot: snapshot
-        )
-
-        #expect(try TextFileSupport.string(from: markdown.data) == "first")
-        #expect(try TextFileSupport.string(from: log.data) == "first")
-    }
-
-    @Test("Log reads safely clamp extreme caller-controlled line values")
-    func logExtremeLineWindow() throws {
+    @Test
+    func `Log reads safely clamp extreme caller-controlled line values`() throws {
         let root = try makeVault()
         let operations = LogFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -377,15 +306,8 @@ struct StructuredFileOperationsTests {
         ).readable
         let snapshot = FileSnapshot(data: Data("one\ntwo\nthree".utf8), modifiedDate: nil)
         let options = ReadFileOptions(
-            raw: false,
-            tailLines: nil,
             startLine: .min,
-            maxLines: .max,
-            page: nil,
-            bookPage: nil,
-            pageRange: nil,
-            query: nil,
-            maxPages: nil
+            maxLines: .max
         )
 
         let output = try operations.read(
@@ -401,8 +323,8 @@ struct StructuredFileOperationsTests {
         #expect(text.hasSuffix("one\ntwo\nthree"))
     }
 
-    @Test("Newline-dense logs retain only the requested window")
-    func newlineDenseLogIsBounded() throws {
+    @Test
+    func `Newline-dense logs retain only the requested window`() throws {
         let root = try makeVault()
         let operations = LogFileOperations()
         let target = try WritableFileTarget.resolve(
@@ -418,17 +340,7 @@ struct StructuredFileOperationsTests {
         }
         #expect(createSummary.contains("250002 lines"))
 
-        let options = ReadFileOptions(
-            raw: false,
-            tailLines: 2,
-            startLine: nil,
-            maxLines: nil,
-            page: nil,
-            bookPage: nil,
-            pageRange: nil,
-            query: nil,
-            maxPages: nil
-        )
+        let options = ReadFileOptions(tailLines: 2)
         let output = try operations.read(
             ReadFileRequest(
                 format: .log,
@@ -447,8 +359,8 @@ struct StructuredFileOperationsTests {
         #expect(rendered.utf8.count < 1_024)
     }
 
-    @Test("CRLF is one logical line delimiter")
-    func crlfDoesNotCreateBlankLines() {
+    @Test
+    func `CRLF is one logical line delimiter`() {
         let text = "one\r\ntwo\r\nthree"
 
         #expect(TextLineScanner.lineCount(in: text) == 3)
@@ -461,8 +373,8 @@ struct StructuredFileOperationsTests {
         )
     }
 
-    @Test("Deleted and metadata-only patches report their affected file")
-    func patchSummariesIncludeNonAdditionFiles() throws {
+    @Test
+    func `Deleted and metadata-only patches report their affected file`() throws {
         let deletion = """
         diff --git a/old.txt b/old.txt
         deleted file mode 100644
@@ -492,8 +404,8 @@ struct StructuredFileOperationsTests {
         #expect(modeSummary.contains("Hunks: 0"))
     }
 
-    @Test("Patch filenames containing spaces count one structural file")
-    func patchFilenameWithSpaces() throws {
+    @Test
+    func `Patch filenames containing spaces count one structural file`() throws {
         let diff = """
         diff --git a/old name.txt b/old name.txt
         --- a/old name.txt
@@ -511,48 +423,12 @@ struct StructuredFileOperationsTests {
         #expect(summary.contains("Files: 1"))
     }
 
-    @Test("Malformed Git patch headers are rejected")
-    func rejectsMalformedPatchHeader() throws {
+    @Test
+    func `Malformed Git patch headers are rejected`() throws {
         #expect(throws: PatchFileOperations.PatchError.self) {
             try PatchFileOperations.inspect(
                 data: Data("diff --git nope\n+not a hunk".utf8),
                 path: "notes/bad.patch"
-            )
-        }
-    }
-
-    @Test("Canvas reads validate content and flag missing file nodes")
-    func canvasRead() async throws {
-        let root = try makeVault()
-        let store = VaultCRUDStore(vaultPath: root)
-        let operations = CanvasFileOperations(vaultPath: root)
-        let target = try WritableFileTarget.resolve(path: "notes/board.canvas", format: .canvas, vaultPath: root)
-        let canvas = #"{"nodes":[{"id":"file-1","type":"file","file":"notes/missing.png","x":0,"y":0,"width":100,"height":100}],"edges":[]}"#
-        let prepared = try operations.prepareCreate(
-            input(canvas),
-            target: target
-        )
-        try await store.create(target: target, data: prepared.data)
-
-        let snapshot = try await store.snapshot(target.readable)
-        let output = try operations.read(
-            ReadFileRequest(format: .canvas, path: target.relativePath, options: .default),
-            target: target.readable,
-            snapshot: snapshot
-        )
-        guard case .text(let text) = output.contents.first else {
-            Issue.record("Expected canvas text")
-            return
-        }
-        #expect(text.contains("⚠ file not found"))
-
-        try Data("not json".utf8).write(to: target.url, options: .atomic)
-        let invalidSnapshot = try await store.snapshot(target.readable)
-        #expect(throws: CanvasDocumentValidator.ValidationError.self) {
-            try operations.read(
-                ReadFileRequest(format: .canvas, path: target.relativePath, options: .default),
-                target: target.readable,
-                snapshot: invalidSnapshot
             )
         }
     }

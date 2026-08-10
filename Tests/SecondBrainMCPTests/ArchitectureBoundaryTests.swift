@@ -1,8 +1,8 @@
 import Foundation
 import Testing
 
-@Suite("Architecture boundaries")
-struct ArchitectureBoundaryTests {
+@Suite
+struct `Architecture boundaries` {
     private let fileManager = FileManager.default
 
     private var sourceRoot: URL {
@@ -13,8 +13,8 @@ struct ArchitectureBoundaryTests {
             .appendingPathComponent("Sources/SecondBrainMCP", isDirectory: true)
     }
 
-    @Test("Source root contains only Frontend, Backend, and Shared")
-    func sourceRootUsesArchitecturalLayers() throws {
+    @Test
+    func `Source root contains only Frontend, Backend, and Shared`() throws {
         let entries = try fileManager.contentsOfDirectory(
             at: sourceRoot,
             includingPropertiesForKeys: [.isDirectoryKey]
@@ -26,8 +26,8 @@ struct ArchitectureBoundaryTests {
         #expect(Set(directories) == ["Frontend", "Backend", "Shared"])
     }
 
-    @Test("Only Frontend may import MCP")
-    func backendAndSharedDoNotImportMCP() throws {
+    @Test
+    func `Only Frontend may import MCP`() throws {
         let forbiddenImports = try forbiddenImportOccurrences(
             layers: ["Backend", "Shared"],
             imports: ["import MCP"]
@@ -36,8 +36,8 @@ struct ArchitectureBoundaryTests {
         #expect(forbiddenImports.isEmpty, "Forbidden imports: \(forbiddenImports)")
     }
 
-    @Test("Backend does not depend on Frontend MCP adapter types")
-    func backendDoesNotReferenceFrontendAdapters() throws {
+    @Test
+    func `Backend does not depend on Frontend MCP adapter types`() throws {
         let forbidden = [
             "ToolController",
             "ToolDefinition",
@@ -68,8 +68,8 @@ struct ArchitectureBoundaryTests {
         )
     }
 
-    @Test("Shared remains free of feature frameworks")
-    func sharedHasNoFeatureFrameworkDependencies() throws {
+    @Test
+    func `Shared remains free of feature frameworks`() throws {
         let forbiddenImports = try forbiddenImportOccurrences(
             layers: ["Shared"],
             imports: [
@@ -84,13 +84,12 @@ struct ArchitectureBoundaryTests {
         #expect(forbiddenImports.isEmpty, "Forbidden imports: \(forbiddenImports)")
     }
 
-    @Test("Shared file-domain enums remain separated")
-    func sharedFileDomainEnumsStaySeparated() throws {
+    @Test
+    func `Shared file-domain enums remain separated`() throws {
         let expectedDeclarations = [
             "FileFormat.swift": "enum FileFormat",
             "VaultArea.swift": "enum VaultArea",
             "FileCRUDOperation.swift": "enum FileCRUDOperation",
-            "VaultOperation.swift": "enum VaultOperation",
             "FileUpdateMode.swift": "enum FileUpdateMode",
             "FileCreateTransform.swift": "enum FileCreateTransform",
             "FileRoutingError.swift": "enum FileRoutingError",
@@ -113,8 +112,8 @@ struct ArchitectureBoundaryTests {
         }
     }
 
-    @Test("Shared file requests remain grouped by CRUD operation")
-    func sharedFileRequestsStayGroupedByOperation() throws {
+    @Test
+    func `Shared file requests remain grouped by CRUD operation`() throws {
         let expectedDeclarations = [
             "CreateFileRequest.swift": ["struct CreateFileRequest"],
             "ReadFileRequest.swift": ["struct ReadFileOptions", "struct ReadFileRequest"],
@@ -144,8 +143,8 @@ struct ArchitectureBoundaryTests {
         ))
     }
 
-    @Test("Format operations remain persistence-free")
-    func formatOperationsDoNotOwnStorage() throws {
+    @Test
+    func `Format operations remain persistence-free`() throws {
         let directory = sourceRoot.appendingPathComponent(
             "Backend/Files/Operations",
             isDirectory: true
@@ -167,8 +166,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Persistence leaked into format operations: \(occurrences)")
     }
 
-    @Test("File resource policy remains backend-owned")
-    func fileSizePolicyStaysInBackend() throws {
+    @Test
+    func `File resource policy remains backend-owned`() throws {
         let sharedFormatURL = sourceRoot.appendingPathComponent(
             "Shared/Files/FileFormat.swift"
         )
@@ -201,17 +200,17 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Format handlers duplicated storage limits: \(occurrences)")
     }
 
-    @Test("Search execution policy remains backend-owned")
-    func searchPolicyStaysInBackend() throws {
+    @Test
+    func `Search execution policy remains backend-owned`() throws {
         let frontend = sourceRoot.appendingPathComponent(
             "Frontend",
             isDirectory: true
         )
         let forbidden = [
-            "SearchResourceLimits",
-            "SearchResourcePolicy",
             "SearchCorpusBuilder",
             "VaultSearchEngine",
+            "PDFSearchAtomProvider",
+            "LiteralSearchMatchingStrategy",
         ]
         var occurrences: [String] = []
         for fileURL in try swiftFiles(under: frontend) {
@@ -224,8 +223,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Backend search policy leaked into Frontend: \(occurrences)")
     }
 
-    @Test("Backend composition has one root")
-    func backendCompositionIsCentralized() throws {
+    @Test
+    func `Backend composition has one root`() throws {
         var occurrences: [String] = []
 
         for fileURL in try swiftFiles(under: sourceRoot) {
@@ -245,8 +244,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.first?.hasPrefix("Backend/Infrastructure/VaultRuntime.swift:") == true)
     }
 
-    @Test("Application entry point owns backend startup")
-    func applicationEntryOwnsBackendStartup() throws {
+    @Test
+    func `Application entry point owns backend startup`() throws {
         var occurrences: [String] = []
 
         for fileURL in try swiftFiles(under: sourceRoot) {
@@ -272,8 +271,8 @@ struct ArchitectureBoundaryTests {
         #expect(!setupSource.contains("VaultRuntime"))
     }
 
-    @Test("Server configuration remains frontend-owned")
-    func serverConfigurationStaysInFrontend() throws {
+    @Test
+    func `Server configuration remains frontend-owned`() throws {
         var occurrences: [String] = []
 
         for layer in ["Backend", "Shared"] {
@@ -297,8 +296,8 @@ struct ArchitectureBoundaryTests {
             .path))
     }
 
-    @Test("File routing delegates transaction mechanics")
-    func fileRoutingDoesNotOwnTransactionMechanics() throws {
+    @Test
+    func `File routing delegates transaction mechanics`() throws {
         let directory = sourceRoot.appendingPathComponent(
             "Backend/Files/Routing",
             isDirectory: true
@@ -329,8 +328,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Transaction mechanics leaked into routing: \(occurrences)")
     }
 
-    @Test("File service delegates binding resolution to the catalog")
-    func fileServiceDelegatesBindingResolution() throws {
+    @Test
+    func `File service delegates binding resolution to the catalog`() throws {
         let fileURL = sourceRoot.appendingPathComponent(
             "Backend/Files/Routing/VaultFileService.swift"
         )
@@ -345,30 +344,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Binding resolution leaked into the file service: \(occurrences)")
     }
 
-    @Test("Backend audit types do not leak across layer boundaries")
-    func backendAuditTypesStayInBackend() throws {
-        var occurrences: [String] = []
-
-        for layer in ["Frontend", "Shared"] {
-            let directory = sourceRoot.appendingPathComponent(layer, isDirectory: true)
-            for fileURL in try swiftFiles(under: directory) {
-                let lines = try String(contentsOf: fileURL, encoding: .utf8)
-                    .split(separator: "\n", omittingEmptySubsequences: false)
-                for (index, line) in lines.enumerated() where line.contains("AuditLogger") {
-                    let relativePath = fileURL.path.replacingOccurrences(
-                        of: sourceRoot.path + "/",
-                        with: ""
-                    )
-                    occurrences.append("\(relativePath):\(index + 1)")
-                }
-            }
-        }
-
-        #expect(occurrences.isEmpty, "Backend audit types leaked across boundaries: \(occurrences)")
-    }
-
-    @Test("Backend routing catalog does not leak across layer boundaries")
-    func backendRoutingCatalogStaysInBackend() throws {
+    @Test
+    func `Backend routing catalog does not leak across layer boundaries`() throws {
         let forbidden = [
             "FileFormatCatalog",
             "FileFormatDefinition",
@@ -398,8 +375,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Backend routing types leaked across boundaries: \(occurrences)")
     }
 
-    @Test("Concrete backend file service does not leak across layer boundaries")
-    func concreteFileServiceStaysInBackend() throws {
+    @Test
+    func `Concrete backend file service does not leak across layer boundaries`() throws {
         var occurrences: [String] = []
 
         for layer in ["Frontend", "Shared"] {
@@ -420,8 +397,8 @@ struct ArchitectureBoundaryTests {
         #expect(occurrences.isEmpty, "Concrete file service leaked across boundaries: \(occurrences)")
     }
 
-    @Test("File tool controller delegates transport mechanics")
-    func fileToolControllerOnlyOrchestrates() throws {
+    @Test
+    func `File tool controller delegates transport mechanics`() throws {
         let fileURL = sourceRoot.appendingPathComponent(
             "Frontend/MCP/Files/FileToolController.swift"
         )

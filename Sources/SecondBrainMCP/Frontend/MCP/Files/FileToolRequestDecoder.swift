@@ -54,6 +54,9 @@ enum FileToolRequestDecoder {
     private static func decodeCreate(
         _ arguments: FileToolArguments
     ) throws -> CreateFileRequest {
+        try arguments.requireOnly([
+            .format, .path, .content, .source, .tags, .transform,
+        ])
         let (format, path) = try identity(from: arguments)
         let transform: FileCreateTransform?
         if let value = try arguments.string(.transform) {
@@ -65,7 +68,6 @@ enum FileToolRequestDecoder {
             transform = nil
         }
         return CreateFileRequest(
-            mutationID: try mutationID(from: arguments),
             format: format,
             path: path,
             content: try arguments.string(.content),
@@ -78,20 +80,21 @@ enum FileToolRequestDecoder {
     private static func decodeRead(
         _ arguments: FileToolArguments
     ) throws -> ReadFileRequest {
+        try arguments.requireOnly([
+            .format, .path, .tailLines, .startLine, .maxLines,
+            .page, .pages, .pageRange,
+        ])
         let (format, path) = try identity(from: arguments)
         return ReadFileRequest(
             format: format,
             path: path,
             options: ReadFileOptions(
-                raw: try arguments.boolean(.raw) ?? false,
                 tailLines: try arguments.integer(.tailLines),
                 startLine: try arguments.integer(.startLine),
                 maxLines: try arguments.integer(.maxLines),
                 page: try arguments.integer(.page),
-                bookPage: try arguments.string(.bookPage),
-                pageRange: try arguments.string(.pageRange),
-                query: try arguments.string(.query),
-                maxPages: try arguments.integer(.maxPages)
+                pages: try integerArray(.pages, from: arguments),
+                pageRange: try arguments.string(.pageRange)
             )
         )
     }
@@ -99,8 +102,11 @@ enum FileToolRequestDecoder {
     private static func decodeUpdate(
         _ arguments: FileToolArguments
     ) throws -> UpdateFileRequest {
+        try arguments.requireOnly([
+            .format, .path, .expectedRevision, .mode, .content, .replacements,
+        ])
         let (format, path) = try identity(from: arguments)
-        let modeString = try arguments.string(.mode) ?? "replace"
+        let modeString = try arguments.requiredString(.mode)
         guard let mode = FileUpdateMode(rawValue: modeString) else {
             throw DecodingError.invalid("Invalid update mode: \(modeString)")
         }
@@ -121,7 +127,6 @@ enum FileToolRequestDecoder {
             }
         }
         return UpdateFileRequest(
-            mutationID: try mutationID(from: arguments),
             expectedRevision: try expectedRevision(from: arguments),
             format: format,
             path: path,
@@ -134,26 +139,31 @@ enum FileToolRequestDecoder {
     private static func decodeDelete(
         _ arguments: FileToolArguments
     ) throws -> DeleteFileRequest {
+        try arguments.requireOnly([
+            .format, .path, .expectedRevision,
+        ])
         let (format, path) = try identity(from: arguments)
         return DeleteFileRequest(
-            mutationID: try mutationID(from: arguments),
             expectedRevision: try expectedRevision(from: arguments),
             format: format,
             path: path
         )
     }
 
-    /// Decodes the required UUID used to make one mutation safely replayable.
-    private static func mutationID(
+    /// Decodes an optional array without accepting malformed elements.
+    private static func integerArray(
+        _ argument: FileToolArgument,
         from arguments: FileToolArguments
-    ) throws -> MutationID {
-        let value = try arguments.requiredString(.mutationID)
-        guard let identifier = MutationID(rawValue: value) else {
-            throw DecodingError.invalid(
-                "Invalid mutation_id: expected a UUID"
-            )
+    ) throws -> [Int]? {
+        guard let values = try arguments.array(argument) else { return nil }
+        return try values.enumerated().map { index, value in
+            guard let integer = value.intValue else {
+                throw DecodingError.invalid(
+                    "Invalid parameter '\(argument.rawValue)' at index \(index): expected integer"
+                )
+            }
+            return integer
         }
-        return identifier
     }
 
     /// Decodes the exact-byte revision required by update and delete.

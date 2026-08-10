@@ -9,15 +9,10 @@ enum DirectoryMoveToolDefinition {
         guard !readOnly else { return nil }
         return Tool(
             name: name,
-            description: "Atomically move or rename one complete directory subtree under notes/ in a single operation. Every nested file and subdirectory is preserved without reading or rewriting its content. destination_path is the exact new directory path and must not already exist. The move is committed to Git once and is immediately visible to search_vault under the new path_prefix. mutation_id is a caller-generated UUID; reuse it only to retry this exact move after a timeout.",
+            description: "Atomically move or rename one complete directory subtree under notes/ in a single operation. This structural operation does not take a file format: nested files and directories are preserved without reading or rewriting content. The source and destination must differ after case and Unicode normalization, and destination_path must not exist. Hidden and package subtrees are rejected. Empty directories move on disk but cannot be represented in Git. The completed files are discoverable by search_vault at their destination paths.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "mutation_id": .object([
-                        "type": .string("string"),
-                        "format": .string("uuid"),
-                        "description": .string("Caller-generated UUID used only for exact retry of this move")
-                    ]),
                     "source_path": pathSchema(
                         "Existing directory under notes/, for example notes/in-progress/ticket-123"
                     ),
@@ -26,7 +21,6 @@ enum DirectoryMoveToolDefinition {
                     )
                 ]),
                 "required": .array([
-                    .string("mutation_id"),
                     .string("source_path"),
                     .string("destination_path")
                 ]),
@@ -35,29 +29,18 @@ enum DirectoryMoveToolDefinition {
             annotations: .init(
                 readOnlyHint: false,
                 destructiveHint: true,
-                idempotentHint: true,
+                idempotentHint: false,
                 openWorldHint: false
             ),
             outputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "source_path": .object(["type": .string("string")]),
-                    "destination_path": .object(["type": .string("string")]),
-                    "path": .object(["type": .string("string")]),
-                    "area": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("notes")])
-                    ]),
-                    "mutation_id": .object(["type": .string("string")]),
-                    "replayed": .object(["type": .string("boolean")])
+                    "destination_path": .object(["type": .string("string")])
                 ]),
                 "required": .array([
                     .string("source_path"),
-                    .string("destination_path"),
-                    .string("path"),
-                    .string("area"),
-                    .string("mutation_id"),
-                    .string("replayed")
+                    .string("destination_path")
                 ]),
                 "additionalProperties": .bool(false)
             ])

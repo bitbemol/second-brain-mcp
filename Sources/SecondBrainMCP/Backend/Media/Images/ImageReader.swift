@@ -39,17 +39,38 @@ struct ImageReader: Sendable {
     ///   ``FileRoutingError/contentMismatch(path:declared:detected:)``, or an
     ///   encoder error when image metadata or pixels cannot be decoded.
     func read(target: ReadableFileTarget) throws -> ImageReadResult {
-        // 1. File-kind and size guards, before opening anything.
-        let metadata = try VaultFileInspector.inspect(target)
+        let opened = try VaultFileInspector.snapshot(
+            target,
+            maximumBytes: limits.maxFileBytes
+        )
+        return try read(
+            target: target,
+            snapshot: FileSnapshot(
+                data: opened.data,
+                modifiedDate: opened.metadata.modificationDate
+            )
+        )
+    }
+
+    /// Reads transport content exclusively from the immutable service snapshot.
+    func read(
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) throws -> ImageReadResult {
+        // 1. Size guard before passing captured bytes to a decoder.
         try FileResourcePolicy.validate(
-            bytes: metadata.byteCount,
+            bytes: snapshot.data.count,
             format: target.format,
             path: target.relativePath,
             maximumBytes: limits.maxFileBytes
         )
-        let bytes = metadata.byteCount
-
-        let url = target.url
+        let temporary = try VaultFileInspector.temporarySnapshot(
+            snapshot,
+            target: target
+        )
+        defer { temporary.remove() }
+        let bytes = snapshot.data.count
+        let url = temporary.url
 
         // 2. Inspect dimensions WITHOUT decoding pixels (decode-bomb guard).
         let info = try encoder.inspect(
@@ -80,14 +101,9 @@ struct ImageReader: Sendable {
         let frames: [ImageReadFrame]
         switch plan.encoding {
         case .sourceBytes(let mimeType):
-            let data = try BoundedFileReader.read(
-                from: url,
-                maximumBytes: limits.maxFileBytes,
-                path: target.relativePath
-            )
             frames = plan.selections.map { selection in
                 ImageReadFrame(
-                    data: data,
+                    data: snapshot.data,
                     mimeType: mimeType,
                     sourceIndex: selection.sourceIndex,
                     timeOffsetSeconds: selection.timeOffsetSeconds

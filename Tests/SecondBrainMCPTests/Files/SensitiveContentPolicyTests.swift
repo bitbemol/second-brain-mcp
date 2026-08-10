@@ -1,11 +1,11 @@
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Sensitive content policy")
-struct SensitiveContentPolicyTests {
-    @Test("High-confidence credential forms are rejected without disclosure")
-    func rejectsCredentialsWithoutEchoingThem() throws {
+@Suite
+struct `Sensitive content policy` {
+    @Test
+    func `High-confidence credential forms are rejected without disclosure`() throws {
         let credentials = [
             "Authorization: Bearer " + String(repeating: "a", count: 32),
             "Authorization: Basic " + String(repeating: "b", count: 28),
@@ -44,8 +44,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Explicit placeholders and ordinary prose remain writable")
-    func permitsPlaceholders() throws {
+    @Test
+    func `Explicit placeholders and ordinary prose remain writable`() throws {
         let safe = """
         Authorization: Bearer <YOUR_TOKEN>
         access_token=${ACCESS_TOKEN}
@@ -64,8 +64,8 @@ struct SensitiveContentPolicyTests {
         )
     }
 
-    @Test("Uppercase symbolic credential identifiers remain writable")
-    func permitsSymbolicCredentialIdentifiers() throws {
+    @Test
+    func `Uppercase symbolic credential identifiers remain writable`() throws {
         let safe = [
             "Bearer ACTUAL_LITELLM_API_KEY",
             "Authorization: Bearer LITELLM_ACCESS_TOKEN",
@@ -84,8 +84,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Symbolic exemption does not admit opaque or malformed credentials")
-    func rejectsValuesThatOnlyResembleSymbolicIdentifiers() {
+    @Test
+    func `Symbolic exemption does not admit opaque or malformed credentials`() {
         let unsafe = [
             // Case must be exact: mixed-case values can be real credentials.
             "Bearer Actual_LITELLM_API_KEY",
@@ -113,8 +113,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Known provider credentials cannot use the symbolic exemption")
-    func rejectsProviderCredentialsNearSymbolicIdentifiers() {
+    @Test
+    func `Known provider credentials cannot use the symbolic exemption`() {
         let unsafe = [
             "Bearer sk-proj-" + String(repeating: "A", count: 24),
             "Bearer github_pat_" + String(repeating: "B", count: 24),
@@ -132,8 +132,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Placeholders must occupy the complete credential value")
-    func rejectsPlaceholderPrefixesAndMixedCookies() {
+    @Test
+    func `Placeholders must occupy the complete credential value`() {
         let unsafe = [
             "api_key=exampleRealProductionToken12345",
             "Cookie: first=example_token_value; session="
@@ -150,8 +150,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("JSON Unicode escapes cannot hide keys or credential values")
-    func rejectsEscapedJSONCredentials() {
+    @Test
+    func `JSON Unicode escapes cannot hide keys or credential values`() {
         let secret = String(repeating: "s", count: 32)
         let escapedSecret = secret.unicodeScalars.map {
             String(format: "\\u%04X", $0.value)
@@ -174,8 +174,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Quoted JSON cookie members receive pair-wise scanning")
-    func rejectsJSONCookieCredentials() {
+    @Test
+    func `Quoted JSON cookie members receive pair-wise scanning`() {
         let secret = String(repeating: "c", count: 32)
         let document = #"{"Cookie":"placeholder=example_token_value; session="#
             + secret + #"","safe":true}"#
@@ -189,8 +189,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Invalid UTF-8 fails closed at the central text boundary")
-    func rejectsInvalidUTF8() {
+    @Test
+    func `Invalid UTF-8 fails closed at the central text boundary`() {
         #expect(throws: TextFileSupport.TextError.self) {
             try SensitiveContentPolicy.validate(
                 Data([0xff, 0xfe]),
@@ -200,8 +200,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("All Git-tracked textual formats share the same rejection boundary")
-    func coversEveryTextFormat() {
+    @Test
+    func `All Git-tracked textual formats share the same rejection boundary`() {
         let credential = Data(
             ("Bearer " + String(repeating: "k", count: 32)).utf8
         )
@@ -218,8 +218,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Line diagnostics treat CRLF and CR as logical delimiters")
-    func logicalLineNumbers() throws {
+    @Test
+    func `Line diagnostics treat CRLF and CR as logical delimiters`() throws {
         let credential = "Bearer " + String(repeating: "m", count: 32)
         for separator in ["\r\n", "\r", "\n"] {
             do {
@@ -235,8 +235,8 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Binary formats are not interpreted as credential-bearing text")
-    func ignoresBinaryFormats() throws {
+    @Test
+    func `Binary formats are not interpreted as credential-bearing text`() throws {
         let apparentSecret = Data(
             ("Bearer " + String(repeating: "z", count: 32)).utf8
         )
@@ -247,8 +247,8 @@ struct SensitiveContentPolicyTests {
         )
     }
 
-    @Test("Text size limits run before credential scanning")
-    func sizePrecedesScanning() {
+    @Test
+    func `Text size limits run before credential scanning`() {
         let prefix = "Bearer " + String(repeating: "z", count: 32)
         let oversized = prefix + String(
             repeating: " ",
@@ -263,11 +263,11 @@ struct SensitiveContentPolicyTests {
         }
     }
 
-    @Test("Mutation text is bounded before fingerprinting and format parsing")
-    func mutationRequestPreflight() throws {
+    @Test
+    func `Mutation text is bounded before fingerprinting and format parsing`() throws {
         let limit = FileFormat.markdown.maximumFileBytes
         try FileMutationResourcePreflight.validate(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: "notes/near-limit.md",
             content: String(repeating: "a", count: limit),
@@ -278,7 +278,7 @@ struct SensitiveContentPolicyTests {
 
         let largeReplacement = String(repeating: "b", count: 8 * 1024 * 1024)
         try FileMutationResourcePreflight.validate(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: FileSnapshot(
                 data: Data(),
                 modifiedDate: nil
@@ -295,7 +295,7 @@ struct SensitiveContentPolicyTests {
 
         #expect(throws: FileResourcePolicy.Violation.self) {
             try FileMutationResourcePreflight.validate(UpdateFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: FileSnapshot(
                     data: Data(),
                     modifiedDate: nil
@@ -319,7 +319,7 @@ struct SensitiveContentPolicyTests {
 
         #expect(throws: FileMutationResourcePreflight.Violation.self) {
             try FileMutationResourcePreflight.validate(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .markdown,
                 path: "notes/tags.md",
                 content: "safe",
@@ -333,7 +333,7 @@ struct SensitiveContentPolicyTests {
         }
         #expect(throws: FileMutationResourcePreflight.Violation.self) {
             try FileMutationResourcePreflight.validate(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .png,
                 path: "notes/image.png",
                 content: nil,

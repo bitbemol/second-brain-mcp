@@ -12,10 +12,6 @@ enum FileToolOutputField: String, Sendable {
     case area
     /// Exact stored-byte revision when a file survives the operation.
     case revision
-    /// Caller-generated identity associated with a mutation result.
-    case mutationID = "mutation_id"
-    /// Whether a durable receipt supplied the completed result.
-    case replayed
 }
 
 extension Dictionary where Key == String, Value == MCP.Value {

@@ -3,16 +3,13 @@ import MCP
 /// Strict MCP adapter for the standalone directory-move mutation.
 struct DirectoryMoveToolController: Sendable {
     private let readOnly: Bool
-    private let rejections: any FileRequestRejectionReporting
     private let directories: any DirectoryMoveService
 
     init(
         readOnly: Bool,
-        rejections: any FileRequestRejectionReporting,
         directories: any DirectoryMoveService
     ) {
         self.readOnly = readOnly
-        self.rejections = rejections
         self.directories = directories
     }
 
@@ -22,13 +19,7 @@ struct DirectoryMoveToolController: Sendable {
             return FileToolResultMapper.failure("Unknown tool: \(params.name)")
         }
         let values = params.arguments ?? [:]
-        let sourcePath = values["source_path"]?.stringValue
         if readOnly {
-            await rejections.record(FileRequestRejection(
-                operation: .move,
-                path: sourcePath,
-                reason: .readOnly
-            ))
             try Task.checkCancellation()
             return FileToolResultMapper.failure(
                 "Server is running in read-only mode; 'move_directory' is not permitted."
@@ -44,7 +35,7 @@ struct DirectoryMoveToolController: Sendable {
         do {
             let output = try await directories.move(request)
             try Task.checkCancellation()
-            return FileToolResultMapper.success(output)
+            return FileToolResultMapper.directoryMoveSuccess(output)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -61,16 +52,11 @@ struct DirectoryMoveToolController: Sendable {
     }
 
     private static func decode(_ values: [String: Value]) throws -> MoveDirectoryRequest {
-        let allowed: Set<String> = ["mutation_id", "source_path", "destination_path"]
+        let allowed: Set<String> = ["source_path", "destination_path"]
         guard values.keys.allSatisfy(allowed.contains) else {
             throw DecodingError.invalid("Directory move contains an unknown parameter")
         }
-        let mutation = try requiredString("mutation_id", values: values)
-        guard let mutationID = MutationID(rawValue: mutation) else {
-            throw DecodingError.invalid("Invalid mutation_id: expected a UUID")
-        }
         return MoveDirectoryRequest(
-            mutationID: mutationID,
             sourcePath: try requiredString("source_path", values: values),
             destinationPath: try requiredString("destination_path", values: values)
         )

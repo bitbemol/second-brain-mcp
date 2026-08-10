@@ -1,11 +1,11 @@
 import Testing
 import Foundation
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
 // MARK: - Happy Path
 
-@Suite("PathValidator — Happy Path")
-struct PathValidatorHappyPathTests {
+@Suite
+struct `PathValidator — Happy Path` {
 
     let root: String
 
@@ -22,21 +22,21 @@ struct PathValidatorHappyPathTests {
         fm.createFile(atPath: root + "/references/book.pdf", contents: nil)
     }
 
-    @Test("Simple relative path resolves correctly")
-    func simpleRelativePath() throws {
+    @Test
+    func `Simple relative path resolves correctly`() throws {
         let resolved = try PathValidator.resolve(relativePath: "notes/hello.md", root: root)
         #expect(resolved.hasSuffix("/notes/hello.md"))
         #expect(resolved.hasPrefix(root))
     }
 
-    @Test("Nested relative path resolves correctly")
-    func nestedRelativePath() throws {
+    @Test
+    func `Nested relative path resolves correctly`() throws {
         let resolved = try PathValidator.resolve(relativePath: "notes/projects/app.md", root: root)
         #expect(resolved.hasSuffix("/notes/projects/app.md"))
     }
 
-    @Test("Path with allowed extension passes")
-    func allowedExtension() throws {
+    @Test
+    func `Path with allowed extension passes`() throws {
         let resolved = try PathValidator.resolve(
             relativePath: "notes/hello.md",
             root: root,
@@ -45,8 +45,8 @@ struct PathValidatorHappyPathTests {
         #expect(resolved.hasSuffix("/notes/hello.md"))
     }
 
-    @Test("PDF extension passes when allowed")
-    func pdfExtension() throws {
+    @Test
+    func `PDF extension passes when allowed`() throws {
         let resolved = try PathValidator.resolve(
             relativePath: "references/book.pdf",
             root: root,
@@ -55,8 +55,8 @@ struct PathValidatorHappyPathTests {
         #expect(resolved.hasSuffix("/references/book.pdf"))
     }
 
-    @Test("No extension filter means all extensions pass")
-    func noExtensionFilter() throws {
+    @Test
+    func `No extension filter means all extensions pass`() throws {
         let resolved = try PathValidator.resolve(relativePath: "notes/hello.md", root: root)
         #expect(resolved.hasSuffix("/notes/hello.md"))
     }
@@ -64,8 +64,8 @@ struct PathValidatorHappyPathTests {
 
 // MARK: - Traversal Attacks
 
-@Suite("PathValidator — Traversal Attacks")
-struct PathValidatorTraversalTests {
+@Suite
+struct `PathValidator — Traversal Attacks` {
 
     let root: String
 
@@ -75,51 +75,51 @@ struct PathValidatorTraversalTests {
         try FileManager.default.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
     }
 
-    @Test("Basic parent traversal is rejected")
-    func basicTraversal() {
+    @Test
+    func `Basic parent traversal is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "../etc/passwd", root: root)
         }
     }
 
-    @Test("Deep traversal is rejected")
-    func deepTraversal() {
+    @Test
+    func `Deep traversal is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "../../../../../../etc/passwd", root: root)
         }
     }
 
-    @Test("Traversal hidden in subdirectory is rejected")
-    func hiddenTraversal() {
+    @Test
+    func `Traversal hidden in subdirectory is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/../../etc/passwd", root: root)
         }
     }
 
-    @Test("Traversal at end of path is rejected")
-    func trailingTraversal() {
+    @Test
+    func `Traversal at end of path is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/..", root: root)
         }
     }
 
-    @Test("URL-encoded traversal is rejected (%2e%2e%2f)")
-    func urlEncodedTraversal() {
+    @Test
+    func `URL-encoded traversal is rejected (%2e%2e%2f)`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "%2e%2e%2fetc/passwd", root: root)
         }
     }
 
-    @Test("Double URL-encoded traversal is rejected (%252e%252e)")
-    func doubleEncodedTraversal() {
+    @Test
+    func `Double URL-encoded traversal is rejected (%252e%252e)`() {
         // The first pass produces %2e%2e; the second exposes the parent component.
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "%252e%252e/etc/passwd", root: root)
         }
     }
 
-    @Test("Mixed traversal with valid prefix is rejected")
-    func mixedTraversal() {
+    @Test
+    func `Mixed traversal with valid prefix is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "notes/projects/../../..", root: root)
         }
@@ -128,8 +128,8 @@ struct PathValidatorTraversalTests {
 
 // MARK: - Symlink Attacks
 
-@Suite("PathValidator — Symlink Attacks")
-struct PathValidatorSymlinkTests {
+@Suite
+struct `PathValidator — Symlink Attacks` {
 
     let root: String
 
@@ -139,8 +139,8 @@ struct PathValidatorSymlinkTests {
         try fm.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
     }
 
-    @Test("Symlink pointing outside vault is rejected")
-    func symlinkEscape() throws {
+    @Test
+    func `Symlink pointing outside vault is rejected`() throws {
         let fm = FileManager.default
         let symlinkPath = root + "/notes/evil-link"
 
@@ -152,8 +152,8 @@ struct PathValidatorSymlinkTests {
         }
     }
 
-    @Test("Symlink pointing within vault is allowed")
-    func symlinkWithinVault() throws {
+    @Test
+    func `Symlink pointing within vault is allowed`() throws {
         let fm = FileManager.default
         // Create target
         try fm.createDirectory(atPath: root + "/notes/real-dir", withIntermediateDirectories: true)
@@ -170,8 +170,8 @@ struct PathValidatorSymlinkTests {
 
 // MARK: - Edge Cases
 
-@Suite("PathValidator — Edge Cases")
-struct PathValidatorEdgeCaseTests {
+@Suite
+struct `PathValidator — Edge Cases` {
 
     let root: String
 
@@ -181,22 +181,22 @@ struct PathValidatorEdgeCaseTests {
         try FileManager.default.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
     }
 
-    @Test("Empty path is rejected")
-    func emptyPath() {
+    @Test
+    func `Empty path is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "", root: root)
         }
     }
 
-    @Test("Absolute path is rejected")
-    func absolutePath() {
+    @Test
+    func `Absolute path is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(relativePath: "/etc/passwd", root: root)
         }
     }
 
-    @Test("Disallowed extension is rejected")
-    func disallowedExtension() {
+    @Test
+    func `Disallowed extension is rejected`() {
         #expect(throws: PathValidationError.self) {
             try PathValidator.resolve(
                 relativePath: "notes/secrets.env",
@@ -206,21 +206,21 @@ struct PathValidatorEdgeCaseTests {
         }
     }
 
-    @Test("Path with double slashes resolves safely")
-    func doubleSlashes() throws {
+    @Test
+    func `Path with double slashes resolves safely`() throws {
         FileManager.default.createFile(atPath: root + "/notes/test.md", contents: nil)
         let resolved = try PathValidator.resolve(relativePath: "notes//test.md", root: root)
         #expect(resolved.hasPrefix(root))
     }
 
-    @Test("Path with trailing slash resolves safely")
-    func trailingSlash() throws {
+    @Test
+    func `Path with trailing slash resolves safely`() throws {
         let resolved = try PathValidator.resolve(relativePath: "notes/", root: root)
         #expect(resolved.hasPrefix(root))
     }
 
-    @Test("Root prefix attack is prevented (vault-evil vs vault)")
-    func rootPrefixAttack() throws {
+    @Test
+    func `Root prefix attack is prevented (vault-evil vs vault)`() throws {
         let fm = FileManager.default
         // Create a sibling directory that shares the root prefix
         let evilRoot = root + "-evil"
@@ -236,8 +236,8 @@ struct PathValidatorEdgeCaseTests {
         }
     }
 
-    @Test("Path with spaces resolves correctly")
-    func pathWithSpaces() throws {
+    @Test
+    func `Path with spaces resolves correctly`() throws {
         let fm = FileManager.default
         try fm.createDirectory(atPath: root + "/notes/my folder", withIntermediateDirectories: true)
         fm.createFile(atPath: root + "/notes/my folder/my note.md", contents: nil)
@@ -247,8 +247,8 @@ struct PathValidatorEdgeCaseTests {
         #expect(resolved.hasPrefix(root))
     }
 
-    @Test("Case sensitivity is preserved")
-    func caseSensitivity() throws {
+    @Test
+    func `Case sensitivity is preserved`() throws {
         let fm = FileManager.default
         fm.createFile(atPath: root + "/notes/README.md", contents: nil)
 
@@ -256,8 +256,8 @@ struct PathValidatorEdgeCaseTests {
         #expect(resolved.hasSuffix("/notes/README.md"))
     }
 
-    @Test("Single dot path component is handled")
-    func singleDotPath() throws {
+    @Test
+    func `Single dot path component is handled`() throws {
         FileManager.default.createFile(atPath: root + "/notes/test.md", contents: nil)
         let resolved = try PathValidator.resolve(relativePath: "./notes/test.md", root: root)
         #expect(resolved.hasPrefix(root))

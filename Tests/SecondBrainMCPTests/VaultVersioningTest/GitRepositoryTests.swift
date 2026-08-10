@@ -1,0 +1,291 @@
+import Foundation
+import Testing
+@testable import second_brain_mcp
+
+/// Integration coverage for the intentionally small vault-snapshot contract.
+@Suite
+struct `GitRepository snapshots` {
+    /// Verifies that a brand-new vault with no `notes/` path is a successful
+    /// no-op rather than Git's unmatched-pathspec failure.
+    @Test
+    func `an empty vault is already a valid snapshot`() async throws {
+        let vault = try makeVault(createNotesDirectory: false)
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let repository = try makeRepository(for: vault)
+
+        try await repository.recordSnapshot()
+        try await repository.recordSnapshot()
+
+        #expect(
+            FileManager.default.fileExists(
+                atPath: vault.root
+                    .appendingPathComponent(".git")
+                    .path(percentEncoded: false)
+            )
+        )
+    }
+
+    /// Verifies that snapshots are restricted to notes and that a clean request
+    /// does not manufacture an additional commit.
+    @Test
+    func `snapshots notes and treats an unchanged vault as success`() async throws {
+        let vault = try makeVault()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let repository = try makeRepository(for: vault)
+
+        try Data("remember this".utf8).write(
+            to: vault.notes.appendingPathComponent("memory.md"),
+            options: .atomic
+        )
+        try Data("not a note".utf8).write(
+            to: vault.root.appendingPathComponent("outside.txt"),
+            options: .atomic
+        )
+
+        try await repository.recordSnapshot()
+        let initialCommitCount = try runGit(
+            ["rev-list", "--count", "HEAD"],
+            in: vault.root
+        )
+
+        try await repository.recordSnapshot()
+
+        #expect(initialCommitCount == "1")
+        #expect(
+            try runGit(["rev-list", "--count", "HEAD"], in: vault.root) == "1"
+        )
+        #expect(
+            try runGit(["ls-files"], in: vault.root) == "notes/memory.md"
+        )
+    }
+
+    /// Proves a snapshot commits only `notes/`, even when another Git client has
+    /// already staged reference content in the repository's real index.
+    @Test
+    func `a snapshot leaves staged reference content out of history`() async throws {
+        let vault = try makeVault()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let repository = try makeRepository(for: vault)
+        let firstNote = vault.notes.appendingPathComponent("first.md")
+
+        try Data("first version".utf8).write(to: firstNote, options: .atomic)
+        try await repository.recordSnapshot()
+
+        let references = vault.root.appendingPathComponent("references")
+        try FileManager.default.createDirectory(
+            at: references,
+            withIntermediateDirectories: true
+        )
+        try Data("large reference placeholder".utf8).write(
+            to: references.appendingPathComponent("book.pdf"),
+            options: .atomic
+        )
+        _ = try runGit(["add", "--", "references/book.pdf"], in: vault.root)
+
+        try Data("second version".utf8).write(to: firstNote, options: .atomic)
+        try await repository.recordSnapshot()
+
+        #expect(
+            try runGit(
+                ["show", "--pretty=", "--name-only", "HEAD"],
+                in: vault.root
+            ) == "notes/first.md"
+        )
+        #expect(
+            try runGit(
+                ["diff", "--cached", "--name-only", "--", "references"],
+                in: vault.root
+            ) == "references/book.pdf"
+        )
+        #expect(
+            try runGit(
+                ["ls-tree", "-r", "--name-only", "HEAD", "--", "references"],
+                in: vault.root
+            ).isEmpty
+        )
+    }
+
+    /// Exercises separate runtime boundaries sharing the same advisory lock.
+    @Test
+    func `concurrent mutation chains share one reliable Git transaction`() async throws {
+        let vault = try makeVault()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let agentCount = 16
+        let lockURL = vault.root.appendingPathComponent(".vault-access.lock")
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for agent in 0..<agentCount {
+                group.addTask {
+                    let repository = try makeRepository(for: vault)
+                    let access = VaultAccessCoordinator(lockURL: lockURL)
+                    try await access.withMutation {
+                        try Data("agent \(agent)".utf8).write(
+                            to: vault.notes.appendingPathComponent("note-\(agent).md"),
+                            options: .atomic
+                        )
+                        try await repository.recordSnapshot()
+                    }
+                }
+            }
+
+            try await group.waitForAll()
+        }
+
+        let trackedNotes = try runGit(
+            ["ls-files", "--", "notes"],
+            in: vault.root
+        ).split(separator: "\n")
+
+        #expect(trackedNotes.count == agentCount)
+        #expect(
+            try runGit(
+                ["status", "--porcelain", "--", "notes"],
+                in: vault.root
+            ).isEmpty
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: vault.root
+                    .appendingPathComponent(".git/index.lock")
+                    .path(percentEncoded: false)
+            )
+        )
+    }
+
+    /// When two runtimes see the same pending bytes, their shared mutation lease
+    /// permits one coalesced snapshot and one clean no-op.
+    @Test
+    func `two runtimes can share one coalesced vault snapshot`() async throws {
+        let vault = try makeVault()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let firstAgent = try makeRepository(for: vault)
+        let secondAgent = try makeRepository(for: vault)
+        let lockURL = vault.root.appendingPathComponent(".vault-access.lock")
+        let firstAccess = VaultAccessCoordinator(lockURL: lockURL)
+        let secondAccess = VaultAccessCoordinator(lockURL: lockURL)
+
+        try Data("first agent".utf8).write(
+            to: vault.notes.appendingPathComponent("first.md"),
+            options: .atomic
+        )
+        try Data("second agent".utf8).write(
+            to: vault.notes.appendingPathComponent("second.md"),
+            options: .atomic
+        )
+
+        async let firstSnapshot: Void = firstAccess.withMutation {
+            try await firstAgent.recordSnapshot()
+        }
+        async let secondSnapshot: Void = secondAccess.withMutation {
+            try await secondAgent.recordSnapshot()
+        }
+        _ = try await (firstSnapshot, secondSnapshot)
+
+        let committedNotes = try runGit(
+            ["show", "--pretty=", "--name-only", "HEAD", "--", "notes"],
+            in: vault.root
+        ).split(separator: "\n").map(String.init)
+
+        #expect(Set(committedNotes) == ["notes/first.md", "notes/second.md"])
+        #expect(
+            try runGit(["rev-list", "--count", "HEAD"], in: vault.root) == "1"
+        )
+        #expect(
+            try runGit(
+                ["status", "--porcelain", "--", "notes"],
+                in: vault.root
+            ).isEmpty
+        )
+    }
+
+    /// Verifies that removing the final note is staged even though `notes/` no
+    /// longer exists in the working tree.
+    @Test
+    func `deleting every note is recorded`() async throws {
+        let vault = try makeVault()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        let repository = try makeRepository(for: vault)
+        let note = vault.notes.appendingPathComponent("temporary.md")
+        try Data("temporary".utf8).write(to: note, options: .atomic)
+        try await repository.recordSnapshot()
+
+        try FileManager.default.removeItem(at: vault.notes)
+        try await repository.recordSnapshot()
+
+        #expect(
+            try runGit(["ls-files", "--", "notes"], in: vault.root).isEmpty
+        )
+        #expect(
+            try runGit(["rev-list", "--count", "HEAD"], in: vault.root) == "2"
+        )
+    }
+}
+
+private extension `GitRepository snapshots` {
+    /// Filesystem locations owned by one isolated integration test.
+    struct TestVault: Sendable {
+        let root: URL
+        let notes: URL
+    }
+
+    /// Creates an isolated vault and the parent directory required by its lock.
+    func makeVault(createNotesDirectory: Bool = true) throws -> TestVault {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitRepositoryTests-\(UUID().uuidString)")
+        let notes = root.appendingPathComponent("notes")
+
+        try FileManager.default.createDirectory(
+            at: createNotesDirectory ? notes : root,
+            withIntermediateDirectories: true
+        )
+
+        return TestVault(
+            root: root,
+            notes: notes
+        )
+    }
+
+    /// Constructs an independently isolated Git boundary for this vault.
+    func makeRepository(for vault: TestVault) throws -> GitRepository {
+        try GitRepository(repositoryURL: vault.root)
+    }
+
+    /// Runs a small Git setup or assertion command and returns trimmed output.
+    func runGit(_ arguments: [String], in repository: URL) throws -> String {
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = [
+            "-C",
+            repository.path(percentEncoded: false),
+        ] + arguments
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+
+        try process.run()
+        process.waitUntilExit()
+
+        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        let error = standardError.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            throw TestGitError(
+                arguments: arguments,
+                message: String(decoding: error, as: UTF8.self)
+            )
+        }
+
+        return String(decoding: output, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A compact diagnostic when a read-only Git assertion command fails.
+    struct TestGitError: Error, CustomStringConvertible {
+        let arguments: [String]
+        let message: String
+
+        var description: String {
+            "git \(arguments.joined(separator: " ")) failed: \(message)"
+        }
+    }
+}

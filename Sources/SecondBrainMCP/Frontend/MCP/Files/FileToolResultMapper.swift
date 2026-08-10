@@ -1,14 +1,43 @@
 import Foundation
 import MCP
 
-/// Maps transport-neutral file outputs and errors into MCP tool results.
+/// Maps transport-neutral operation outputs and errors into MCP tool results.
 enum FileToolResultMapper {
-    /// Converts ordered text and image blocks into MCP content.
-    ///
-    /// - Parameter output: Completed transport-neutral file output.
-    /// - Returns: Successful MCP tool result.
+    /// Converts ordered text and image blocks into a successful file-tool result.
     static func success(_ output: FileOperationOutput) -> CallTool.Result {
-        let content: [Tool.Content] = output.contents.map { item in
+        CallTool.Result(
+            content: content(from: output),
+            structuredContent: output.metadata.map(fileStructuredContent)
+        )
+    }
+
+    /// Converts a directory move into its compact structural result.
+    static func directoryMoveSuccess(_ output: FileOperationOutput) -> CallTool.Result {
+        guard let metadata = output.metadata,
+              let sourcePath = metadata.sourcePath else {
+            return failure("Directory move completed without required result metadata")
+        }
+        return CallTool.Result(
+            content: content(from: output),
+            structuredContent: .object([
+                FileToolOutputField.sourcePath.rawValue: .string(sourcePath),
+                FileToolOutputField.destinationPath.rawValue: .string(metadata.path),
+            ])
+        )
+    }
+
+    /// Creates a failed MCP result containing one diagnostic text block.
+    static func failure(_ message: String) -> CallTool.Result {
+        CallTool.Result(
+            content: [.text(text: message, annotations: nil, _meta: nil)],
+            isError: true
+        )
+    }
+
+    private static func content(
+        from output: FileOperationOutput
+    ) -> [Tool.Content] {
+        output.contents.map { item in
             switch item {
             case .text(let text):
                 .text(text: text, annotations: nil, _meta: nil)
@@ -21,41 +50,18 @@ enum FileToolResultMapper {
                 )
             }
         }
-        return CallTool.Result(
-            content: content,
-            structuredContent: output.metadata.map(structuredContent)
-        )
     }
 
-    /// Creates a failed MCP result containing one diagnostic text block.
-    ///
-    /// - Parameter message: User-facing failure description.
-    /// - Returns: Failed MCP tool result.
-    static func failure(_ message: String) -> CallTool.Result {
-        CallTool.Result(
-            content: [.text(text: message, annotations: nil, _meta: nil)],
-            isError: true
-        )
-    }
-
-    /// Converts transport-neutral operation metadata to its stable MCP shape.
-    private static func structuredContent(
+    /// Converts transport-neutral file metadata to its stable MCP shape.
+    private static func fileStructuredContent(
         _ metadata: FileOperationMetadata
     ) -> Value {
         var values: [String: Value] = [
             FileToolOutputField.path.rawValue: .string(metadata.path),
             FileToolOutputField.area.rawValue: .string(metadata.area.rawValue),
-            FileToolOutputField.replayed.rawValue: .bool(metadata.replayed),
         ]
-        if let sourcePath = metadata.sourcePath {
-            values[FileToolOutputField.sourcePath] = .string(sourcePath)
-            values[FileToolOutputField.destinationPath] = .string(metadata.path)
-        }
         if let revision = metadata.revision {
             values[FileToolOutputField.revision] = .string(revision.rawValue)
-        }
-        if let mutationID = metadata.mutationID {
-            values[FileToolOutputField.mutationID] = .string(mutationID.rawValue)
         }
         return .object(values)
     }

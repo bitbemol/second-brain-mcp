@@ -17,7 +17,6 @@ struct ImageFileOperationFamily: Sendable {
         delete: DeleteOperationBinding
     ) {
         self.read = ReadOperationBinding(
-            id: .image,
             allowedAreas: [.notes, .references],
             execute: read
         )
@@ -36,20 +35,19 @@ struct ImageFileOperationFamily: Sendable {
     ///
     /// - Parameters:
     ///   - format: Concrete on-disk image format.
-    ///   - createHandler: Diagnostic identity for the create resolver.
     ///   - create: Persistence-free image or video preparation.
     /// - Returns: An immutable routing definition using the custom create and
     ///   shared read/delete resolvers.
     func definition(
         _ format: FileFormat,
-        createHandler: FileHandlerID,
+        contract: FileCreateContract,
         create: @escaping CreateFileFunction
     ) -> FileFormatDefinition {
         definition(
             format,
             create: CreateOperationBinding(
-                id: createHandler,
                 allowedAreas: [.notes],
+                contract: contract,
                 execute: create
             )
         )

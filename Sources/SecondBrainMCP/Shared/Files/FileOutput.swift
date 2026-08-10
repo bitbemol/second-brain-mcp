@@ -15,7 +15,6 @@ struct FileOperationOutput: Sendable, Codable {
     /// Stable identity and path facts associated with the completed operation.
     let metadata: FileOperationMetadata?
 
-    /// Creates an operation output with optional structured metadata.
     init(
         contents: [VaultFileContent],
         metadata: FileOperationMetadata? = nil
@@ -24,15 +23,10 @@ struct FileOperationOutput: Sendable, Codable {
         self.metadata = metadata
     }
 
-    /// Creates an output containing one text block.
-    ///
-    /// - Parameter text: Text returned to the MCP client.
-    /// - Returns: A single-block operation output.
     static func text(_ text: String) -> FileOperationOutput {
         FileOperationOutput(contents: [.text(text)])
     }
 
-    /// Returns the same content associated with authoritative file metadata.
     func withMetadata(_ metadata: FileOperationMetadata) -> FileOperationOutput {
         FileOperationOutput(contents: contents, metadata: metadata)
     }
@@ -48,36 +42,16 @@ struct FileOperationMetadata: Sendable, Codable {
     let area: VaultArea
     /// Exact stored-byte revision, when a file remains after the operation.
     let revision: FileRevision?
-    /// Mutation identity for create, update, and delete results.
-    let mutationID: MutationID?
-    /// Whether this result was restored from a durable idempotency receipt.
-    let replayed: Bool
 
     init(
         path: String,
         sourcePath: String? = nil,
         area: VaultArea,
-        revision: FileRevision?,
-        mutationID: MutationID?,
-        replayed: Bool
+        revision: FileRevision?
     ) {
         self.path = path
         self.sourcePath = sourcePath
         self.area = area
         self.revision = revision
-        self.mutationID = mutationID
-        self.replayed = replayed
-    }
-
-    /// Returns a copy marked as a replay of an earlier completed mutation.
-    func markingReplayed() -> FileOperationMetadata {
-        FileOperationMetadata(
-            path: path,
-            sourcePath: sourcePath,
-            area: area,
-            revision: revision,
-            mutationID: mutationID,
-            replayed: true
-        )
     }
 }

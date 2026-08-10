@@ -2,7 +2,7 @@
 
 A local MCP server in Swift that gives MCP clients format-aware access to a knowledge vault.
 Files under `notes/` are writable, `references/` is structurally read-only, and every successful
-changed-byte mutation is auto-committed to git. File CRUD is exposed through four generic tools
+changed-byte mutation requests a recoverable snapshot of the notes tree. File CRUD is exposed through four generic tools
 with an explicit concrete `format` argument; `search_vault` is a separate bounded read-only port.
 
 The codebase favors **clear boundaries and structural safety over cleverness**: security is
@@ -20,7 +20,7 @@ resource reference).
 - Swift 6.2 (strict concurrency), macOS 26 (Tahoe), Xcode 26
 - MCP SDK: `modelcontextprotocol/swift-sdk`, pinned `from: "0.12.0"` (see `Package.swift`)
 - Transport: `StdioTransport` (stdin/stdout JSON-RPC)
-- PDF: `PDFKit` (system framework, zero deps) — page→JPEG rendering + text extraction
+- PDF: `PDFKit` + `Vision` (system frameworks, zero deps) — page rendering, text extraction, and OCR
 - Built-in subprocess boundary: `/usr/bin/git` only (see Rule 4)
 
 ## Commands
@@ -54,75 +54,94 @@ Sources/SecondBrainMCP/
 │   ├── Configuration/                # CLI argument parsing
 │   └── MCP/
 │       ├── MCPServerSetup.swift       # Transport lifecycle and handler registration
-│       ├── Files/                     # Generic CRUD adapters + capability resource
-│       └── Search/                    # Ranked search schema, decoder, and mapper
+│       ├── Directories/               # Structural subtree-move adapter
+│       ├── Files/                     # Generic CRUD schemas and adapters
+│       └── Search/                    # Locator-only search schema, decoder, and mapper
 ├── Backend/                          # Internal application behavior
+│   ├── Concurrency/                  # Injected global vault access coordinator
+│   ├── Directories/                  # Atomic subtree move implementation
 │   ├── Files/
 │   │   ├── Ingress/                  # Request-to-bytes policy for stored text
 │   │   ├── Operations/               # Format validation/transformation/read behavior
 │   │   ├── Routing/                  # Bindings, catalog, operation families, service
 │   │   ├── Storage/                  # Generic snapshots, persistence, and soft deletion
 │   │   ├── Targets/                  # Validated readable/writable paths
-│   │   ├── Transactions/             # Mutation, Git, and audit sequencing
+│   │   ├── Transactions/             # Prepared persistence and awaited Git sequencing
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
-│   ├── Search/                       # Safe corpus snapshots, extraction, and ranking
-│   └── …                             # Canvas, references, Git, logging, infrastructure
+│   ├── Search/                       # Atom providers, matching, and cursor pagination
+│   ├── VaultVersioning/              # Sole Git subprocess boundary
+│   └── …                             # Canvas, references, and infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
-    ├── Files/                        # Concrete formats, CRUD contracts, capabilities, output
+    ├── Files/                        # File and directory operation contracts, formats, output
     ├── Search/                       # Search request/result/service contracts
     └── Logging/                      # Process-level stderr logger
 ```
+
+Keep the executable target and product identity aligned as `second-brain-mcp`; Swift exposes that
+target to source as module `second_brain_mcp`, which is what the test target imports. Do not map a
+differently named executable product onto target `SecondBrainMCP`: command-line SwiftPM accepts
+that graph, but Xcode 26 builds the product module as `second_brain_mcp` and then cannot resolve the
+testable `SecondBrainMCP` module.
 
 Search stays outside CRUD:
 
 ```
 search_vault
-  → SearchToolController decodes a Shared search request
-  → VaultSearchEngine validates limits, acquires one shared scan permit, and builds safe snapshots
-  → SearchDocumentExtractor validates/sanitizes bytes and projects sections
-  → SearchTextMatcher applies one exhaustive strategy switch and stable field ranking
+  → SearchToolController decodes a Shared VaultSearchRequest
+  → VaultSearchEngine validates criteria and cursor state
+  → SearchCorpusBuilder enumerates exactly one VaultArea through FileCapabilities
+  → a SearchAtomProvider represents each file as whole-file or page atoms
+  → a SearchMatchingStrategy ranks matches
+  → the frontend returns locators only
 ```
 
-There is deliberately no strategy factory, persistent index, or PDF-wide live scan. Searchable
-formats derive from textual formats with a notes-area read binding. Search holds a shared path
-lease only while capturing each immutable snapshot, then releases it before matching. Results are
-consistent per file, not a fictional whole-vault transaction, and never carry a mutation revision.
-The cancellation-aware scan permit prevents concurrent agents from multiplying corpus memory.
-Markdown line/front-matter/tag projections, source tokens, comparisons, snippets, and the complete
-encoded response all have explicit ceilings. Canvas search uses node values and returns a structured
-node locator rather than matching coordinates or schema keys in raw JSON.
+The Shared boundary is intentionally small: `VaultSearchService`, `VaultSearchRequest`, and the locator-only response. Search never returns snippets or content; callers pass the returned global `FileFormat`, path, and optional PDF page to `read_file`.
+
+Readable textual formats automatically use the whole-file atom provider, so adding a globally registered textual format requires no search-specific enum or capability type. Markdown remains one note atom and reuses the shared frontmatter parser for tags and created dates. PDFs register the only custom production provider: one atom per physical page, with revision-keyed extracted text under the private application-support directory and Vision OCR when embedded text is absent.
+
+Matching and representation are separate protocols, but the public tool exposes no strategy switch. The default literal strategy requires every normalized query term in the same atom, then uses phrase and occurrence strength only for deterministic order. Cursor pagination is request-bound and keyset-based; the cursor also carries a deterministic fingerprint of the searchable atoms. For an unchanged vault it exposes every match by repeating the same request until `next_cursor` is absent. If the corpus changes, continuation fails as stale and the caller restarts instead of risking a skipped atom.
+
 
 The generic file pipeline is:
 
 ```
 MCP request
-  → FileToolController decodes a Shared CRUD request
+  → FileToolController strictly decodes a Shared CRUD request
   → VaultFileService resolves an explicit FileFormat binding + safe target
+  → create: the registered payload contract is enforced before dispatch
   → stored-text ingress validates inline content before its format handler
   → format handler prepares/interprets bytes
-      ├─ read: VaultFileService returns output and records the audit event
-      └─ mutation: VaultMutationExecutor runs VaultCRUDStore → GitRepository → AuditLogger
+      ├─ read: one immutable snapshot supplies both handler bytes and revision
+      └─ mutation: VaultMutationExecutor persists → awaits VaultVersioning.recordSnapshot()
 ```
+
+`move_directory` remains outside file CRUD because it changes one tree boundary over a set of
+file atoms rather than one atom's bytes. Its frontend controller decodes the Shared
+`MoveDirectoryRequest` and calls the Shared `DirectoryMoveService` port; the backend implementation
+owns path policy, subtree validation, the atomic rename, and the awaited snapshot request. The tool
+has no `format` argument and returns only its source and destination paths.
 
 `FileFormat` is concrete storage format only. Semantic roles such as “attachment” or “reference”
 belong to vault area/policy, never in that enum. `FileFormatDefinition` binds each operation
 independently, so multiple formats can share a handler and a format can use a special handler for
 only one operation.
 
-**Concurrency:** note reads use shared per-path leases; note mutations use exclusive per-path leases
-held through persistence, Git, audit, and receipt storage. A fair actor prevents reader barging in one
-runtime, persistent advisory locks coordinate independent processes, and a vault-wide mutation lock
-protects the shared Git index. `read_file` returns an exact-byte revision for notes; update/delete
-must compare that opaque value before changing bytes. References are read-only and remain concurrent.
+**Concurrency:** `VaultRuntime` creates one `VaultAccessCoordinator` and injects it through the
+`VaultAccessCoordinating` protocol. Shared leases allow reads to overlap. A mutation waits for every
+active read, then holds the exclusive lease through validation, preparation, persistence, and Git.
+Writer preference prevents later reads from bypassing a queued mutation. Independent processes use
+shared/exclusive modes on the same advisory lock file. `read_file` captures each file once and gives
+that immutable snapshot to the routed handler; note content and its exact-byte revision therefore
+come from the same bytes. Update/delete must compare that opaque revision before changing bytes.
 
-Every mutation requires a caller-generated `mutation_id`. The executor stores durable receipts so an
-exact retry after a lost response replays the original outcome; reuse with different request bytes is
-rejected. Queued cancellation does no work. After the point of no return, the mutation finishes in a
-cancellation-independent task. After an ordinary process crash, a surviving active marker blocks
-other mutations and permits only conservative exact-request recovery. Sudden machine or storage
-power loss is outside this transaction guarantee: vault bytes, Git refs, and external receipts are
-not one jointly synchronized filesystem transaction.
+Queued cancellation does no work. Cancellation is checked before prepared persistence begins; after
+that point `VaultMutationExecutor` finishes persistence and the required snapshot in a detached task
+before the exclusive lease is released. There is no mutation ID or durable response replay. After a
+lost response, the caller reads the current target state before deciding whether another mutation is
+needed. A snapshot may coalesce pending changes from several agents. Sudden machine or storage power
+loss remains outside the transaction guarantee because vault bytes and Git refs are not one jointly
+synchronized filesystem transaction.
 
 ### Layering & guardrails
 
@@ -143,8 +162,8 @@ by the narrowest layer that needs them.
   generic creates, replaces, and soft deletes go through `VaultCRUDStore`.
 - **Writable targets are structural.** `WritableFileTarget` has no public initializer and can
   only resolve paths under `notes/`; code cannot construct a writable `references/` target.
-- **Internal handler IDs stay internal.** The capability resource exposes concrete formats,
-  extensions, operations, and areas—not implementation identities.
+- **Internal handler IDs stay internal.** The format catalog projects concrete formats, creation
+  inputs, update modes, operations, and areas into the generic CRUD tool schemas—not implementation identities.
 - **No second `Process()` site.** `GitRepository` is the only subprocess boundary;
   image/video/PDF work stays in-process.
 
@@ -184,14 +203,14 @@ general process sandbox.
 `delete_file` moves user content to a collision-proof path under `.trash/`. Never permanently
 remove user content. Removing a temporary file created by the store itself is allowed cleanup.
 
-### 6. Mutation → Git → audit is one transaction responsibility
+### 6. Mutation → versioning is one awaited transaction responsibility
 
-`VaultFileService` validates, prepares, and submits a `VaultMutationPlan`.
-`VaultMutationExecutor` owns serialized persistence, Git commit, audit, and mutation-receipt
-sequencing through its local and cross-process vault-wide locks. `VaultOperationCoordinator` owns
-the shared/exclusive notes-path lease surrounding the complete service operation. Do not persist or
-commit in a format handler or MCP adapter. Git failures are propagated explicitly—even if the
-filesystem mutation already succeeded—rather than swallowed with `try?`.
+`VaultFileService` validates and prepares under the exclusive `VaultAccessCoordinating` lease.
+`VaultMutationExecutor` owns prepared persistence followed by any required versioning request.
+`VaultVersioning` is the only version-control interface, and `GitRepository` owns all Git state.
+Do not persist or invoke Git in a format handler or MCP adapter. The caller's mutation lease must
+remain held through the complete persistence-and-snapshot chain. Snapshot failures are propagated
+explicitly—even if the filesystem mutation already succeeded—rather than swallowed with `try?`.
 
 ## Conventions & design intent
 
@@ -206,7 +225,7 @@ filesystem mutation already succeeded—rather than swallowed with `try?`.
 - **Secrets stop before Git.** Every prepared textual create/update passes the shared high-confidence
   credential policy before persistence. It reports only detector + line, never the matched value.
   HAR is the deliberate transformation exception: known authorization/cookie/token fields are
-  replaced with `[REDACTED]`, the result reports the redaction count, and only sanitized raw JSON is readable.
+  replaced with `[REDACTED]`, the result reports the redaction count, and reads return the complete sanitized JSON atom.
 - **Prepare, then persist.** A special create/update handler returns bytes; it never writes them.
   Generic persistence and git behavior remain identical across formats.
 - **Reuse functions, not manager-shaped dependency bags.** If several formats share behavior,
@@ -219,7 +238,7 @@ filesystem mutation already succeeded—rather than swallowed with `try?`.
 - **Keep files focused.** One cohesive type or family per file; split before a file becomes a
   mixed-responsibility boundary.
 - **Tests use temporary vaults** and never touch user content.
-- **Repo commits use Conventional Commits**; vault commits use `[SecondBrainMCP]`.
+- **Repo commits use Conventional Commits**; vault recovery commits use the stable `Vault snapshot` subject.
 
 ## Adding a file format
 
@@ -227,19 +246,21 @@ filesystem mutation already succeeded—rather than swallowed with `try?`.
    `Shared/Files/FileFormat.swift`.
 2. Add its supported file-size tier to
    `Backend/Files/Validation/FileResourcePolicy.swift`.
-3. Reuse an existing operation function or add a focused handler in
-   `Backend/Files/Operations/`. Handlers validate/prepare/read; they do not persist.
-4. Register a `FileFormatDefinition` in
-   `Backend/Files/Routing/FileFormatCatalogFactory.swift`, binding only supported operations and
-   allowed vault areas.
+3. Reuse the generic stored-text read/update/delete behavior when possible. Add a focused handler in
+   `Backend/Files/Operations/` only for create-time validation/transformation or a genuinely special
+   read such as logs, images, or PDFs. Handlers prepare values; they do not persist.
+4. Handle the new case in the exhaustive `FileFormat` switch in
+   `Backend/Files/Routing/FileFormatCatalogFactory.swift`. Declare its create input contract,
+   validator or special read, supported update modes, and allowed vault areas. Never add a
+   `default`; the compiler must require every format to be wired.
 5. Extend the exact capability-matrix expectation in `VaultFileServiceTests`.
 6. Add focused handler tests plus a routed service test when mutation policy changes.
 7. Run `swift test` and the DocC warnings-as-errors check.
 
-Do not edit four MCP schemas when adding a format. Tool format enums and
-`secondbrain://file-capabilities` derive from the catalog automatically.
-Any textual format with a notes-area read binding also enters the `search_vault` format enum;
-add focused extraction tests if it needs behavior beyond generic validated text.
+Do not edit four MCP schemas when adding a format. Tool format enums, create
+input requirements, and update modes derive from the catalog automatically.
+Any readable textual format is searchable as one whole-file atom. Register a focused
+`SearchAtomProvider` only when a format needs a different atomic representation.
 
 ## Where data lives
 
@@ -248,28 +269,26 @@ add focused extraction tests if it needs behavior beyond generic validated text.
 
 **MCP-internal data lives OUTSIDE the vault** at
 `~/Library/Application Support/SecondBrainMCP/<sha256-of-vault-path>/` — see
-`VaultDataDirectory`. This avoids iCloud conflicts from process-owned data. Writable startup uses
-`LegacyVaultDataMigrator` to preserve an old in-vault audit log and remove known obsolete cache
-entries; read-only startup deliberately performs no vault migration.
+`VaultDataDirectory`. This keeps process-owned locks and derived search data out of user content and Git.
 
 Server logs (stderr) are captured by Claude Desktop at
 `~/Library/Logs/Claude/mcp-server-second-brain.log`.
 
 ## PDF subsystem
 
-- `read_file(format: pdf)` returns **dual content per page**: extracted text (`.text`) + a JPEG render
-  (`.image`). Text is fast and accurate; the image catches diagrams, equations, and scans. Defaults
-  to 5 pages, **hard cap 20**. Render tuning (DPI, JPEG quality, max dimension) lives in
-  `PDFPageRenderer.RenderConfig.default`.
-- Navigation: `page` (physical, 1-indexed), `book_page` (printed label, e.g. "42"/"xii"),
-  `page_range`, or `query` (bounded page-by-page search within that one PDF). Bookmark entries and
-  traversal are both capped; printed-label lookup also scans and releases one page at a time.
-- Cancellation propagates through `FileToolExecutor`; it does not advertise an in-process deadline
-  that structured concurrency cannot enforce around blocking PDFKit work. A hard deadline would
-  require isolating native framework work in a separate worker process.
-- PDF query search runs against the already-open `PDFDocument`, releases each page through an
-  autorelease pool, and stops as soon as the requested result count is reached. There is no
-  background index or cache to synchronize.
+- `read_file(format: pdf)` retrieves physical pages; it never searches or returns document
+  navigation metadata. Every selected page produces exactly one bounded text block and one PNG image.
+- Select one page with `page`, an ordered unique set with `pages`, or an inclusive range with
+  `page_range`. Selectors are mutually exclusive, default to page 1, and may return at most 20 pages.
+- A requested set is all-or-error: invalid, missing, unrenderable, or aggregate-oversized pages are
+  rejected rather than silently omitted. Content queries belong exclusively to `search_vault`.
+- `search_vault(location: references)` represents each PDF page as an atom. It caches page text
+  by exact file revision under `VaultDataDirectory.searchIndexDirectoryURL`, prefers embedded
+  PDFKit text, and uses Vision OCR only when a page has no embedded text.
+- PDF search extraction and direct reads share `PDFReadAdmission`; page work uses autorelease
+  scopes and cooperative cancellation. Direct reads render the immutable service snapshot and use
+  bounded raster dimensions; cached OCR text remains derived search data, never mutation authority.
+
 
 ## Gotchas
 
@@ -280,7 +299,7 @@ Server logs (stderr) are captured by Claude Desktop at
   supported image files under `references/`; writes still cannot.
 - **Canvas writes are lossless on purpose.** `CanvasModel.validate` only *decodes to prove* the JSON is well-formed JSON Canvas (unique node ids, edges reference existing nodes, valid enum/color values) — it is **never re-serialized**. `create_file`/`update_file` with `format: canvas` write the caller's **original bytes**, so plugin-added keys outside the 1.0 spec survive. Don't "round-trip through the model" — that would drop those keys.
 - **General JSON and CSV writes are lossless too.** Their handlers parse only to prove validity and persist the caller's UTF-8 representation unchanged. JSON accepts any valid top-level value and supports replace/exact-patch updates; append is rejected because concatenated JSON values are not one document. CSV supports replace/append/exact-patch updates and validates quoted fields, escaped quotes, embedded line breaks, and consistent column counts after every change.
-- **Canvas validates structure, not external links.** `CanvasModel.validate` rejects dangling **edge→node** references (intra-document structural integrity) but a **file-node→file** reference is an extra-document soft link the spec and Obsidian tolerate — so it's *not* existence-checked on write. `CanvasFileOperations.read` surfaces a broken one as a non-blocking `⚠ file not found`. Don't "fix" this asymmetry by rejecting file-nodes on write — it would reject canvases Obsidian accepts.
+- **Canvas validates structure, not external links.** `CanvasModel.validate` rejects dangling **edge→node** references (intra-document structural integrity), but a **file-node→file** reference is an extra-document soft link the spec and Obsidian tolerate, so it is not existence-checked. Reads return the complete validated Canvas JSON atom without a synthesized summary.
 - **`read_file(format: <image>)` transforms only when it must.** A still within the model's native resolution (long edge ≤ 2576px) whose format the API accepts natively (png/jpeg/gif/webp) is passed through **byte-for-byte** with its own mime type — re-encoding does nothing for readability, the only reason to transform is size. Oversized stills, and formats the API won't accept (heic/tiff/bmp), are re-encoded to PNG. The **decode-bomb guard is `ImageEncoding.inspect`**: it reads dimensions + frame count *without* decoding, and `ImageReader` rejects >50 MP before any read decode. `ImageImporter` applies the same guard before import decoding. Keep that order — inspect, reject, only then decode.
 - **Animated GIFs return a frame *bundle*, not one image.** The model can't perceive GIF motion from a single image, so `ImageReader` samples up to 8 evenly-spaced frames (first + last included; `sampleIndices`), re-encodes each to PNG, and `read_file(format: <image>)` returns them as a time-ordered sequence. A single-frame GIF is a still. `ImageReader.ImageResult.frames` is therefore a list (1 for stills, N for animated GIFs). **Each frame also carries its wall-clock offset** (`Frame.timeOffsetSeconds`), with the total in `ImageResult.totalDurationSeconds` — both nil for stills or a GIF with no delay metadata. The delays come from `ImageInspection.frameDelays` (read in `inspect`, **metadata only — no pixel decode**, so the bomb guard is untouched); `ImageReader.cumulativeTime` does the summing.
 - **`FileFormat.imageExtensions` is the single source of truth** for which image extensions

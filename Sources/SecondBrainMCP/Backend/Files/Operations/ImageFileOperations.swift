@@ -56,8 +56,12 @@ struct ImageFileOperations: Sendable {
     }
 
     /// Reads an image as one native frame or a sampled animated-frame sequence.
-    func read(_ request: ReadFileRequest, target: ReadableFileTarget) throws -> FileOperationOutput {
-        let result = try imageReader.read(target: target)
+    func read(
+        _ request: ReadFileRequest,
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) throws -> FileOperationOutput {
+        let result = try imageReader.read(target: target, snapshot: snapshot)
         var contents: [VaultFileContent] = []
         let size = Self.formatBytes(result.originalBytes)
 

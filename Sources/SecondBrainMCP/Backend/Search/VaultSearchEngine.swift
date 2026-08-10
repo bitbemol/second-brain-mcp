@@ -1,924 +1,227 @@
 import Foundation
 
-/// Bounded implementation of the shared vault-search port.
-///
-/// The engine combines coordinated live note projections with current page
-/// candidates from the derived PDF index, then selects predictable literal
-/// behavior through ``SearchTextMatcher``. Smart prose queries may additionally
-/// use an injected local semantic source when ordinary evidence remains weak.
+/// Small orchestration layer: validate, filter atoms, match, sort, and paginate.
 struct VaultSearchEngine: VaultSearchService, Sendable {
-    enum EngineError: Error, Sendable { case responseLimitTooSmall }
+    private enum Order { case before, same, after }
 
-    private struct FieldMatch: Sendable {
-        let field: SearchField
-        let text: String
-        let match: SearchMatch
-    }
-
-    private struct SemanticFallbackOutcome {
-        let candidates: [RankedSearchResult]
-        let limitations: [String: VaultSearchResourceLimitImpact]
-    }
-
-    /// Remaining relaxed-matching work, shared fairly instead of allowing one
-    /// early evidence file to consume the whole request.
-    private struct WorkLedger {
-        var tokenComparisons: Int
-        var fuzzyComparisons: Int
-        var editDistanceCells: Int
-        var literalOccurrences: Int
-
-        init(limits: SearchResourceLimits) {
-            tokenComparisons = limits.maximumTokenComparisons
-            fuzzyComparisons = limits.maximumFuzzyComparisons
-            editDistanceCells = limits.maximumEditDistanceCells
-            literalOccurrences = limits.maximumLiteralOccurrencesPerRequest
-        }
-
-        func budget(remainingDocuments: Int) -> SearchWorkBudget {
-            let divisor = max(remainingDocuments, 1)
-            return SearchWorkBudget(
-                maximumTokenComparisons: fairShare(tokenComparisons, divisor),
-                maximumFuzzyComparisons: fairShare(fuzzyComparisons, divisor),
-                maximumEditDistanceCells: fairShare(editDistanceCells, divisor),
-                maximumLiteralOccurrences: fairShare(literalOccurrences, divisor)
-            )
-        }
-
-        mutating func deduct(_ budget: SearchWorkBudget) {
-            tokenComparisons = max(
-                tokenComparisons - min(
-                    budget.tokenComparisons,
-                    budget.maximumTokenComparisons
-                ),
-                0
-            )
-            fuzzyComparisons = max(
-                fuzzyComparisons - min(
-                    budget.fuzzyComparisons,
-                    budget.maximumFuzzyComparisons
-                ),
-                0
-            )
-            editDistanceCells = max(
-                editDistanceCells - min(
-                    budget.editDistanceCells,
-                    budget.maximumEditDistanceCells
-                ),
-                0
-            )
-            literalOccurrences = max(
-                literalOccurrences - min(
-                    budget.literalOccurrences,
-                    budget.maximumLiteralOccurrences
-                ),
-                0
-            )
-        }
-
-        private func fairShare(_ remaining: Int, _ divisor: Int) -> Int {
-            guard remaining > 0 else { return 0 }
-            return max(remaining / divisor, 1)
-        }
-    }
-
-    private let vaultPath: String
-    private let capabilities: SearchCapabilities
-    private let corpusBuilder: SearchCorpusBuilder
-    private let limits: SearchResourceLimits
-    private let admissionGate: AsyncExclusiveGate
-    private let processSearchLock: POSIXAdvisoryFileLock?
-    private let semanticEmbedding: (any SearchSemanticEmbedding)?
+    private let source: any VaultSearchAtomSource
+    private let strategy: any SearchMatchingStrategy
 
     init(
-        vaultPath: String,
-        capabilities: SearchCapabilities,
-        store: VaultCRUDStore,
-        operations: VaultOperationCoordinator,
-        pdfIndex: PDFSearchIndex? = nil,
-        limits: SearchResourceLimits = .default,
-        admissionGate: AsyncExclusiveGate? = nil,
-        processSearchLock: POSIXAdvisoryFileLock? = nil,
-        semanticEmbedding: (any SearchSemanticEmbedding)? =
-            NaturalLanguageSearchSemanticEmbedding.shared
+        source: any VaultSearchAtomSource,
+        strategy: any SearchMatchingStrategy = LiteralSearchMatchingStrategy()
     ) {
-        self.vaultPath = vaultPath
-        self.capabilities = capabilities
-        self.limits = limits
-        self.admissionGate = admissionGate ?? AsyncExclusiveGate(
-            maximumWaiters: limits.maximumQueuedRequests
-        )
-        self.processSearchLock = processSearchLock
-        self.semanticEmbedding = semanticEmbedding
-        self.corpusBuilder = SearchCorpusBuilder(
-            vaultPath: vaultPath,
-            store: store,
-            operations: operations,
-            capabilities: capabilities,
-            limits: limits,
-            pdfIndex: pdfIndex
-        )
+        self.source = source
+        self.strategy = strategy
     }
 
-    /// Searches current snapshots and returns bounded ranked passages.
     func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
-        let validated = try SearchResourcePolicy.validate(
-            request,
-            capabilities: capabilities,
-            vaultPath: vaultPath,
-            limits: limits
-        )
-        do {
-            return try await admissionGate.withPermit {
-                if let processSearchLock {
-                    return try await processSearchLock.withLock(.exclusive) {
-                        try await execute(validated)
-                    }
-                }
-                return try await execute(validated)
-            }
-        } catch is AsyncExclusiveGate.CapacityExceeded {
-            throw VaultSearchRequestError.searchBusy
+        let validated = try validate(request)
+        let requestHash = try SearchCursorCodec.requestHash(validated)
+        let atoms = try await source.atoms(in: validated.location)
+        let corpusHash = try SearchCursorCodec.corpusHash(atoms)
+        let cursor = try validated.cursor.map {
+            try SearchCursorCodec.decode(
+                $0,
+                requestHash: requestHash,
+                corpusHash: corpusHash
+            )
         }
-    }
-
-    private func execute(
-        _ validated: SearchResourcePolicy.ValidatedRequest
-    ) async throws -> VaultSearchResponse {
-        let corpus = try await corpusBuilder.build(for: validated)
-        if let expected = validated.expectedCorpusFingerprint,
-           expected != corpus.revisionFingerprint {
-            throw VaultSearchRequestError.invalidCursor
-        }
-        var selection = BoundedRankedSelection()
-        var moreResultsAvailable = false
-        var coverageIncomplete = corpus.coverageIncomplete
-        var resourceLimitedFiles = corpus.resourceLimitedFileCount
-        var limitedPaths = corpus.partiallyLimitedPaths
-        var resourceLimitSamples = corpus.resourceLimitSamples
-        let searchedFiles = corpus.documents.count
-        let pdfSummary = makePDFSummary(corpus.documents)
-        var skippedSensitive = corpus.skippedSensitiveFileCount
-        var exactHitPaths = Set<String>()
-
-        // Smart first performs a corpus-wide literal pass. This work is not
-        // charged to fuzzy/lexical budgets, so smart can never lose an exact
-        // result merely because an earlier HAR contains huge token streams.
-        if validated.request.strategy == .smart {
-            var exactLedger = WorkLedger(limits: limits)
-            for (index, document) in corpus.documents.enumerated() {
-                try Task.checkCancellation()
-                var exactWork = exactLedger.budget(
-                    remainingDocuments: corpus.documents.count - index
-                )
-                let candidates = try bestResults(
-                    in: document,
-                    request: validated,
-                    strategy: .exact,
-                    allowsExact: true,
-                    work: &exactWork
-                ).filter(\.hasWholeLiteral)
-                exactLedger.deduct(exactWork)
-                if exactWork.truncated || exactWork.exhausted {
-                    coverageIncomplete = true
-                    if limitedPaths.insert(document.path).inserted {
-                        resourceLimitedFiles += 1
-                    }
-                    if let sample = try SearchResourceDiagnostics.sample(
-                        path: document.path,
-                        reason: .matching,
-                        impact: .partial
-                    ) {
-                        resourceLimitSamples = SearchResourceDiagnostics.merged(
-                            resourceLimitSamples,
-                            [sample]
-                        )
-                    }
-                }
-                guard !candidates.isEmpty else { continue }
-                exactHitPaths.insert(document.path)
-                for candidate in candidates {
-                    try accept(
-                        candidate,
-                        strategy: .smart,
-                        minimumRelevance: validated.request.minimumRelevance,
-                        selection: &selection,
-                        maximumHitsPerFile: validated.request.maxHitsPerFile,
-                        moreResultsAvailable: &moreResultsAvailable,
-                        skippedSensitive: &skippedSensitive,
-                        coverageIncomplete: &coverageIncomplete
-                    )
-                }
-            }
-        }
-
-        let relaxedDocuments = corpus.documents.filter {
-            validated.request.strategy != .smart
-                || validated.request.maxHitsPerFile > 1
-                || !exactHitPaths.contains($0.path)
-        }
-        var ledger = WorkLedger(limits: limits)
-        for (index, document) in relaxedDocuments.enumerated() {
+        var matches: [RankedSearchLocator] = []
+        matches.reserveCapacity(min(atoms.count, validated.limit + 1))
+        for atom in atoms {
             try Task.checkCancellation()
-            var work = ledger.budget(
-                remainingDocuments: relaxedDocuments.count - index
-            )
-            let strategy = validated.request.strategy
-            let candidates = try bestResults(
-                in: document,
-                request: validated,
-                strategy: strategy,
-                allowsExact: strategy != .smart,
-                work: &work
-            )
-            ledger.deduct(work)
-            if work.truncated || work.exhausted {
-                coverageIncomplete = true
-                if limitedPaths.insert(document.path).inserted {
-                    resourceLimitedFiles += 1
-                }
-                if let sample = try SearchResourceDiagnostics.sample(
-                    path: document.path,
-                    reason: .matching,
-                    impact: .partial
-                ) {
-                    resourceLimitSamples = SearchResourceDiagnostics.merged(
-                        resourceLimitSamples,
-                        [sample]
-                    )
-                }
-            }
-            for candidate in candidates {
-                try accept(
-                    candidate,
-                    strategy: strategy,
-                    minimumRelevance: validated.request.minimumRelevance,
-                    selection: &selection,
-                    maximumHitsPerFile: validated.request.maxHitsPerFile,
-                    moreResultsAvailable: &moreResultsAvailable,
-                    skippedSensitive: &skippedSensitive,
-                    coverageIncomplete: &coverageIncomplete
-                )
-            }
-        }
-
-        // Semantic work is a conservative hybrid fallback for conversational
-        // note queries. Strong literal/lexical evidence avoids model latency,
-        // while weak generic-term hits do not suppress a real paraphrase.
-        let strongestOrdinaryRelevance = selection.values
-            .map(\.result.relevance).max() ?? 0
-        if strongestOrdinaryRelevance < Self.semanticFallbackStrongResultFloor,
-           shouldRunSemanticFallback(validated),
-           let semanticEmbedding {
-            let semanticOutcome = try semanticFallbackResults(
-                in: corpus.documents,
-                request: validated,
-                embedding: semanticEmbedding
-            )
-            for (path, impact) in semanticOutcome.limitations {
-                coverageIncomplete = true
-                if limitedPaths.insert(path).inserted {
-                    resourceLimitedFiles += 1
-                }
-                if let sample = try SearchResourceDiagnostics.sample(
-                    path: path,
-                    reason: .matching,
-                    impact: impact
-                ) {
-                    resourceLimitSamples = SearchResourceDiagnostics.merged(
-                        resourceLimitSamples,
-                        [sample]
-                    )
-                }
-            }
-            for candidate in semanticOutcome.candidates {
-                try accept(
-                    candidate,
-                    strategy: .smart,
-                    minimumRelevance: validated.request.minimumRelevance,
-                    selection: &selection,
-                    maximumHitsPerFile: validated.request.maxHitsPerFile,
-                    moreResultsAvailable: &moreResultsAvailable,
-                    skippedSensitive: &skippedSensitive,
-                    coverageIncomplete: &coverageIncomplete
-                )
-            }
-        }
-
-        var ranked = selection.values
-        ranked.sort { isBetter($0, than: $1) }
-        let offset = validated.cursorOffset
-        let available = offset < ranked.count
-            ? Array(ranked.dropFirst(offset)) : []
-        if available.count > validated.request.limit { moreResultsAvailable = true }
-        var results: [VaultSearchResult] = []
-        var consumedCandidates = 0
-        // Reserve a conservative fixed envelope for coverage facts, PDF
-        // summary, and an optional cursor before admitting result payload.
-        let resultPayloadLimit = min(
-            max((limits.maximumResponseBytes - 1_024) / 2, 0),
-            SearchRequestLimits.maximumWireResultPayloadBytes
-        )
-        for candidate in available {
-            guard results.count < validated.request.limit else { break }
-            let individualBytes = try VaultSearchJSONEncoding.resultsByteCount(
-                [candidate.result]
-            )
-            if individualBytes > resultPayloadLimit {
-                // Consume an unrepresentable candidate so its continuation
-                // cursor always advances to later bounded results.
-                consumedCandidates += 1
-                moreResultsAvailable = true
-                coverageIncomplete = true
-                if limitedPaths.insert(candidate.result.path).inserted {
-                    resourceLimitedFiles += 1
-                }
-                if let sample = try SearchResourceDiagnostics.sample(
-                    path: candidate.result.path,
-                    reason: .projection,
-                    impact: .omitted
-                ) {
-                    resourceLimitSamples = SearchResourceDiagnostics.merged(
-                        resourceLimitSamples,
-                        [sample]
-                    )
-                }
-                continue
-            }
-            guard try VaultSearchJSONEncoding.resultsByteCount(
-                results + [candidate.result]
-            ) <= resultPayloadLimit else {
-                moreResultsAvailable = true
-                break
-            }
-            results.append(candidate.result)
-            consumedCandidates += 1
-        }
-        let consumedOffset = offset + consumedCandidates
-        let knownRemaining = max(ranked.count - consumedOffset, 0)
-        let omittedResultCountLowerBound = knownRemaining
-            + (moreResultsAvailable && knownRemaining == 0 ? 1 : 0)
-        let nextCursor = knownRemaining > 0
-            ? SearchCursorCodec.encode(
-                offset: consumedOffset,
-                fingerprint: validated.cursorFingerprint,
-                corpusFingerprint: corpus.revisionFingerprint
-            ) : nil
-        func makeResponse() -> VaultSearchResponse {
-            VaultSearchResponse(
-                strategy: validated.request.strategy,
-                results: results,
-                searchedFileCount: searchedFiles,
-                skippedFileCount: corpus.skippedFileCount,
-                skippedSensitiveFileCount: skippedSensitive,
-                resourceLimitedFileCount: resourceLimitedFiles,
-                moreResultsAvailable: moreResultsAvailable,
-                coverageIncomplete: coverageIncomplete,
-                minimumRelevance: validated.request.minimumRelevance,
-                resourceLimitSamples: resourceLimitSamples,
-                nextCursor: nextCursor,
-                omittedResultCountLowerBound: omittedResultCountLowerBound,
-                pdfSummary: pdfSummary
-            )
-        }
-        var response = makeResponse()
-        // Samples are explanatory and explicitly non-exhaustive. Preserve the
-        // strategy-independent result payload before shedding diagnostics.
-        while try VaultSearchJSONEncoding.responseByteCount(response)
-            > limits.maximumResponseBytes,
-              !resourceLimitSamples.isEmpty {
-            resourceLimitSamples.removeLast()
-            response = makeResponse()
-        }
-        guard try VaultSearchJSONEncoding.responseByteCount(response)
-            <= limits.maximumResponseBytes else {
-            throw EngineError.responseLimitTooSmall
-        }
-        return response
-    }
-
-    private func accept(
-        _ candidate: RankedSearchResult,
-        strategy: SearchStrategy,
-        minimumRelevance: Double,
-        selection: inout BoundedRankedSelection,
-        maximumHitsPerFile: Int,
-        moreResultsAvailable: inout Bool,
-        skippedSensitive: inout Int,
-        coverageIncomplete: inout Bool
-    ) throws {
-        if strategy == .fuzzy, candidate.result.termCoverage < 1 { return }
-        guard candidate.result.relevance >= minimumRelevance else { return }
-        let admission: BoundedRankedSelection.Admission
-        do {
-            admission = try selection.admit(
-                candidate,
-                maximumCount: limits.maximumCandidates,
-                maximumPerPath: maximumHitsPerFile
-            ) {
-                try validateProjection(candidate.result)
-            }
-        } catch is SensitiveContentPolicy.Violation {
-            skippedSensitive += 1
-            coverageIncomplete = true
-            return
-        }
-        if admission.encounteredGlobalLimit { moreResultsAvailable = true }
-    }
-
-    private func bestResults(
-        in document: SearchDocument,
-        request: SearchResourcePolicy.ValidatedRequest,
-        strategy: SearchStrategy,
-        allowsExact: Bool,
-        work: inout SearchWorkBudget
-    ) throws -> [RankedSearchResult] {
-        var candidates: [RankedSearchResult] = []
-        let metadataValues: [(SearchField, String)] = [
-            (.title, document.title),
-            (.tags, document.tags.joined(separator: " ")),
-            (.path, document.path),
-        ]
-        let metadataMatches = try matchingFields(
-            metadataValues,
-            request: request,
-            strategy: strategy,
-            allowsExact: allowsExact,
-            work: &work
-        )
-        if let preferred = strongestMatch(in: metadataMatches) {
-            candidates.append(rankedResult(
-                document: document,
-                matches: metadataMatches,
-                source: preferred.text,
-                range: preferred.match.range,
-                heading: nil,
-                location: nil,
-                lineStart: 1,
-                lineEnd: 1,
-                queryTokens: request.queryTokens,
-                query: request.request.query
-            ))
-        }
-
-        for section in document.sections {
-            try Task.checkCancellation()
-            let localMatches = try matchingFields(
-                [
-                    (.heading, section.heading ?? ""),
-                    (.content, section.content),
-                ],
-                request: request,
-                strategy: strategy,
-                allowsExact: allowsExact,
-                work: &work
-            )
-            guard !localMatches.isEmpty else { continue }
-            // Metadata already has its own result. A section is independently
-            // useful only when its local evidence completes the query or is
-            // required to complete a distributed multi-field match.
-            if metadataMatches.contains(where: \.match.completeQuery),
-               !localMatches.contains(where: \.match.completeQuery) {
-                continue
-            }
-            let matches = metadataMatches + localMatches
-            guard let presentation = strongestMatch(in: localMatches) else { continue }
-            let candidate = rankedResult(
-                document: document,
-                matches: matches,
-                source: presentation.text,
-                range: presentation.match.range,
-                heading: section.heading,
-                location: presentation.field == .content ? section.location : nil,
-                lineStart: section.lineStart,
-                lineEnd: presentation.field == .content ? section.lineEnd
-                    : section.lineStart,
-                queryTokens: request.queryTokens,
-                query: request.request.query,
-                physicalPage: section.physicalPage,
-                printedPage: section.printedPage,
-                pdfPageKind: section.pdfPageKind
-            )
-            candidates.append(candidate)
-        }
-        candidates.sort { isBetter($0, than: $1) }
-        return Array(candidates.prefix(request.request.maxHitsPerFile))
-    }
-
-    private func strongestMatch(in matches: [FieldMatch]) -> FieldMatch? {
-        matches.max { lhs, rhs in
-            let lhsStrength = (lhs.match.quality * 100) + fieldWeight(lhs.field)
-            let rhsStrength = (rhs.match.quality * 100) + fieldWeight(rhs.field)
-            if lhsStrength != rhsStrength { return lhsStrength < rhsStrength }
-            return lhs.field.rawValue > rhs.field.rawValue
-        }
-    }
-
-    private func matchingFields(
-        _ values: [(SearchField, String)],
-        request: SearchResourcePolicy.ValidatedRequest,
-        strategy: SearchStrategy,
-        allowsExact: Bool,
-        work: inout SearchWorkBudget
-    ) throws -> [FieldMatch] {
-        var matches: [FieldMatch] = []
-        for (field, text) in values where request.fields.contains(field) {
-            guard !text.isEmpty else { continue }
-            if let match = try SearchTextMatcher.match(
-                text: text,
-                query: request.request.query,
-                queryTokens: request.queryTokens,
-                strategy: strategy,
-                budget: &work,
-                limits: limits,
-                allowsExact: allowsExact,
-                allowsPartialFuzzy: true
-            ) {
-                matches.append(FieldMatch(field: field, text: text, match: match))
-            }
-        }
-        return matches
-    }
-
-    private func rankedResult(
-        document: SearchDocument,
-        matches: [FieldMatch],
-        source: String,
-        range: Range<String.Index>?,
-        heading: String?,
-        location: VaultSearchLocation?,
-        lineStart: Int,
-        lineEnd: Int,
-        queryTokens: [SearchToken],
-        query: String,
-        physicalPage: Int? = nil,
-        printedPage: String? = nil,
-        pdfPageKind: PDFSearchPageKind? = nil
-    ) -> RankedSearchResult {
-        let queryTerms = Set(queryTokens.map(\.normalized))
-        let coveredTerms = matches.reduce(into: Set<String>()) {
-            $0.formUnion($1.match.coveredTerms)
-        }
-        let complete = matches.contains { $0.match.completeQuery }
-        let termCoverage = complete || queryTerms.isEmpty
-            ? 1
-            : min(Double(coveredTerms.count) / Double(queryTerms.count), 1)
-        let strongestStrength = matches.map(\.match.strength).max() ?? 0
-        let strongestField = matches.map { relevanceFieldStrength($0.field) }.max() ?? 0
-        let completeCohesion = matches
-            .filter(\.match.completeQuery)
-            .map(\.match.cohesion)
-            .max()
-        let strongestSingleFieldCoverage = matches
-            .map { $0.match.coveredTerms.count }
-            .max() ?? 0
-        let requiresDistributedFields = strongestSingleFieldCoverage
-            < coveredTerms.count
-        let evidenceCohesion: Double
-        if queryTerms.count <= 1 {
-            evidenceCohesion = 1
-        } else if let completeCohesion {
-            evidenceCohesion = completeCohesion
-        } else {
-            // A partial match can still be a very cohesive local passage. Apply
-            // the distribution penalty only when no single field supplies all
-            // of the evidence accumulated for this result.
-            evidenceCohesion = (matches.map(\.match.cohesion).max() ?? 0)
-                * (requiresDistributedFields ? 0.25 : 1)
-        }
-        let strongestDensity = matches.map { match in
-            // Density is a small tie signal, so a bounded byte-derived estimate
-            // is preferable to allocating an unbounded second token projection.
-            let sourceTerms = max(match.text.utf8.count / 6, 1)
-            return min(
-                Double(max(match.match.coveredTerms.count, 1))
-                    / Double(sourceTerms),
-                1
-            )
-        }.max() ?? 0
-        let titleEqualsQuery = matches.contains {
-            $0.field == .title
-                && $0.match.kind == .literalWhole
-                && SearchTokenizer.normalize(
-                    $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                ) == SearchTokenizer.normalize(
-                    query.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
-        }
-        let semanticSimilarity = matches
-            .filter { $0.match.kind == .semantic }
-            .map(\.match.strength)
-            .max()
-        let unadjustedRelevance: Double
-        if let semanticSimilarity {
-            unadjustedRelevance = semanticRelevance(
-                forSimilarity: semanticSimilarity
-            )
-        } else {
-            unadjustedRelevance = titleEqualsQuery ? 1 : quantized(
-                min(max(
-                    (0.64 * termCoverage)
-                        + (0.16 * strongestStrength)
-                        + (0.08 * strongestField)
-                        + (0.10 * evidenceCohesion)
-                        + (0.02 * strongestDensity),
-                    0
-                ), 1)
-            )
-        }
-        // Evidence assembled across unrelated fields remains useful, but it
-        // must not present itself as a >0.90 near-exact match.
-        let fieldAdjustedRelevance = requiresDistributedFields
-            ? min(unadjustedRelevance, 0.899) : unadjustedRelevance
-        let relevance = quantized(
-            fieldAdjustedRelevance * pageRelevanceMultiplier(pdfPageKind)
-        )
-        let primary = matches.map {
-            ($0.match.quality * 100) + fieldWeight($0.field)
-        }.max() ?? 0
-        let secondary = matches.map(\.match.quality).reduce(0, +) / 1_000
-        let result = VaultSearchResult(
-            path: document.path,
-            format: document.format,
-            title: document.title,
-            heading: heading,
-            location: location,
-            snippet: SearchSnippetBuilder.make(
-                from: source,
-                around: range,
-                maximumCharacters: limits.maximumSnippetCharacters,
-                maximumBytes: limits.maximumSnippetBytes
-            ),
-            lineStart: lineStart,
-            lineEnd: lineEnd,
-            matchedFields: SearchField.allCases.filter { field in
-                matches.contains { $0.field == field }
-            },
-            relevance: relevance,
-            termCoverage: quantized(termCoverage),
-            completeQueryFields: SearchField.allCases.filter { field in
-                matches.contains { $0.field == field && $0.match.completeQuery }
-            },
-            physicalPage: physicalPage,
-            printedPage: printedPage,
-            pdfPageKind: pdfPageKind,
-            pdfTextExtractionStatus: document.pdfTextExtractionStatus
-        )
-        return RankedSearchResult(
-            result: result,
-            score: (relevance * 1_000_000) + primary + secondary,
-            hasWholeLiteral: matches.contains { $0.match.kind == .literalWhole }
-        )
-    }
-
-    private func fieldWeight(_ field: SearchField) -> Double {
-        switch field {
-        case .title: 5
-        case .heading: 4
-        case .tags: 3
-        case .path: 2
-        case .content: 1
-        }
-    }
-
-    private func relevanceFieldStrength(_ field: SearchField) -> Double {
-        switch field {
-        case .title: 1
-        case .heading: 0.8
-        case .tags: 0.6
-        case .path: 0.4
-        case .content: 0.2
-        }
-    }
-
-    private func shouldRunSemanticFallback(
-        _ request: SearchResourcePolicy.ValidatedRequest
-    ) -> Bool {
-        guard request.request.strategy == .smart,
-              request.fields.contains(.content),
-              request.areas.contains(.notes),
-              !SearchQueryAnalyzer.containsSymbolSyntax(request.request.query) else {
-            return false
-        }
-        let allTerms = SearchTokenizer.tokens(in: request.request.query)
-        let significantTerms = request.queryTokens
-        let uniqueSignificantTerms = Set(significantTerms.map(\.normalized))
-        guard uniqueSignificantTerms.count >= 5 else { return false }
-        let hasConversationalShape = allTerms.count >= significantTerms.count + 2
-            || request.request.query.contains("?")
-        return hasConversationalShape
-    }
-
-    private func semanticFallbackResults(
-        in documents: [SearchDocument],
-        request: SearchResourcePolicy.ValidatedRequest,
-        embedding: any SearchSemanticEmbedding
-    ) throws -> SemanticFallbackOutcome {
-        let query = try SearchSemanticTextProjection.bounded(
-            from: request.request.query
-        ).value
-        guard let queryVector = validSemanticVector(
-            embedding.embedding(for: query, retention: .transient)
-        ) else {
-            return SemanticFallbackOutcome(candidates: [], limitations: [:])
-        }
-
-        let maximumEvaluatedSections = 512
-        var evaluatedSections = 0
-        var candidates: [RankedSearchResult] = []
-        var limitations: [String: VaultSearchResourceLimitImpact] = [:]
-        for document in documents {
-            try Task.checkCancellation()
-            guard document.format != .pdf,
-                  (try? VaultArea.resolve(path: document.path)) == .notes else {
-                continue
-            }
-            var evaluatedInDocument = false
-            for section in document.sections {
-                try Task.checkCancellation()
-                guard evaluatedSections < maximumEvaluatedSections else {
-                    limitations[document.path] = evaluatedInDocument
-                        ? .partial : .omitted
-                    break
-                }
-                let boundedProjection = try SearchSemanticTextProjection.bounded(
-                    from: section.content
-                )
-                let projection = boundedProjection.value
-                if boundedProjection.truncated, projection.isEmpty {
-                    limitations[document.path] = evaluatedInDocument
-                        ? .partial : .omitted
-                }
-                guard !projection.isEmpty else { continue }
-                evaluatedSections += 1
-                evaluatedInDocument = true
-                if limitations[document.path] != nil {
-                    limitations[document.path] = .partial
-                }
-                if boundedProjection.truncated {
-                    limitations[document.path] = .partial
-                }
-                guard let sourceVector = validSemanticVector(
-                    embedding.embedding(for: projection, retention: .reusable)
-                ),
-                      sourceVector.count == queryVector.count,
-                      let similarity = cosineSimilarity(
-                          queryVector,
-                          sourceVector
-                      ),
-                      similarity >= Self.minimumSemanticSimilarity else {
+            guard matchesMetadata(atom, request: validated) else { continue }
+            let rank: SearchRank
+            if let query = validated.query {
+                guard let matched = strategy.rank(query: query, in: atom.text) else {
                     continue
                 }
-                let match = SearchMatch(
-                    quality: 50 + (40 * similarity),
-                    strength: similarity,
-                    range: nil,
-                    coveredTerms: [],
-                    completeQuery: false,
-                    cohesion: 0,
-                    kind: .semantic
-                )
-                candidates.append(rankedResult(
-                    document: document,
-                    matches: [FieldMatch(
-                        field: .content,
-                        text: section.content,
-                        match: match
-                    )],
-                    source: section.content,
-                    range: nil,
-                    heading: section.heading,
-                    location: section.location,
-                    lineStart: section.lineStart,
-                    lineEnd: section.lineEnd,
-                    queryTokens: request.queryTokens,
-                    query: request.request.query
-                ))
+                rank = matched
+            } else {
+                rank = SearchRank(exactPhrase: false, occurrenceCount: 0)
             }
+            let ranked = RankedSearchLocator(locator: atom.locator, rank: rank)
+            if let cursor, order(ranked, cursor) != .after { continue }
+            matches.append(ranked)
         }
-        return SemanticFallbackOutcome(
-            candidates: bestSemanticCandidates(candidates, request: request),
-            limitations: limitations
+        matches.sort { order($0, $1) == .before }
+
+        let returned = Array(matches.prefix(validated.limit))
+        let nextCursor: String?
+        if matches.count > returned.count, let last = returned.last {
+            nextCursor = try SearchCursorCodec.encode(
+                requestHash: requestHash,
+                corpusHash: corpusHash,
+                ranked: last
+            )
+        } else {
+            nextCursor = nil
+        }
+        return VaultSearchResponse(
+            results: returned.map(\.locator),
+            nextCursor: nextCursor
         )
     }
 
-    // Apple's sentence model uses a conservative cosine scale: strong
-    // paraphrases commonly land around 0.4–0.6 rather than near 1. Semantic
-    // fallback runs only when ordinary smart evidence remains below the strong
-    // result floor, so this restores paraphrase recall without perturbing
-    // confident literal hits.
-    private static let minimumSemanticSimilarity = 0.40
-    private static let semanticFallbackStrongResultFloor = 0.90
-    private static let maximumSemanticDimensions = 2_048
-
-    private func semanticRelevance(forSimilarity similarity: Double) -> Double {
-        let normalized = (similarity - Self.minimumSemanticSimilarity)
-            / (1 - Self.minimumSemanticSimilarity)
-        return quantized(min(max(0.60 + (0.40 * normalized), 0), 1))
-    }
-
-    private func bestSemanticCandidates(
-        _ candidates: [RankedSearchResult],
-        request: SearchResourcePolicy.ValidatedRequest
-    ) -> [RankedSearchResult] {
-        var bestByPath: [String: [RankedSearchResult]] = [:]
-        for candidate in candidates {
-            bestByPath[candidate.result.path, default: []].append(candidate)
-        }
-        return bestByPath.values.flatMap { values in
-            values.sorted { isBetter($0, than: $1) }
-                .prefix(request.request.maxHitsPerFile)
-        }.sorted { isBetter($0, than: $1) }
-    }
-
-    private func validSemanticVector(_ vector: [Double]?) -> [Double]? {
-        guard let vector,
-              !vector.isEmpty,
-              vector.count <= Self.maximumSemanticDimensions,
-              vector.allSatisfy(\.isFinite) else { return nil }
-        return vector
-    }
-
-    private func cosineSimilarity(
-        _ lhs: [Double],
-        _ rhs: [Double]
-    ) -> Double? {
-        guard lhs.count == rhs.count, !lhs.isEmpty else { return nil }
-        var dot = 0.0
-        var lhsNorm = 0.0
-        var rhsNorm = 0.0
-        for index in lhs.indices {
-            dot += lhs[index] * rhs[index]
-            lhsNorm += lhs[index] * lhs[index]
-            rhsNorm += rhs[index] * rhs[index]
-        }
-        guard lhsNorm > 0, rhsNorm > 0 else { return nil }
-        return min(max(dot / sqrt(lhsNorm * rhsNorm), -1), 1)
-    }
-
-    private func pageRelevanceMultiplier(
-        _ kind: PDFSearchPageKind?
-    ) -> Double {
-        switch kind {
-        case .tableOfContents: 0.80
-        case .index: 0.84
-        case .bibliography: 0.88
-        case .glossary: 0.86
-        case .body, nil: 1
-        }
-    }
-
-    private func makePDFSummary(
-        _ documents: [SearchDocument]
-    ) -> VaultSearchPDFSummary {
-        let statuses = documents.compactMap(\.pdfTextExtractionStatus)
-        return VaultSearchPDFSummary(
-            examinedFileCount: statuses.count,
-            metadataOnlyFileCount: statuses.count(where: {
-                $0 == .metadataOnly
-            }),
-            extractedFileCount: statuses.count(where: { $0 == .extracted }),
-            partialFileCount: statuses.count(where: { $0 == .partial }),
-            noExtractableTextFileCount: statuses.count(where: {
-                $0 == .noExtractableText
-            }),
-            unavailableFileCount: statuses.count(where: {
-                $0 == .locked || $0 == .cannotOpen
-                    || $0 == .contentSkippedFileBytes
-                    || $0 == .indexUnavailable
-            }),
-            ocrPerformed: false
-        )
-    }
-
-    private func quantized(_ value: Double) -> Double {
-        (value * 1_000).rounded() / 1_000
-    }
-
-    private func isBetter(
-        _ lhs: RankedSearchResult,
-        than rhs: RankedSearchResult
-    ) -> Bool {
-        BoundedRankedSelection.isBetter(lhs, than: rhs)
-    }
-
-    private func validateProjection(_ result: VaultSearchResult) throws {
-        let fields = [
-            result.path,
-            result.title,
-            result.heading ?? "",
-            result.location?.nodeID ?? "",
-            result.location?.nodeType ?? "",
-            result.location?.field ?? "",
-            result.printedPage ?? "",
-            result.snippet,
-        ]
-        for field in fields where !field.isEmpty {
-            try SensitiveContentPolicy.validate(
-                Data(field.utf8),
-                format: .markdown,
-                path: result.path
+    private func validate(_ request: VaultSearchRequest) throws -> VaultSearchRequest {
+        let query = request.query?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedQuery = query?.isEmpty == false ? query : nil
+        if let normalizedQuery,
+           normalizedQuery.utf8.count > SearchRequestLimits.maximumQueryBytes {
+            throw VaultSearchRequestError.queryTooLarge(
+                limit: SearchRequestLimits.maximumQueryBytes
             )
         }
+
+        let tags = request.tags.map(MarkdownSupport.normalizeTag)
+        guard tags.count <= SearchRequestLimits.maximumTags,
+              tags.allSatisfy({
+                  !$0.isEmpty && $0.utf8.count <= SearchRequestLimits.maximumTagBytes
+              }),
+              Set(tags).count == tags.count else {
+            throw VaultSearchRequestError.invalidTags
+        }
+        let stableTags = tags.sorted()
+        if request.location != .notes,
+           !stableTags.isEmpty || request.createdFrom != nil || request.createdThrough != nil {
+            throw VaultSearchRequestError.metadataFiltersRequireNotes
+        }
+        if let value = request.createdFrom, !Self.isDate(value) {
+            throw VaultSearchRequestError.invalidDate("created_from")
+        }
+        if let value = request.createdThrough, !Self.isDate(value) {
+            throw VaultSearchRequestError.invalidDate("created_through")
+        }
+        if let from = request.createdFrom,
+           let through = request.createdThrough,
+           from > through {
+            throw VaultSearchRequestError.invalidDateRange
+        }
+        guard normalizedQuery != nil
+                || !stableTags.isEmpty
+                || request.createdFrom != nil
+                || request.createdThrough != nil else {
+            throw VaultSearchRequestError.missingCriteria
+        }
+        guard (1...SearchRequestLimits.maximumResults).contains(request.limit) else {
+            throw VaultSearchRequestError.invalidLimit(
+                maximum: SearchRequestLimits.maximumResults
+            )
+        }
+        if let cursor = request.cursor,
+           cursor.isEmpty || cursor.utf8.count > SearchRequestLimits.maximumCursorBytes {
+            throw VaultSearchRequestError.invalidCursor
+        }
+        return VaultSearchRequest(
+            location: request.location,
+            query: normalizedQuery,
+            tags: stableTags,
+            createdFrom: request.createdFrom,
+            createdThrough: request.createdThrough,
+            limit: request.limit,
+            cursor: request.cursor
+        )
+    }
+
+    private func matchesMetadata(
+        _ atom: SearchAtom,
+        request: VaultSearchRequest
+    ) -> Bool {
+        guard !request.tags.isEmpty
+                || request.createdFrom != nil
+                || request.createdThrough != nil else {
+            return true
+        }
+        guard let metadata = atom.metadata else { return false }
+        if !request.tags.allSatisfy(metadata.tags.contains) { return false }
+        if request.createdFrom != nil || request.createdThrough != nil {
+            guard let created = metadata.created, Self.isDate(created) else {
+                return false
+            }
+            if let from = request.createdFrom, created < from { return false }
+            if let through = request.createdThrough, created > through { return false }
+        }
+        return true
+    }
+
+    private static func isDate(_ value: String) -> Bool {
+        guard value.utf8.count == SearchRequestLimits.maximumDateBytes else {
+            return false
+        }
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
+        else {
+            return false
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: year,
+            month: month,
+            day: day
+        )
+        guard let date = calendar.date(from: components) else { return false }
+        let roundTrip = calendar.dateComponents([.year, .month, .day], from: date)
+        return roundTrip.year == year && roundTrip.month == month && roundTrip.day == day
+    }
+
+    private func order(
+        _ lhs: RankedSearchLocator,
+        _ rhs: RankedSearchLocator
+    ) -> Order {
+        order(
+            lhs,
+            exactPhrase: rhs.rank.exactPhrase,
+            occurrenceCount: rhs.rank.occurrenceCount,
+            path: rhs.locator.path,
+            format: rhs.locator.format,
+            page: rhs.locator.page
+        )
+    }
+
+    private func order(
+        _ lhs: RankedSearchLocator,
+        _ rhs: SearchCursorCodec.Payload
+    ) -> Order {
+        order(
+            lhs,
+            exactPhrase: rhs.exactPhrase,
+            occurrenceCount: rhs.occurrenceCount,
+            path: rhs.path,
+            format: rhs.format,
+            page: rhs.page
+        )
+    }
+
+    private func order(
+        _ lhs: RankedSearchLocator,
+        exactPhrase: Bool,
+        occurrenceCount: Int,
+        path: String,
+        format: FileFormat,
+        page: Int?
+    ) -> Order {
+        if lhs.rank.exactPhrase != exactPhrase {
+            return lhs.rank.exactPhrase ? .before : .after
+        }
+        if lhs.rank.occurrenceCount != occurrenceCount {
+            return lhs.rank.occurrenceCount > occurrenceCount ? .before : .after
+        }
+        if lhs.locator.path != path {
+            return lhs.locator.path < path ? .before : .after
+        }
+        if lhs.locator.format != format {
+            return lhs.locator.format.rawValue < format.rawValue ? .before : .after
+        }
+        let lhsPage = lhs.locator.page ?? 0
+        let rhsPage = page ?? 0
+        if lhsPage != rhsPage { return lhsPage < rhsPage ? .before : .after }
+        return .same
     }
 }

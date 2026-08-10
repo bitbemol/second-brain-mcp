@@ -1,10 +1,10 @@
 import Darwin
 import Foundation
 import Testing
-@testable import SecondBrainMCP
+@testable import second_brain_mcp
 
-@Suite("Bounded file reader")
-struct BoundedFileReaderTests {
+@Suite
+struct `Bounded file reader` {
     private func temporaryFile(containing data: Data) throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("BoundedFileReader-\(UUID().uuidString)")
@@ -12,8 +12,8 @@ struct BoundedFileReaderTests {
         return url
     }
 
-    @Test("Returns files exactly at the byte limit")
-    func exactLimit() throws {
+    @Test
+    func `Returns files exactly at the byte limit`() throws {
         let expected = Data(repeating: 0xAB, count: 128)
         let url = try temporaryFile(containing: expected)
 
@@ -26,8 +26,8 @@ struct BoundedFileReaderTests {
         #expect(actual == expected)
     }
 
-    @Test("Stops after the first byte beyond the limit")
-    func rejectsOverflowEarly() throws {
+    @Test
+    func `Stops after the first byte beyond the limit`() throws {
         let url = try temporaryFile(containing: Data(repeating: 0xCD, count: 1_000))
 
         do {
@@ -46,8 +46,8 @@ struct BoundedFileReaderTests {
         }
     }
 
-    @Test("A final symbolic link cannot redirect the descriptor open")
-    func rejectsSymbolicLink() throws {
+    @Test
+    func `A final symbolic link cannot redirect the descriptor open`() throws {
         let target = try temporaryFile(containing: Data("outside marker".utf8))
         let link = target.deletingLastPathComponent()
             .appendingPathComponent("BoundedFileReader-link-\(UUID().uuidString)")
@@ -65,8 +65,8 @@ struct BoundedFileReaderTests {
         }
     }
 
-    @Test("A symbolic-link parent cannot redirect the descriptor open")
-    func rejectsSymbolicLinkParent() throws {
+    @Test
+    func `A symbolic-link parent cannot redirect the descriptor open`() throws {
         let outsideDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("BoundedFileReader-outside-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -91,8 +91,8 @@ struct BoundedFileReaderTests {
         }
     }
 
-    @Test("Search-mode descriptor walks reject hidden descendants")
-    func rejectsHiddenDescriptorComponents() throws {
+    @Test
+    func `Search-mode descriptor walks reject hidden descendants`() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("BoundedFileReader-hidden-\(UUID().uuidString)")
         let hiddenParent = root.appendingPathComponent("parent")
@@ -132,8 +132,8 @@ struct BoundedFileReaderTests {
         }
     }
 
-    @Test("Cancellation between path components closes the owned descriptor")
-    func midOpenCancellationClosesDescriptor() throws {
+    @Test
+    func `Cancellation between path components closes the owned descriptor`() throws {
         let url = try temporaryFile(containing: Data("safe".utf8))
         var checks = 0
         var closedDescriptors: [Int32] = []
@@ -159,8 +159,8 @@ struct BoundedFileReaderTests {
         #expect(Set(closedDescriptors).count == 2)
     }
 
-    @Test("A canceled task stops before opening or allocating file bytes")
-    func cancellation() async {
+    @Test
+    func `A canceled task stops before opening or allocating file bytes`() async {
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             return try BoundedFileReader.read(
