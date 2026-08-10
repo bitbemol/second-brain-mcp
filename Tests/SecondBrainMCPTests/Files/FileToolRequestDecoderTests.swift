@@ -229,18 +229,6 @@ struct `MCP file request decoder` {
             for: .update
         )
         expectError(
-            "Invalid parameter 'raw': expected boolean",
-            decoding: CallTool.Parameters(
-                name: FileToolName.read.rawValue,
-                arguments: [
-                    "format": .string("har"),
-                    "path": .string("notes/capture.har"),
-                    "raw": .string("true"),
-                ]
-            ),
-            for: .read
-        )
-        expectError(
             "Invalid parameter 'tags': expected array of strings",
             decoding: CallTool.Parameters(
                 name: FileToolName.create.rawValue,

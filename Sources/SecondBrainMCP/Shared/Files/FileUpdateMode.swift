@@ -1,5 +1,5 @@
 /// Format-specific strategies accepted by `update_file`.
-enum FileUpdateMode: String, Codable, Sendable {
+enum FileUpdateMode: String, CaseIterable, Codable, Hashable, Sendable {
     /// Replace the complete stored representation.
     case replace
     /// Append content without replacing existing bytes.

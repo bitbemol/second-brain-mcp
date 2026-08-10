@@ -22,25 +22,6 @@ struct `Canvas document validation` {
     }
 
     @Test
-    func `Inspection projects validated node presentation data`() throws {
-        let result = try CanvasDocumentValidator.inspect(jsonData: Data("""
-        {"nodes":[
-          {"id":"a","type":"text","x":0,"y":0,"width":1,"height":1,"text":"First line\\nSecond line"},
-          {"id":"b","type":"file","x":0,"y":0,"width":1,"height":1,"file":"notes/x.md"},
-          {"id":"c","type":"link","x":0,"y":0,"width":1,"height":1,"url":"https://example.com"},
-          {"id":"d","type":"group","x":0,"y":0,"width":1,"height":1,"label":"Group"}
-        ],"edges":[{"id":"e","fromNode":"a","toNode":"b"}]}
-        """.utf8))
-
-        #expect(result.nodes.map(\.kind) == [.text, .file, .link, .group])
-        #expect(result.nodes.map(\.label) == [
-            "First line", "notes/x.md", "https://example.com", "Group"
-        ])
-        #expect(result.nodes[1].filePath == "notes/x.md")
-        #expect(result.edgeCount == 1)
-    }
-
-    @Test
     func `Empty canvas passes`() throws {
         try validate("{}")
         try validate(#"{"nodes":[],"edges":[]}"#)

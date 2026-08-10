@@ -15,7 +15,6 @@ stdio-capable MCP client ──> SecondBrainMCP
 - **Locator-only vault search** — `search_vault` searches content but returns only note/file paths or physical PDF page numbers for follow-up with `read_file`
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Multi-agent-safe vault access** — concurrent reads overlap, complete mutations are exclusive through their Git snapshot, and exact-byte revisions reject stale updates and deletes
-- **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
 - **Git snapshots** — note changes request a local `Vault snapshot`; concurrent agents may share one recovery point, and `references/` is never included
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed
 - **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
@@ -200,25 +199,19 @@ Search results contain no snippets, file content, scores, diagnostics, or mutati
 | `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
 | `pdf` | `.pdf` | — | references | — | — |
 
-The matrix is generated from registered operation bindings rather than maintained separately at runtime. Read `secondbrain://file-capabilities` for the server's effective capabilities and allowed vault areas for each operation. Internal handler identities stay private, so they can be refactored without changing the API. In `--read-only` mode, mutating operations disappear from both tool discovery and this resource.
+The matrix and each format's create input and update modes come from one exhaustive backend catalog. MCP tool discovery projects that contract directly into the four CRUD schemas, so adding a format does not require a resource or a second frontend registry. Internal handler identities stay private. In `--read-only` mode, mutating tools disappear from discovery.
 
 Format-specific CRUD behavior stays behind the four endpoints:
 
-- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return a request/status/host/timing summary, with sanitized raw JSON only when requested.
+- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return the complete sanitized HAR JSON as one atomic document.
 - Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
-- Patch input must be a unified diff; reads report affected files, hunks, additions, and deletions.
+- Patch input must be a unified diff; reads return the complete validated diff as one atomic document.
 - Logs default to the last 500 lines, support bounded line ranges, and can only be appended.
 - JSON accepts any valid top-level JSON value, preserves its original representation, and validates replacements or exact text patches before persistence.
 - CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
 - Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
 - PDF reads return extracted text plus rendered page images and support physical page, printed-page, and range navigation. Content queries belong to `search_vault`; `read_file` only retrieves selected pages.
-
-## Resources
-
-| URI | Description |
-|-----|-------------|
-| `secondbrain://file-capabilities` | Effective file formats, extensions, CRUD operations, and vault areas |
 
 ## Custom Instructions
 
@@ -251,26 +244,160 @@ Sources/SecondBrainMCP/
 │   ├── Application/main.swift
 │   ├── Configuration/                  # Argument parsing
 │   └── MCP/
-│       ├── Files/                      # Four generic CRUD tools + capabilities
+│       ├── MCPServerSetup.swift        # Transport lifecycle and tool dispatch
+│       ├── Directories/                # Atomic subtree-move adapter
+│       ├── Files/                      # Four catalog-derived generic CRUD tools
 │       └── Search/                     # Locator-only search schema and adapter
 ├── Backend/                            # Internal behavior; never imports MCP
-│   ├── Concurrency/                    # Reusable cancellation-aware async gates
+│   ├── Infrastructure/VaultRuntime.swift # Composition root and dependency injection
+│   ├── Concurrency/                    # Reusable gates and vault access coordination
+│   ├── Directories/                    # Validated atomic subtree movement
 │   ├── Files/
 │   │   ├── Ingress/                    # Stored-text request-to-bytes policy
 │   │   ├── Operations/                 # Format-specific validation/transformation
-│   │   ├── Routing/                    # Catalog, bindings, and routed service
-│   │   ├── Storage/                    # Generic snapshots, persistence, and soft deletion
+│   │   ├── Routing/                    # Catalog, operation families, routed service
+│   │   ├── Storage/                    # Generic snapshots, persistence, soft deletion
 │   │   ├── Targets/                    # Validated readable/writable vault paths
-│   │   ├── Transactions/               # Prepared persistence and awaited Git sequencing
+│   │   ├── Transactions/               # Prepared persistence and Git sequencing
 │   │   └── Validation/                 # Vault and external-source security
-│   ├── Media/                          # Image and video processing
-│   ├── Search/                         # Atom providers, literal matching, and pagination
-│   └── …                               # Canvas, references, Git, logging, infrastructure
+│   ├── Search/                         # Atom providers, literal matching, pagination
+│   ├── VaultVersioning/                # Sole Git subprocess boundary
+│   └── Canvas/, HAR/, Media/, References/ # Specialized format processing
 └── Shared/                             # Cross-boundary values and small utilities
-    ├── Files/                          # Formats, requests, capabilities, and outputs
+    ├── Files/                          # File CRUD and directory-move contracts
     ├── Search/                         # Search request/result/service contracts
+    ├── References/                     # Shared PDF navigation values
     └── Logging/                        # Shared stderr logger
 ```
+
+### Layer and protocol boundaries
+
+Solid arrows show runtime requests and data flow. Dashed arrows show composition or shared
+coordination. The Shared nodes are protocols and values, not another orchestration layer.
+
+```mermaid
+flowchart TB
+    Client["MCP client<br/>stdio JSON-RPC"]
+
+    subgraph Frontend["Frontend — transport boundary<br/>Sources/SecondBrainMCP/Frontend"]
+        direction LR
+        Startup["Application + Configuration<br/>startup and CLI arguments"]
+        Server["MCP/MCPServerSetup.swift<br/>server lifecycle and dispatch"]
+        FileAdapter["MCP/Files<br/>CRUD schemas, decoding, result mapping"]
+        SearchAdapter["MCP/Search<br/>locator schema, decoding, result mapping"]
+        MoveAdapter["MCP/Directories<br/>move schema, decoding, result mapping"]
+        Startup --> Server
+        Server --> FileAdapter
+        Server --> SearchAdapter
+        Server --> MoveAdapter
+    end
+
+    subgraph Shared["Shared — stable protocol boundary<br/>Sources/SecondBrainMCP/Shared"]
+        direction LR
+        FilePort["Files/FileCRUDService<br/>formats, requests, outputs"]
+        SearchPort["Search/VaultSearchService<br/>locator requests and results"]
+        MovePort["Files/DirectoryMoveService<br/>subtree move contract"]
+    end
+
+    subgraph Backend["Backend — policy and execution<br/>Sources/SecondBrainMCP/Backend"]
+        direction LR
+        Runtime["Infrastructure/VaultRuntime<br/>composition root"]
+        FileCore["Files<br/>routing, validation, storage, transactions"]
+        SearchCore["Search<br/>atoms, matching, cursor pagination"]
+        MoveCore["Directories<br/>validated atomic subtree move"]
+        Specialized["Canvas + HAR + Media + References<br/>format-specific processing"]
+        Access["VaultAccessCoordinator<br/>shared reads / exclusive mutations"]
+        Versioning["VaultVersioning<br/>sole Git boundary"]
+    end
+
+    Vault[("Vault filesystem<br/>notes / references / .trash")]
+    Git[(".git snapshots")]
+
+    Client --> Server
+    FileAdapter --> FilePort --> FileCore
+    SearchAdapter --> SearchPort --> SearchCore
+    MoveAdapter --> MovePort --> MoveCore
+
+    Runtime -. "constructs and injects" .-> FileCore
+    Runtime -. "constructs and injects" .-> SearchCore
+    Runtime -. "constructs and injects" .-> MoveCore
+    Access -. "coordinates" .-> FileCore
+    Access -. "coordinates" .-> SearchCore
+    Access -. "coordinates" .-> MoveCore
+
+    FileCore --> Specialized
+    FileCore --> Vault
+    SearchCore --> Vault
+    MoveCore --> Vault
+    FileCore --> Versioning
+    MoveCore --> Versioning
+    Versioning --> Git
+```
+
+The boundary rule is simple: Frontend understands MCP but not vault policy; Shared defines the
+plain Swift contracts both sides agree on; Backend implements those contracts and owns all vault
+behavior. Search and directory moves use their own protocols because neither operation is atomic
+file CRUD.
+
+### Catalog-driven CRUD
+
+All four public file tools share one frontend pipeline. The backend catalog is the only place that
+decides which operations and format-specific hooks exist.
+
+```mermaid
+flowchart TD
+    Tools["create_file / read_file / update_file / delete_file<br/>Frontend/MCP/Files"]
+    Port["FileCRUDService<br/>Shared/Files"]
+    Service["VaultFileService<br/>Backend/Files/Routing<br/>safe targets, revisions, coordination"]
+
+    Factory["FileFormatCatalogFactory<br/>exhaustive FileFormat registration"]
+    TextFamily["StoredTextFileOperationFamily<br/>ordinary UTF-8 formats"]
+    ImageFamily["ImageFileOperationFamily<br/>shared image behavior"]
+    Explicit["Explicit bindings<br/>PDF and other exceptional behavior"]
+    Catalog["FileFormatCatalog<br/>operation lookup by format"]
+
+    Create["Create<br/>declared input + preparation hook"]
+    Read["Read<br/>exact-content default<br/>optional special reader"]
+    Update["Update<br/>generic edit engine<br/>declared modes + final validation"]
+    Delete["Delete<br/>shared recoverable soft delete"]
+
+    ReadLease["Shared read lease"]
+    MutationLease["Exclusive mutation lease"]
+    Store["VaultCRUDStore<br/>sole generic persistence component"]
+    Executor["VaultMutationExecutor<br/>owns mutation sequencing"]
+    Versioning["VaultVersioning"]
+    Vault[("Vault filesystem")]
+    Git[(".git snapshot")]
+    Result["Awaited result<br/>mapped back to MCP"]
+
+    Tools --> Port --> Service --> Catalog
+    Factory -. "assembles at startup" .-> TextFamily
+    Factory -. "assembles at startup" .-> ImageFamily
+    Factory -. "assembles at startup" .-> Explicit
+    TextFamily --> Catalog
+    ImageFamily --> Catalog
+    Explicit --> Catalog
+
+    Catalog --> Create
+    Catalog --> Read
+    Catalog --> Update
+    Catalog --> Delete
+
+    Read --> ReadLease --> Vault --> Result
+    Create --> MutationLease
+    Update --> MutationLease
+    Delete --> MutationLease
+    MutationLease --> Executor
+    Executor -->|"1. persist prepared bytes"| Store --> Vault
+    Executor -->|"2. await required snapshot"| Versioning --> Git
+    Versioning --> Result
+```
+
+The operation families supply the common behavior. A catalog case declares only what differs:
+creation validation or transformation, an exceptional read, allowed update modes, final-content
+validation, or specialized append semantics. Delete is destructive but generic; HAR and log reads
+are non-mutating but specialized. This is why specialization follows format policy rather than a
+simple read-versus-write split.
 
 Dependencies flow inward as `Frontend → Backend → Shared`. Frontend translates CLI/MCP
 inputs into plain Swift values. Backend owns vault behavior, routing, processing, and persistence.

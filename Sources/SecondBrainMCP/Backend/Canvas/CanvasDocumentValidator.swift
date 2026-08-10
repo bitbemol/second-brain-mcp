@@ -1,6 +1,6 @@
 import Foundation
 
-/// Validates JSON Canvas documents and produces their summary-safe projection.
+/// Validates JSON Canvas documents.
 ///
 /// The validator owns document-level invariants such as unique node identifiers
 /// and valid edge references. ``CanvasDocument`` and its wire types own only JSON
@@ -34,16 +34,6 @@ enum CanvasDocumentValidator {
     ///   re-encode the input.
     /// - Throws: ``ValidationError`` on a schema or cross-reference violation.
     static func validate(jsonData: Data) throws {
-        _ = try inspect(jsonData: jsonData)
-    }
-
-    /// Validates canvas JSON and returns its summary-safe projection.
-    ///
-    /// - Parameter jsonData: Original JSON bytes. Inspection does not normalize
-    ///   or re-encode the input.
-    /// - Returns: Validated node presentation data and the edge count.
-    /// - Throws: ``ValidationError`` on a schema or cross-reference violation.
-    static func inspect(jsonData: Data) throws -> CanvasInspection {
         do {
             try JSONSyntaxValidator.validate(
                 jsonData,
@@ -54,6 +44,7 @@ enum CanvasDocumentValidator {
         } catch {
             throw ValidationError.malformed(error.localizedDescription)
         }
+
         let document: CanvasDocument
         do {
             document = try JSONDecoder().decode(CanvasDocument.self, from: jsonData)
@@ -67,11 +58,6 @@ enum CanvasDocumentValidator {
 
         let nodeIDs = try validatedNodeIDs(in: document)
         try validateEdges(in: document, nodeIDs: nodeIDs)
-
-        return CanvasInspection(
-            nodes: document.nodes.map(\.inspection),
-            edgeCount: document.edges.count
-        )
     }
 
     /// Collects node identifiers while rejecting duplicates.

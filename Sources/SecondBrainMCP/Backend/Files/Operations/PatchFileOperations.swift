@@ -26,16 +26,6 @@ struct PatchFileOperations: Sendable {
         return PreparedFileWrite(data: input.data, output: .text("Created \(target.relativePath)\n\(summary)"))
     }
 
-    /// Returns a patch summary followed by the complete snapshot diff.
-    func read(
-        _ request: ReadFileRequest,
-        target: ReadableFileTarget,
-        snapshot: FileSnapshot
-    ) throws -> FileOperationOutput {
-        let summary = try Self.inspect(data: snapshot.data, path: target.relativePath)
-        return .text(summary + "\n\n" + (try TextFileSupport.string(from: snapshot.data)))
-    }
-
     /// Validates a unified diff and counts changed files, hunks, and lines.
     ///
     /// - Parameters:

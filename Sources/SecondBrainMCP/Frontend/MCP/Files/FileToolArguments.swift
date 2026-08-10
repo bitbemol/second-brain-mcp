@@ -48,11 +48,6 @@ struct FileToolArguments: Sendable {
         try value(argument, expected: "integer", using: \.intValue)
     }
 
-    /// Returns an optional Boolean, rejecting a present non-Boolean value.
-    func boolean(_ argument: FileToolArgument) throws -> Bool? {
-        try value(argument, expected: "boolean", using: \.boolValue)
-    }
-
     /// Returns an optional array, rejecting a present non-array value.
     func array(_ argument: FileToolArgument) throws -> [Value]? {
         try value(argument, expected: "array", using: \.arrayValue)

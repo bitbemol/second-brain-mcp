@@ -51,7 +51,6 @@ struct VaultRuntime: Sendable {
             )
         )
         let catalog = FileFormatCatalogFactory.build(
-            vaultPath: vaultPath,
             store: store,
             imageReader: imageReader,
             imageImporter: imageImporter,

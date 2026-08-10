@@ -1,10 +1,9 @@
 import Foundation
 
-/// Validates HTTP Archive files and produces compact traffic summaries.
+/// Validates and sanitizes HTTP Archive files.
 ///
-/// Credential-bearing fields are sanitized before persistence. Reads return
-/// summary data by default and include only the sanitized JSON when the caller
-/// explicitly requests raw output.
+/// Credential-bearing fields are redacted before persistence. Reads return the
+/// complete sanitized JSON document as one atomic file element.
 struct HARFileOperations: Sendable {
     /// Validates a centrally loaded HAR payload before generic persistence.
     ///
@@ -42,7 +41,7 @@ struct HARFileOperations: Sendable {
         )
     }
 
-    /// Summarizes a HAR snapshot, optionally including its complete JSON payload.
+    /// Returns the complete sanitized HAR JSON as one atomic document.
     func read(
         _ request: ReadFileRequest,
         target: ReadableFileTarget,
@@ -54,28 +53,13 @@ struct HARFileOperations: Sendable {
         } catch is HARSensitiveDataSanitizer.InvalidJSON {
             throw HARInspector.InspectionError.invalidJSON
         }
-        let inspection = try HARInspector.inspect(data: sanitized.data)
-        let summary = Self.summary(inspection: inspection, path: target.relativePath)
-        // Legacy archives may carry credentials in descriptive fields such as
-        // creator name, version, or method. Validate the projection as well as
-        // raw JSON so summary-only reads cannot disclose those values.
+        _ = try HARInspector.inspect(data: sanitized.data)
         try SensitiveContentPolicy.validate(
-            Data(summary.utf8),
+            sanitized.data,
             format: .har,
             path: target.relativePath
         )
-        if request.options.raw {
-            try SensitiveContentPolicy.validate(
-                sanitized.data,
-                format: .har,
-                path: target.relativePath
-            )
-            return .text(
-                summary + "\n\n"
-                    + (try TextFileSupport.string(from: sanitized.data))
-            )
-        }
-        return .text(summary + "\n\nPass raw=true to include the complete HAR JSON.")
+        return .text(try TextFileSupport.string(from: sanitized.data))
     }
 
     /// Describes validated HAR requests, responses, and timing.

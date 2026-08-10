@@ -17,8 +17,6 @@ enum FileToolArgument: String, Sendable {
     case tags
     /// Explicit create-time media transformation.
     case transform
-    /// Whether a specialized read should include raw content.
-    case raw
     /// Number of trailing log lines to return.
     case tailLines = "tail_lines"
     /// First log line in a bounded range.

@@ -112,6 +112,59 @@ struct `Structured text routed CRUD` {
         ))
     }
 
+    @Test
+    func `Generic text editing preserves BOM and rejects invalid final content`() async throws {
+        let context = try await makeContext()
+        defer { context.cleanup() }
+        let path = "notes/bom.json"
+        let original = "\u{FEFF}{\"value\":1}"
+
+        let created = try await context.service.create(CreateFileRequest(
+            format: .json,
+            path: path,
+            content: original,
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let createdRevision = try #require(created.metadata?.revision)
+        let read = try await context.service.read(ReadFileRequest(
+            format: .json,
+            path: path,
+            options: .default
+        ))
+        #expect(try outputText(read) == original)
+
+        let updated = try await context.service.update(UpdateFileRequest(
+            expectedRevision: createdRevision,
+            format: .json,
+            path: path,
+            content: nil,
+            mode: .patch,
+            replacements: [
+                TextReplacement(oldText: "1", newText: "2"),
+            ]
+        ))
+        let updatedRevision = try #require(updated.metadata?.revision)
+        let storedURL = context.root.appendingPathComponent(path)
+        let validBytes = try Data(contentsOf: storedURL)
+        #expect(validBytes.starts(with: [0xEF, 0xBB, 0xBF]))
+
+        await #expect(throws: JSONFileOperations.InvalidJSON.self) {
+            _ = try await context.service.update(UpdateFileRequest(
+                expectedRevision: updatedRevision,
+                format: .json,
+                path: path,
+                content: nil,
+                mode: .patch,
+                replacements: [
+                    TextReplacement(oldText: "2", newText: "}"),
+                ]
+            ))
+        }
+        #expect(try Data(contentsOf: storedURL) == validBytes)
+    }
+
     private struct Context {
         let root: URL
         let processDataParent: URL
@@ -145,7 +198,6 @@ struct `Structured text routed CRUD` {
         let limits = ImageLimits.default
         let externalSources = ExternalFileSourceValidator(vaultPath: root.path)
         let catalog = FileFormatCatalogFactory.build(
-            vaultPath: root.path,
             store: store,
             imageReader: ImageReader(
                 encoder: CoreGraphicsImageEncoder(),

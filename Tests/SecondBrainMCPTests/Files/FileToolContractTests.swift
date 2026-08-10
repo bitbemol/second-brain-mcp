@@ -6,24 +6,43 @@ import Testing
 @Suite
 struct `MCP file consistency contract` {
     private let capabilities = FileCapabilities(formats: [
-        .init(format: .markdown, operations: [
-            .create: [.notes],
-            .read: [.notes],
-            .update: [.notes],
-            .delete: [.notes],
-        ]),
-        .init(format: .json, operations: [
-            .create: [.notes],
-            .read: [.notes],
-            .update: [.notes],
-            .delete: [.notes],
-        ]),
-        .init(format: .csv, operations: [
-            .create: [.notes],
-            .read: [.notes],
-            .update: [.notes],
-            .delete: [.notes],
-        ]),
+        .init(
+            format: .markdown,
+            operations: [
+                .create: [.notes],
+                .read: [.notes],
+                .update: [.notes],
+                .delete: [.notes],
+            ],
+            createContract: FileCreateContract(
+                input: .content,
+                transform: nil,
+                acceptsTags: true
+            ),
+            updateModes: Set(FileUpdateMode.allCases)
+        ),
+        .init(
+            format: .json,
+            operations: [
+                .create: [.notes],
+                .read: [.notes],
+                .update: [.notes],
+                .delete: [.notes],
+            ],
+            createContract: .content,
+            updateModes: [.replace, .patch]
+        ),
+        .init(
+            format: .csv,
+            operations: [
+                .create: [.notes],
+                .read: [.notes],
+                .update: [.notes],
+                .delete: [.notes],
+            ],
+            createContract: .content,
+            updateModes: Set(FileUpdateMode.allCases)
+        ),
         .init(format: .pdf, operations: [
             .read: [.references],
         ]),
@@ -58,9 +77,9 @@ struct `MCP file consistency contract` {
         #expect(updateProperties["mutation_id"] == nil)
         let replacementDescription = updateProperties["replacements"]?
             .objectValue?["description"]?.stringValue ?? ""
-        #expect(replacementDescription.contains("Markdown"))
-        #expect(replacementDescription.contains("JSON"))
-        #expect(replacementDescription.contains("CSV"))
+        #expect(replacementDescription.contains("markdown"))
+        #expect(replacementDescription.contains("json"))
+        #expect(replacementDescription.contains("csv"))
         let readProperties = try inputProperties(of: #require(tools["read_file"]))
         #expect(readProperties["query"] == nil)
         #expect(
@@ -101,36 +120,6 @@ struct `MCP file consistency contract` {
         for operation in ["create_file", "update_file", "delete_file"] {
             #expect(try #require(tools[operation]).annotations.idempotentHint != true)
         }
-    }
-
-    @Test
-    func `Capabilities describe revisions and compare-and-swap`() throws {
-        let result = try FileCapabilitiesResource.read(
-            capabilities: capabilities,
-            readOnly: false
-        )
-        let json = try #require(result.contents.first?.text)
-        let entries = try #require(
-            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
-        )
-        let markdown = try #require(entries.first {
-            $0["format"] as? String == "markdown"
-        })
-        let operations = try #require(markdown["operations"] as? [String: Any])
-        let read = try #require(operations["read"] as? [String: Any])
-        let create = try #require(operations["create"] as? [String: Any])
-        let update = try #require(operations["update"] as? [String: Any])
-        let delete = try #require(operations["delete"] as? [String: Any])
-
-        #expect(read["revision_areas"] as? [String] == ["notes"])
-        #expect(read["requires_mutation_id"] == nil)
-        #expect(create["create_requires_absence"] as? Bool == true)
-        #expect(create["requires_mutation_id"] == nil)
-        #expect(create["durable_replay"] == nil)
-        #expect(update["requires_expected_revision"] as? Bool == true)
-        #expect(update["revision_areas"] as? [String] == ["notes"])
-        #expect(delete["requires_expected_revision"] as? Bool == true)
-        #expect(delete["revision_areas"] as? [String] == [])
     }
 
     private func requiredInputs(of tool: MCP.Tool) throws -> [String] {

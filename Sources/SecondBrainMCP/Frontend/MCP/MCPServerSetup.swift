@@ -38,8 +38,8 @@ struct MCPServerSetup {
             This is a personal knowledge vault with format-aware file access. \
             Use search_vault to discover notes, then use the file CRUD tools with an explicit \
             concrete format. Use move_directory for a complete notes subtree; it does not take a format. \
-            Read secondbrain://file-capabilities before file CRUD when \
-            format support is uncertain. Every file mutation that changes vault bytes is \
+            The CRUD tool schemas describe each format's accepted inputs and update modes. Every \
+            file mutation that changes vault bytes is \
             automatically committed to git before the tool returns. If a mutation response is lost, \
             read the current vault state before deciding whether another mutation is needed. Before \
             update_file or delete_file, read the note and return its structured revision \
@@ -49,7 +49,6 @@ struct MCPServerSetup {
             always relative to the vault root (for example, "notes/projects/app.md").
             """ + (customInstructions.map { "\n\n" + $0 } ?? ""),
             capabilities: .init(
-                resources: .init(subscribe: false, listChanged: false),
                 tools: .init(listChanged: false)
             )
         )
@@ -77,20 +76,6 @@ struct MCPServerSetup {
                 return try await directoryTool.call(params)
             }
             return try await fileTools.call(params)
-        }
-
-        await server.withMethodHandler(ListResources.self) { _ in
-            ListResources.Result(resources: FileCapabilitiesResource.list())
-        }
-
-        await server.withMethodHandler(ReadResource.self) { params in
-            guard params.uri == "secondbrain://file-capabilities" else {
-                throw MCPError.invalidParams("Unknown resource URI: \(params.uri)")
-            }
-            return try FileCapabilitiesResource.read(
-                capabilities: capabilities,
-                readOnly: config.readOnly
-            )
         }
 
         let transport = StdioTransport()

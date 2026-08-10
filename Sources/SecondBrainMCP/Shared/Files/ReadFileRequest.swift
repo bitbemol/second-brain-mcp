@@ -1,7 +1,5 @@
 /// Format-specific options accepted by a generic file read.
 struct ReadFileOptions: Sendable {
-    /// Whether HAR reads should include complete raw JSON.
-    let raw: Bool
     /// Number of trailing log lines to return.
     let tailLines: Int?
     /// First one-indexed log line in a bounded range.
@@ -19,7 +17,6 @@ struct ReadFileOptions: Sendable {
 
     /// Options representing each format's default read behavior.
     static let `default` = ReadFileOptions(
-        raw: false,
         tailLines: nil,
         startLine: nil,
         maxLines: nil,

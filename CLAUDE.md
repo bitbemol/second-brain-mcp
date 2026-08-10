@@ -55,7 +55,7 @@ Sources/SecondBrainMCP/
 │   └── MCP/
 │       ├── MCPServerSetup.swift       # Transport lifecycle and handler registration
 │       ├── Directories/               # Structural subtree-move adapter
-│       ├── Files/                     # Generic CRUD adapters + capability resource
+│       ├── Files/                     # Generic CRUD schemas and adapters
 │       └── Search/                    # Locator-only search schema, decoder, and mapper
 ├── Backend/                          # Internal application behavior
 │   ├── Concurrency/                  # Injected global vault access coordinator
@@ -160,8 +160,8 @@ by the narrowest layer that needs them.
   generic creates, replaces, and soft deletes go through `VaultCRUDStore`.
 - **Writable targets are structural.** `WritableFileTarget` has no public initializer and can
   only resolve paths under `notes/`; code cannot construct a writable `references/` target.
-- **Internal handler IDs stay internal.** The capability resource exposes concrete formats,
-  extensions, operations, and areas—not implementation identities.
+- **Internal handler IDs stay internal.** The format catalog projects concrete formats, creation
+  inputs, update modes, operations, and areas into the generic CRUD tool schemas—not implementation identities.
 - **No second `Process()` site.** `GitRepository` is the only subprocess boundary;
   image/video/PDF work stays in-process.
 
@@ -223,7 +223,7 @@ explicitly—even if the filesystem mutation already succeeded—rather than swa
 - **Secrets stop before Git.** Every prepared textual create/update passes the shared high-confidence
   credential policy before persistence. It reports only detector + line, never the matched value.
   HAR is the deliberate transformation exception: known authorization/cookie/token fields are
-  replaced with `[REDACTED]`, the result reports the redaction count, and only sanitized raw JSON is readable.
+  replaced with `[REDACTED]`, the result reports the redaction count, and reads return the complete sanitized JSON atom.
 - **Prepare, then persist.** A special create/update handler returns bytes; it never writes them.
   Generic persistence and git behavior remain identical across formats.
 - **Reuse functions, not manager-shaped dependency bags.** If several formats share behavior,
@@ -244,17 +244,19 @@ explicitly—even if the filesystem mutation already succeeded—rather than swa
    `Shared/Files/FileFormat.swift`.
 2. Add its supported file-size tier to
    `Backend/Files/Validation/FileResourcePolicy.swift`.
-3. Reuse an existing operation function or add a focused handler in
-   `Backend/Files/Operations/`. Handlers validate/prepare/read; they do not persist.
+3. Reuse the generic stored-text read/update/delete behavior when possible. Add a focused handler in
+   `Backend/Files/Operations/` only for create-time validation/transformation or a genuinely special
+   read such as logs, images, or PDFs. Handlers prepare values; they do not persist.
 4. Handle the new case in the exhaustive `FileFormat` switch in
-   `Backend/Files/Routing/FileFormatCatalogFactory.swift`, binding only supported operations and
-   allowed vault areas. Never add a `default`; the compiler must require every format to be wired.
+   `Backend/Files/Routing/FileFormatCatalogFactory.swift`. Declare its create input contract,
+   validator or special read, supported update modes, and allowed vault areas. Never add a
+   `default`; the compiler must require every format to be wired.
 5. Extend the exact capability-matrix expectation in `VaultFileServiceTests`.
 6. Add focused handler tests plus a routed service test when mutation policy changes.
 7. Run `swift test` and the DocC warnings-as-errors check.
 
-Do not edit four MCP schemas when adding a format. Tool format enums and
-`secondbrain://file-capabilities` derive from the catalog automatically.
+Do not edit four MCP schemas when adding a format. Tool format enums, create
+input requirements, and update modes derive from the catalog automatically.
 Any readable textual format is searchable as one whole-file atom. Register a focused
 `SearchAtomProvider` only when a format needs a different atomic representation.
 
@@ -295,7 +297,7 @@ Server logs (stderr) are captured by Claude Desktop at
   supported image files under `references/`; writes still cannot.
 - **Canvas writes are lossless on purpose.** `CanvasModel.validate` only *decodes to prove* the JSON is well-formed JSON Canvas (unique node ids, edges reference existing nodes, valid enum/color values) — it is **never re-serialized**. `create_file`/`update_file` with `format: canvas` write the caller's **original bytes**, so plugin-added keys outside the 1.0 spec survive. Don't "round-trip through the model" — that would drop those keys.
 - **General JSON and CSV writes are lossless too.** Their handlers parse only to prove validity and persist the caller's UTF-8 representation unchanged. JSON accepts any valid top-level value and supports replace/exact-patch updates; append is rejected because concatenated JSON values are not one document. CSV supports replace/append/exact-patch updates and validates quoted fields, escaped quotes, embedded line breaks, and consistent column counts after every change.
-- **Canvas validates structure, not external links.** `CanvasModel.validate` rejects dangling **edge→node** references (intra-document structural integrity) but a **file-node→file** reference is an extra-document soft link the spec and Obsidian tolerate — so it's *not* existence-checked on write. `CanvasFileOperations.read` surfaces a broken one as a non-blocking `⚠ file not found`. Don't "fix" this asymmetry by rejecting file-nodes on write — it would reject canvases Obsidian accepts.
+- **Canvas validates structure, not external links.** `CanvasModel.validate` rejects dangling **edge→node** references (intra-document structural integrity), but a **file-node→file** reference is an extra-document soft link the spec and Obsidian tolerate, so it is not existence-checked. Reads return the complete validated Canvas JSON atom without a synthesized summary.
 - **`read_file(format: <image>)` transforms only when it must.** A still within the model's native resolution (long edge ≤ 2576px) whose format the API accepts natively (png/jpeg/gif/webp) is passed through **byte-for-byte** with its own mime type — re-encoding does nothing for readability, the only reason to transform is size. Oversized stills, and formats the API won't accept (heic/tiff/bmp), are re-encoded to PNG. The **decode-bomb guard is `ImageEncoding.inspect`**: it reads dimensions + frame count *without* decoding, and `ImageReader` rejects >50 MP before any read decode. `ImageImporter` applies the same guard before import decoding. Keep that order — inspect, reject, only then decode.
 - **Animated GIFs return a frame *bundle*, not one image.** The model can't perceive GIF motion from a single image, so `ImageReader` samples up to 8 evenly-spaced frames (first + last included; `sampleIndices`), re-encodes each to PNG, and `read_file(format: <image>)` returns them as a time-ordered sequence. A single-frame GIF is a still. `ImageReader.ImageResult.frames` is therefore a list (1 for stills, N for animated GIFs). **Each frame also carries its wall-clock offset** (`Frame.timeOffsetSeconds`), with the total in `ImageResult.totalDurationSeconds` — both nil for stills or a GIF with no delay metadata. The delays come from `ImageInspection.frameDelays` (read in `inspect`, **metadata only — no pixel decode**, so the bomb guard is untouched); `ImageReader.cumulativeTime` does the summing.
 - **`FileFormat.imageExtensions` is the single source of truth** for which image extensions

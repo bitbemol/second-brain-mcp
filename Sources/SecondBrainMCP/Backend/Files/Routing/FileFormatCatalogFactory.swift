@@ -7,7 +7,6 @@ enum FileFormatCatalogFactory {
     /// Constructs the immutable catalog used by the service and MCP discovery.
     ///
     /// - Parameters:
-    ///   - vaultPath: Canonical vault root used by handlers that inspect links.
     ///   - store: Sole generic persistence actor.
     ///   - imageReader: Vault image read behavior.
     ///   - imageImporter: External-image preparation policy.
@@ -15,7 +14,6 @@ enum FileFormatCatalogFactory {
     ///   - pdfReader: Read-only PDF behavior.
     /// - Returns: Fully wired format catalog.
     static func build(
-        vaultPath: String,
         store: VaultCRUDStore,
         imageReader: ImageReader,
         imageImporter: ImageImporter,
@@ -23,7 +21,7 @@ enum FileFormatCatalogFactory {
         pdfReader: PDFReader
     ) -> FileFormatCatalog {
         let markdown = MarkdownFileOperations()
-        let canvas = CanvasFileOperations(vaultPath: vaultPath)
+        let canvas = CanvasFileOperations()
         let har = HARFileOperations()
         let patch = PatchFileOperations()
         let log = LogFileOperations()
@@ -43,21 +41,31 @@ enum FileFormatCatalogFactory {
         let storedFiles = StoredTextFileOperationFamily(store: store, delete: softDelete)
         let imageFiles = ImageFileOperationFamily(read: image.read, delete: softDelete)
 
+        // This exhaustive switch declares only each format's differences. The text and
+        // image families supply their shared read, edit, and soft-delete bindings; cases
+        // override creation, validation, reading, or update modes only when the format
+        // contract requires different behavior.
         func definition(for format: FileFormat) -> FileFormatDefinition {
             switch format {
             case .markdown:
                 storedFiles.definition(
                     format: format,
+                    createContract: FileCreateContract(
+                        input: .content,
+                        transform: nil,
+                        acceptsTags: true
+                    ),
                     create: markdown.prepareCreate,
-                    read: markdown.read,
-                    update: markdown.prepareUpdate
+                    updateModes: Set(FileUpdateMode.allCases)
                 )
             case .canvas:
                 storedFiles.definition(
                     format: format,
                     create: canvas.prepareCreate,
-                    read: canvas.read,
-                    update: canvas.prepareUpdate
+                    validate: { data, _ in
+                        try CanvasDocumentValidator.validate(jsonData: data)
+                    },
+                    updateModes: [.replace]
                 )
             case .har:
                 storedFiles.definition(
@@ -69,37 +77,50 @@ enum FileFormatCatalogFactory {
                 storedFiles.definition(
                     format: format,
                     create: patch.prepareCreate,
-                    read: patch.read
+                    validate: { data, path in
+                        _ = try PatchFileOperations.inspect(data: data, path: path)
+                    }
                 )
             case .log:
                 storedFiles.definition(
                     format: format,
                     create: log.prepareCreate,
                     read: log.read,
-                    update: log.prepareUpdate
+                    updateModes: [.append]
                 )
             case .json:
                 storedFiles.definition(
                     format: format,
                     create: json.prepareCreate,
-                    read: json.read,
-                    update: json.prepareUpdate
+                    validate: JSONFileOperations.validate,
+                    updateModes: [.replace, .patch]
                 )
             case .csv:
                 storedFiles.definition(
                     format: format,
                     create: csv.prepareCreate,
-                    read: csv.read,
-                    update: csv.prepareUpdate
+                    validate: CSVFileOperations.validate,
+                    updateModes: Set(FileUpdateMode.allCases),
+                    append: CSVFileOperations.appendingRows
                 )
             case .png:
                 imageFiles.definition(
                     format,
+                    contract: FileCreateContract(
+                        input: .source,
+                        transform: nil,
+                        acceptsTags: false
+                    ),
                     create: image.preparePNG
                 )
             case .gif:
                 imageFiles.definition(
                     format,
+                    contract: FileCreateContract(
+                        input: .source,
+                        transform: .videoToGIF,
+                        acceptsTags: false
+                    ),
                     create: image.prepareVideoGIF
                 )
             case .jpeg, .webp, .heic, .tiff, .bmp:

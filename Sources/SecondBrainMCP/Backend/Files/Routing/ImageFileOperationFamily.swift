@@ -40,12 +40,14 @@ struct ImageFileOperationFamily: Sendable {
     ///   shared read/delete resolvers.
     func definition(
         _ format: FileFormat,
+        contract: FileCreateContract,
         create: @escaping CreateFileFunction
     ) -> FileFormatDefinition {
         definition(
             format,
             create: CreateOperationBinding(
                 allowedAreas: [.notes],
+                contract: contract,
                 execute: create
             )
         )

@@ -1,8 +1,33 @@
+/// Public, transport-neutral description of one format's creation input.
+struct FileCreateContract: Equatable, Sendable {
+    /// Caller payload accepted by the format's create handler.
+    enum Input: String, Codable, Sendable {
+        /// UTF-8 data supplied through `content`.
+        case content
+        /// External regular file supplied through `source`.
+        case source
+    }
+
+    /// Required payload field.
+    let input: Input
+    /// Required transformation when the source cannot be stored directly.
+    let transform: FileCreateTransform?
+    /// Whether Markdown-style tags are accepted.
+    let acceptsTags: Bool
+
+    /// Standard inline-content creation contract.
+    static let content = FileCreateContract(
+        input: .content,
+        transform: nil,
+        acceptsTags: false
+    )
+}
+
 /// Immutable, transport-neutral projection of effective file support.
 ///
-/// The manifest contains only concrete formats, CRUD operations, and allowed
-/// vault areas. Backend handler identities and executable closures never cross
-/// this boundary.
+/// The manifest contains only concrete formats, CRUD operations, allowed vault
+/// areas, creation inputs, and update modes. Backend handler identities and
+/// executable closures never cross this boundary.
 struct FileCapabilities: Equatable, Sendable {
     /// Effective capabilities for one concrete file format.
     struct Format: Equatable, Sendable {
@@ -10,6 +35,22 @@ struct FileCapabilities: Equatable, Sendable {
         let format: FileFormat
         /// Allowed vault areas keyed by supported CRUD operation.
         let operations: [FileCRUDOperation: Set<VaultArea>]
+        /// Input accepted by create, or nil when creation is unsupported.
+        let createContract: FileCreateContract?
+        /// Update modes accepted by the registered update operation.
+        let updateModes: Set<FileUpdateMode>
+
+        init(
+            format: FileFormat,
+            operations: [FileCRUDOperation: Set<VaultArea>],
+            createContract: FileCreateContract? = nil,
+            updateModes: Set<FileUpdateMode> = []
+        ) {
+            self.format = format
+            self.operations = operations
+            self.createContract = createContract
+            self.updateModes = updateModes
+        }
     }
 
     /// Registered formats sorted by their stable raw values.

@@ -95,17 +95,66 @@ struct `Generic files — routed service` {
             .delete: notes,
         ]
 
+        let markdownCreate = FileCreateContract(
+            input: .content,
+            transform: nil,
+            acceptsTags: true
+        )
+        let pngCreate = FileCreateContract(
+            input: .source,
+            transform: nil,
+            acceptsTags: false
+        )
+        let gifCreate = FileCreateContract(
+            input: .source,
+            transform: .videoToGIF,
+            acceptsTags: false
+        )
+
         #expect(runtime.capabilities == FileCapabilities(formats: [
-            .init(format: .markdown, operations: textCRUD),
-            .init(format: .canvas, operations: textCRUD),
-            .init(format: .har, operations: createReadDelete),
-            .init(format: .patch, operations: createReadDelete),
-            .init(format: .log, operations: textCRUD),
-            .init(format: .json, operations: textCRUD),
-            .init(format: .csv, operations: textCRUD),
-            .init(format: .png, operations: createReadDeleteMedia),
+            .init(
+                format: .markdown,
+                operations: textCRUD,
+                createContract: markdownCreate,
+                updateModes: Set(FileUpdateMode.allCases)
+            ),
+            .init(
+                format: .canvas,
+                operations: textCRUD,
+                createContract: .content,
+                updateModes: [.replace]
+            ),
+            .init(format: .har, operations: createReadDelete, createContract: .content),
+            .init(format: .patch, operations: createReadDelete, createContract: .content),
+            .init(
+                format: .log,
+                operations: textCRUD,
+                createContract: .content,
+                updateModes: [.append]
+            ),
+            .init(
+                format: .json,
+                operations: textCRUD,
+                createContract: .content,
+                updateModes: [.replace, .patch]
+            ),
+            .init(
+                format: .csv,
+                operations: textCRUD,
+                createContract: .content,
+                updateModes: Set(FileUpdateMode.allCases)
+            ),
+            .init(
+                format: .png,
+                operations: createReadDeleteMedia,
+                createContract: pngCreate
+            ),
             .init(format: .jpeg, operations: readDeleteMedia),
-            .init(format: .gif, operations: createReadDeleteMedia),
+            .init(
+                format: .gif,
+                operations: createReadDeleteMedia,
+                createContract: gifCreate
+            ),
             .init(format: .webp, operations: readDeleteMedia),
             .init(format: .heic, operations: readDeleteMedia),
             .init(format: .tiff, operations: readDeleteMedia),
@@ -145,31 +194,6 @@ struct `Generic files — routed service` {
             readOnly: true
         )
         #expect(readOnlyTools.map(\.name) == [FileToolName.read.rawValue])
-    }
-
-    @Test
-    func `MCP resources expose only file capabilities`() {
-        let uris = Set(FileCapabilitiesResource.list().map(\.uri))
-        #expect(uris == ["secondbrain://file-capabilities"])
-    }
-
-    @Test
-    func `Read-only capability resource omits every mutation`() async throws {
-        let (_, runtime) = try await makeRuntime()
-        let result = try FileCapabilitiesResource.read(
-            capabilities: runtime.capabilities,
-            readOnly: true
-        )
-        let json = try #require(result.contents.first?.text)
-        let object = try JSONSerialization.jsonObject(with: Data(json.utf8))
-        let entries = try #require(object as? [[String: Any]])
-        let markdown = try #require(entries.first { $0["format"] as? String == "markdown" })
-        let operations = try #require(markdown["operations"] as? [String: Any])
-        let read = try #require(operations["read"] as? [String: Any])
-
-        #expect(markdown["extensions"] as? [String] == ["markdown", "md"])
-        #expect(Set(operations.keys) == ["read"])
-        #expect(read["areas"] as? [String] == ["notes"])
     }
 
     @Test

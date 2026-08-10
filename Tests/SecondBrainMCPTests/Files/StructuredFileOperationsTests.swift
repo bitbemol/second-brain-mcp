@@ -15,7 +15,7 @@ struct `Generic files — structured format operations` {
     }
 
     @Test
-    func `HAR creation validates structure and reading summarizes entries`() async throws {
+    func `HAR creation validates structure and reading returns atomic JSON`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = HARFileOperations()
@@ -38,14 +38,17 @@ struct `Generic files — structured format operations` {
             target: target.readable,
             snapshot: snapshot
         )
-        guard case .text(let summary) = output.contents.first else {
-            Issue.record("Expected HAR summary text")
+        guard case .text(let returned) = output.contents.first else {
+            Issue.record("Expected HAR JSON")
             return
         }
-        #expect(summary.contains("Entries: 2"))
-        #expect(summary.contains("GET=1"))
-        #expect(summary.contains("500=1"))
-        #expect(!summary.contains("\"entries\""))
+        let returnedObject = try #require(
+            JSONSerialization.jsonObject(with: Data(returned.utf8)) as? NSDictionary
+        )
+        let expectedObject = try #require(
+            JSONSerialization.jsonObject(with: Data(content.utf8)) as? NSDictionary
+        )
+        #expect(returnedObject == expectedObject)
     }
 
     @Test
@@ -123,7 +126,6 @@ struct `Generic files — structured format operations` {
             format: .har,
             path: target.relativePath,
             options: ReadFileOptions(
-                raw: true,
                 tailLines: nil,
                 startLine: nil,
                 maxLines: nil,
@@ -142,7 +144,7 @@ struct `Generic files — structured format operations` {
             )
         )
         guard case .text(let raw) = output.contents.first else {
-            Issue.record("Expected sanitized raw HAR")
+            Issue.record("Expected sanitized HAR JSON")
             return
         }
         #expect(!raw.contains(secret))
@@ -228,7 +230,7 @@ struct `Generic files — structured format operations` {
             format: .log,
             create: operations.prepareCreate,
             read: operations.read,
-            update: operations.prepareUpdate
+            updateModes: [.append]
         )
         let create = try #require(definition.operations.create)
         let target = try WritableFileTarget.resolve(path: "notes/import.log", format: .log, vaultPath: root)
@@ -275,7 +277,7 @@ struct `Generic files — structured format operations` {
     }
 
     @Test
-    func `Log reads tail and only permits append updates`() async throws {
+    func `Log reads a bounded tail`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
         let operations = LogFileOperations()
@@ -286,7 +288,7 @@ struct `Generic files — structured format operations` {
         )
         try await store.create(target: target, data: prepared.data)
 
-        let options = ReadFileOptions(raw: false, tailLines: 2, startLine: nil, maxLines: nil, page: nil, bookPage: nil, pageRange: nil, maxPages: nil)
+        let options = ReadFileOptions(tailLines: 2, startLine: nil, maxLines: nil, page: nil, bookPage: nil, pageRange: nil, maxPages: nil)
         let readSnapshot = try await store.snapshot(target.readable)
         let output = try operations.read(
             ReadFileRequest(format: .log, path: target.relativePath, options: options),
@@ -300,67 +302,6 @@ struct `Generic files — structured format operations` {
         #expect(!text.contains("\none\n"))
         #expect(text.contains("two\nthree"))
 
-        let snapshot = try await store.snapshot(target.readable)
-        let update = UpdateFileRequest(
-
-            expectedRevision: snapshot.revision,
-            format: .log,
-            path: target.relativePath,
-            content: "four",
-            mode: .append,
-            replacements: []
-        )
-        let updated = try operations.prepareUpdate(update, target: target, snapshot: snapshot)
-        #expect(try TextFileSupport.string(from: updated.data).hasSuffix("three\nfour"))
-    }
-
-    @Test
-    func `Text handlers append to empty files without a leading blank line`() throws {
-        let root = try makeVault()
-        let snapshot = FileSnapshot(data: Data(), modifiedDate: nil)
-
-        let markdownTarget = try WritableFileTarget.resolve(
-            path: "notes/empty.md",
-            format: .markdown,
-            vaultPath: root
-        )
-        let markdownRequest = UpdateFileRequest(
-
-            expectedRevision: snapshot.revision,
-            format: .markdown,
-            path: markdownTarget.relativePath,
-            content: "first",
-            mode: .append,
-            replacements: []
-        )
-        let markdown = try MarkdownFileOperations().prepareUpdate(
-            markdownRequest,
-            target: markdownTarget,
-            snapshot: snapshot
-        )
-
-        let logTarget = try WritableFileTarget.resolve(
-            path: "notes/empty.log",
-            format: .log,
-            vaultPath: root
-        )
-        let logRequest = UpdateFileRequest(
-
-            expectedRevision: snapshot.revision,
-            format: .log,
-            path: logTarget.relativePath,
-            content: "first",
-            mode: .append,
-            replacements: []
-        )
-        let log = try LogFileOperations().prepareUpdate(
-            logRequest,
-            target: logTarget,
-            snapshot: snapshot
-        )
-
-        #expect(try TextFileSupport.string(from: markdown.data) == "first")
-        #expect(try TextFileSupport.string(from: log.data) == "first")
     }
 
     @Test
@@ -374,7 +315,6 @@ struct `Generic files — structured format operations` {
         ).readable
         let snapshot = FileSnapshot(data: Data("one\ntwo\nthree".utf8), modifiedDate: nil)
         let options = ReadFileOptions(
-            raw: false,
             tailLines: nil,
             startLine: .min,
             maxLines: .max,
@@ -415,7 +355,6 @@ struct `Generic files — structured format operations` {
         #expect(createSummary.contains("250002 lines"))
 
         let options = ReadFileOptions(
-            raw: false,
             tailLines: 2,
             startLine: nil,
             maxLines: nil,
@@ -512,42 +451,6 @@ struct `Generic files — structured format operations` {
             try PatchFileOperations.inspect(
                 data: Data("diff --git nope\n+not a hunk".utf8),
                 path: "notes/bad.patch"
-            )
-        }
-    }
-
-    @Test
-    func `Canvas reads validate content and flag missing file nodes`() async throws {
-        let root = try makeVault()
-        let store = VaultCRUDStore(vaultPath: root)
-        let operations = CanvasFileOperations(vaultPath: root)
-        let target = try WritableFileTarget.resolve(path: "notes/board.canvas", format: .canvas, vaultPath: root)
-        let canvas = #"{"nodes":[{"id":"file-1","type":"file","file":"notes/missing.png","x":0,"y":0,"width":100,"height":100}],"edges":[]}"#
-        let prepared = try operations.prepareCreate(
-            input(canvas),
-            target: target
-        )
-        try await store.create(target: target, data: prepared.data)
-
-        let snapshot = try await store.snapshot(target.readable)
-        let output = try operations.read(
-            ReadFileRequest(format: .canvas, path: target.relativePath, options: .default),
-            target: target.readable,
-            snapshot: snapshot
-        )
-        guard case .text(let text) = output.contents.first else {
-            Issue.record("Expected canvas text")
-            return
-        }
-        #expect(text.contains("⚠ file not found"))
-
-        try Data("not json".utf8).write(to: target.url, options: .atomic)
-        let invalidSnapshot = try await store.snapshot(target.readable)
-        #expect(throws: CanvasDocumentValidator.ValidationError.self) {
-            try operations.read(
-                ReadFileRequest(format: .canvas, path: target.relativePath, options: .default),
-                target: target.readable,
-                snapshot: invalidSnapshot
             )
         }
     }

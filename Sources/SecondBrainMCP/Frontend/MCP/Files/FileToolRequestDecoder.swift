@@ -82,7 +82,6 @@ enum FileToolRequestDecoder {
             format: format,
             path: path,
             options: ReadFileOptions(
-                raw: try arguments.boolean(.raw) ?? false,
                 tailLines: try arguments.integer(.tailLines),
                 startLine: try arguments.integer(.startLine),
                 maxLines: try arguments.integer(.maxLines),
