@@ -35,7 +35,7 @@ struct DirectoryMoveToolController: Sendable {
         do {
             let output = try await directories.move(request)
             try Task.checkCancellation()
-            return FileToolResultMapper.success(output)
+            return FileToolResultMapper.directoryMoveSuccess(output)
         } catch is CancellationError {
             throw CancellationError()
         } catch {

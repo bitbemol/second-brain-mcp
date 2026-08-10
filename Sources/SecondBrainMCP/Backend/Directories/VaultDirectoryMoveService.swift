@@ -51,22 +51,21 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
 
     func move(_ request: MoveDirectoryRequest) async throws -> FileOperationOutput {
         guard !readOnly else { throw FileRoutingError.readOnly }
-        let source = try NotesDirectoryTarget.resolve(
-            path: request.sourcePath,
-            vaultPath: vaultPath
-        )
-        let destination = try NotesDirectoryTarget.resolve(
-            path: request.destinationPath,
-            vaultPath: vaultPath
-        )
-        let sourceIdentity = Self.pathIdentity(source.relativePath)
-        let destinationIdentity = Self.pathIdentity(destination.relativePath)
+        let sourcePath = try NotesDirectoryTarget.canonicalize(path: request.sourcePath)
+        let destinationPath = try NotesDirectoryTarget.canonicalize(path: request.destinationPath)
+        let sourceIdentity = Self.pathIdentity(sourcePath)
+        let destinationIdentity = Self.pathIdentity(destinationPath)
         guard sourceIdentity != destinationIdentity else {
-            throw DirectoryMoveError.destinationExists(destination.relativePath)
+            throw DirectoryMoveError.sourceAndDestinationAreSame
         }
         guard !destinationIdentity.hasPrefix(sourceIdentity + "/") else {
             throw DirectoryMoveError.destinationInsideSource
         }
+        let source = try NotesDirectoryTarget.resolve(path: sourcePath, vaultPath: vaultPath)
+        let destination = try NotesDirectoryTarget.resolve(
+            path: destinationPath,
+            vaultPath: vaultPath
+        )
 
         let canonicalRequest = MoveDirectoryRequest(
             mutationID: request.mutationID,

@@ -85,6 +85,50 @@ struct `Vault directory move service` {
     }
 
     @Test
+    func `Empty directory moves remain filesystem-only because Git has no directory objects`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(
+            atPath: root + "/notes/in-progress/empty",
+            withIntermediateDirectories: true
+        )
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let before = try git(["rev-list", "--count", "HEAD"], root: root)
+
+        _ = try await runtime.directories.move(MoveDirectoryRequest(
+            mutationID: MutationID(),
+            sourcePath: "notes/in-progress/empty",
+            destinationPath: "notes/completed/empty"
+        ))
+
+        #expect(!FileManager.default.fileExists(
+            atPath: root + "/notes/in-progress/empty"
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: root + "/notes/completed/empty"
+        ))
+        #expect(try git(["rev-list", "--count", "HEAD"], root: root) == before)
+    }
+
+    @Test
+    func `Case-only directory renames are rejected as the same canonical path`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+
+        await #expect(throws: DirectoryMoveError.self) {
+            _ = try await runtime.directories.move(MoveDirectoryRequest(
+                mutationID: MutationID(),
+                sourcePath: "notes/in-progress/ticket-123",
+                destinationPath: "notes/in-progress/TICKET-123"
+            ))
+        }
+        #expect(FileManager.default.fileExists(
+            atPath: root + "/notes/in-progress/ticket-123"
+        ))
+    }
+
+    @Test
     func `No-clobber, self-subtree, non-directory, and reference moves fail safely`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }

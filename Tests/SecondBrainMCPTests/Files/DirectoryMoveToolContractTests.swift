@@ -28,6 +28,8 @@ struct `MCP directory move contract` {
         #expect(tool.name == "move_directory")
         #expect(tool.annotations.idempotentHint == true)
         #expect(tool.annotations.destructiveHint == true)
+        #expect(tool.description?.contains("path_prefix") != true)
+        #expect(tool.description?.contains("does not take a file format") == true)
         let input = try #require(tool.inputSchema.objectValue)
         let required = Set(try #require(input["required"]?.arrayValue).compactMap(\.stringValue))
         #expect(required == ["mutation_id", "source_path", "destination_path"])
@@ -41,7 +43,7 @@ struct `MCP directory move contract` {
             try #require(output["required"]?.arrayValue).compactMap(\.stringValue)
         )
         #expect(outputRequired == [
-            "source_path", "destination_path", "path", "area", "mutation_id", "replayed",
+            "source_path", "destination_path", "mutation_id", "replayed",
         ])
         #expect(DirectoryMoveToolDefinition.build(readOnly: true) == nil)
     }
@@ -69,8 +71,10 @@ struct `MCP directory move contract` {
             destinationPath: "notes/completed/ticket-123"
         ))
         let structured = try #require(result.structuredContent?.objectValue)
+        #expect(Set(structured.keys) == [
+            "source_path", "destination_path", "mutation_id", "replayed",
+        ])
         #expect(structured["source_path"]?.stringValue == "notes/in-progress/ticket-123")
-        #expect(structured["path"]?.stringValue == "notes/completed/ticket-123")
         #expect(structured["destination_path"]?.stringValue
             == "notes/completed/ticket-123")
     }

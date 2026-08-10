@@ -36,9 +36,9 @@ struct MCPServerSetup {
             version: "2.1.0",
             instructions: """
             This is a personal knowledge vault with format-aware file access. \
-            Use search_vault to discover notes, then create_file, read_file, update_file, \
-            delete_file, or move_directory with an explicit \
-            concrete format. Read secondbrain://file-capabilities before operating when \
+            Use search_vault to discover notes, then use the file CRUD tools with an explicit \
+            concrete format. Use move_directory for a complete notes subtree; it does not take a format. \
+            Read secondbrain://file-capabilities before file CRUD when \
             format support is uncertain. Every file mutation that changes vault bytes is \
             automatically committed to git. Every mutation requires a fresh caller-generated mutation_id UUID; \
             reuse it only when retrying that exact request after a lost response. Before \

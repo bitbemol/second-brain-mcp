@@ -9,7 +9,7 @@ enum DirectoryMoveToolDefinition {
         guard !readOnly else { return nil }
         return Tool(
             name: name,
-            description: "Atomically move or rename one complete directory subtree under notes/ in a single operation. Every nested file and subdirectory is preserved without reading or rewriting its content. destination_path is the exact new directory path and must not already exist. The move is committed to Git once and is immediately visible to search_vault under the new path_prefix. mutation_id is a caller-generated UUID; reuse it only to retry this exact move after a timeout.",
+            description: "Atomically move or rename one complete directory subtree under notes/ in a single operation. This structural operation does not take a file format: nested files and directories are preserved without reading or rewriting content. The source and destination must differ after case and Unicode normalization, and destination_path must not exist. Hidden and package subtrees are rejected. Empty directories move on disk but cannot be represented in Git. The completed files are discoverable by search_vault at their destination paths. mutation_id is a caller-generated UUID; reuse it only to retry this exact move after a timeout.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -43,19 +43,12 @@ enum DirectoryMoveToolDefinition {
                 "properties": .object([
                     "source_path": .object(["type": .string("string")]),
                     "destination_path": .object(["type": .string("string")]),
-                    "path": .object(["type": .string("string")]),
-                    "area": .object([
-                        "type": .string("string"),
-                        "enum": .array([.string("notes")])
-                    ]),
                     "mutation_id": .object(["type": .string("string")]),
                     "replayed": .object(["type": .string("boolean")])
                 ]),
                 "required": .array([
                     .string("source_path"),
                     .string("destination_path"),
-                    .string("path"),
-                    .string("area"),
                     .string("mutation_id"),
                     .string("replayed")
                 ]),

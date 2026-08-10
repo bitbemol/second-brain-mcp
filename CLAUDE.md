@@ -54,9 +54,11 @@ Sources/SecondBrainMCP/
 │   ├── Configuration/                # CLI argument parsing
 │   └── MCP/
 │       ├── MCPServerSetup.swift       # Transport lifecycle and handler registration
+│       ├── Directories/               # Structural subtree-move adapter
 │       ├── Files/                     # Generic CRUD adapters + capability resource
 │       └── Search/                    # Locator-only search schema, decoder, and mapper
 ├── Backend/                          # Internal application behavior
+│   ├── Directories/                  # Atomic subtree move implementation
 │   ├── Files/
 │   │   ├── Ingress/                  # Request-to-bytes policy for stored text
 │   │   ├── Operations/               # Format validation/transformation/read behavior
@@ -68,9 +70,9 @@ Sources/SecondBrainMCP/
 │   ├── Media/                        # Image and video processing
 │   ├── Search/                       # Atom providers, matching, and cursor pagination
 │   ├── VaultVersioning/              # Sole Git subprocess and serialization boundary
-│   └── …                             # Canvas, references, directories, infrastructure
+│   └── …                             # Canvas, references, and infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
-    ├── Files/                        # Concrete formats, CRUD contracts, capabilities, output
+    ├── Files/                        # File and directory operation contracts, formats, output
     ├── Search/                       # Search request/result/service contracts
     └── Logging/                      # Process-level stderr logger
 ```
@@ -111,6 +113,13 @@ MCP request
       ├─ read: VaultFileService returns the routed output
       └─ mutation: VaultMutationExecutor persists → VaultVersioning.recordSnapshot() → receipt
 ```
+
+`move_directory` remains outside file CRUD because it changes one tree boundary over a set of
+file atoms rather than one atom's bytes. Its frontend controller decodes the Shared
+`MoveDirectoryRequest` and calls the Shared `DirectoryMoveService` port; the backend implementation
+owns path policy, subtree validation, the atomic rename, snapshot request, and exact-retry receipt.
+The tool has no `format` argument and returns only its source path, destination path, mutation ID,
+and replay state.
 
 `FileFormat` is concrete storage format only. Semantic roles such as “attachment” or “reference”
 belong to vault area/policy, never in that enum. `FileFormatDefinition` binds each operation
