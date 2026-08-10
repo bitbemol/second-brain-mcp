@@ -115,12 +115,6 @@ enum FileToolDefinitions {
                             "maxLength": .int(FileReadRequestLimits.maximumPDFPageRangeBytes),
                             "description": .string("For PDFs, range such as 10-20; the backend limit is measured in UTF-8 bytes"),
                         ]),
-                        .query: .object([
-                            "type": .string("string"),
-                            "minLength": .int(1),
-                            "maxLength": .int(FileReadRequestLimits.maximumPDFQueryBytes),
-                            "description": .string("For PDFs, find and render matching pages; the backend limit is measured in UTF-8 bytes"),
-                        ]),
                         .maxPages: .object([
                             "type": .string("integer"), "minimum": .int(1), "maximum": .int(20),
                             "description": .string("For PDFs, maximum pages (default 5)")

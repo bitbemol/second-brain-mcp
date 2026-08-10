@@ -45,7 +45,6 @@ struct `MCP file request decoder` {
                 "format": .string("pdf"),
                 "path": .string("references/manual.pdf"),
                 "page": .int(7),
-                "query": .string("architecture"),
                 "max_pages": .int(3),
             ]
         )
@@ -60,7 +59,6 @@ struct `MCP file request decoder` {
 
         #expect(request.format == .pdf)
         #expect(request.options.page == 7)
-        #expect(request.options.query == "architecture")
         #expect(request.options.maxPages == 3)
     }
 

@@ -1,8 +1,5 @@
-/// Transport-neutral read boundary for ranked vault search.
+/// Transport-neutral boundary that locates atomic vault content.
 protocol VaultSearchService: Sendable {
-    /// Searches safe snapshots of supported files without returning mutation revisions.
-    ///
-    /// - Parameter request: Validated or untrusted search input.
-    /// - Returns: Ranked, bounded results and explicit coverage metadata.
+    /// Searches content but returns only coordinates consumable by `read_file`.
     func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse
 }

@@ -6,16 +6,14 @@ struct ReadFileOptions: Sendable {
     let tailLines: Int?
     /// First one-indexed log line in a bounded range.
     let startLine: Int?
-    /// Maximum log lines returned from `startLine`.
+    /// Maximum log lines returned from startLine.
     let maxLines: Int?
     /// Physical one-indexed PDF page.
     let page: Int?
-    /// Printed PDF page label, such as `xii` or `42`.
+    /// Printed PDF page label, such as xii or 42.
     let bookPage: String?
-    /// Inclusive physical PDF range formatted as `start-end`.
+    /// Inclusive physical PDF range formatted as start-end.
     let pageRange: String?
-    /// Text query used to select matching PDF pages.
-    let query: String?
     /// Maximum number of rendered PDF pages.
     let maxPages: Int?
 
@@ -28,7 +26,6 @@ struct ReadFileOptions: Sendable {
         page: nil,
         bookPage: nil,
         pageRange: nil,
-        query: nil,
         maxPages: nil
     )
 }

@@ -10,39 +10,17 @@ struct PDFReader: Sendable {
         self.admission = admission
     }
 
-    /// Opens a PDF and selects pages by search, book label, physical page, or range.
+    /// Opens a PDF and selects pages by book label, physical page, or range.
     ///
-    /// Selection precedence is `query`, `bookPage`, `page`, then `pageRange`.
-    /// With no selector, the first `maxPages` pages are returned.
-    ///
-    /// - Parameters:
-    ///   - target: Path and extension-validated PDF target.
-    ///   - page: Optional one-based physical PDF page number.
-    ///   - pageRange: Optional inclusive physical range in `start-end` form.
-    ///   - bookPage: Optional printed page label, such as `xii` or `42`.
-    ///   - query: Optional case-insensitive full-document text query.
-    ///   - maxPages: Maximum number of pages selected by a query, range, or default read.
-    /// - Returns: Document metadata and rendered page content.
-    /// - Throws: ``VaultFileInspector/InspectionError`` when the target is absent
-    ///   or not a regular file, ``FileResourcePolicy/Violation`` when it is too
-    ///   large, ``PDFReadError`` for invalid queries, busy admission, or PDFKit
-    ///   failures, and `CancellationError` when cooperative work is canceled.
+    /// Selection precedence is bookPage, page, then pageRange.
+    /// With no selector, the first maxPages pages are returned.
     func read(
         target: ReadableFileTarget,
         page: Int? = nil,
         pageRange: String? = nil,
         bookPage: String? = nil,
-        query: String? = nil,
         maxPages: Int = 5
     ) async throws -> PDFReadResult {
-        if let query {
-            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  query.utf8.count <= FileReadRequestLimits.maximumPDFQueryBytes else {
-                throw PDFReadError.invalidQuery(
-                    maximumBytes: FileReadRequestLimits.maximumPDFQueryBytes
-                )
-            }
-        }
         if let bookPage {
             guard !bookPage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   bookPage.utf8.count <= FileReadRequestLimits.maximumPDFBookPageBytes else {
@@ -67,7 +45,6 @@ struct PDFReader: Sendable {
                 page: page,
                 pageRange: pageRange,
                 bookPage: bookPage,
-                query: query,
                 maxPages: maxPages
             )
         }
@@ -79,7 +56,6 @@ struct PDFReader: Sendable {
         page: Int?,
         pageRange: String?,
         bookPage: String?,
-        query: String?,
         maxPages: Int
     ) throws -> PDFReadResult {
         let snapshot = try VaultFileInspector.temporarySnapshot(
@@ -99,20 +75,8 @@ struct PDFReader: Sendable {
             maximumBytes: 2_048
         )
         let rendering: PDFPageRenderResult
-        var queryStatus: PDFTextSearchResult?
 
-        if let query {
-            let search = try PDFTextExtractor.rankedSearchDocument(
-                document,
-                query: query,
-                maxResults: maxPages
-            )
-            rendering = try PDFPageRenderer.renderPages(
-                in: document,
-                pageNumbers: search.pages
-            )
-            queryStatus = search.recordingRendering(rendering)
-        } else if let bookPage {
+        if let bookPage {
             let resolvedPage = try PDFDocumentNavigation.resolvePage(
                 label: bookPage,
                 in: document
@@ -136,7 +100,7 @@ struct PDFReader: Sendable {
                 pageNumbers: pages
             )
         } else {
-            let count = min(document.pageCount, maxPages)
+            let count = min(document.pageCount, max(0, maxPages))
             let pages = count > 0 ? Array(1...count) : []
             rendering = try PDFPageRenderer.renderPages(
                 in: document,
@@ -149,7 +113,6 @@ struct PDFReader: Sendable {
             totalPages: document.pageCount,
             renderedPages: rendering.pages,
             outline: try PDFDocumentNavigation.outline(in: document),
-            queryStatus: queryStatus,
             renderFailureCount: rendering.renderFailureCount,
             renderLimitOmissionCount: rendering.payloadOmissionCount,
             renderedTextOmissionCount: rendering.textOmissionCount

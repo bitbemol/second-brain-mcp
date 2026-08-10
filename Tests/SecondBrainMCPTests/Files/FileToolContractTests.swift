@@ -65,10 +65,7 @@ struct `MCP file consistency contract` {
         #expect(replacementDescription.contains("JSON"))
         #expect(replacementDescription.contains("CSV"))
         let readProperties = try inputProperties(of: #require(tools["read_file"]))
-        #expect(
-            readProperties["query"]?.objectValue?["maxLength"]?.intValue
-                == FileReadRequestLimits.maximumPDFQueryBytes
-        )
+        #expect(readProperties["query"] == nil)
         #expect(
             readProperties["book_page"]?.objectValue?["maxLength"]?.intValue
                 == FileReadRequestLimits.maximumPDFBookPageBytes

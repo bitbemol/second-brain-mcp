@@ -207,10 +207,10 @@ struct `Architecture boundaries` {
             isDirectory: true
         )
         let forbidden = [
-            "SearchResourceLimits",
-            "SearchResourcePolicy",
             "SearchCorpusBuilder",
             "VaultSearchEngine",
+            "PDFSearchAtomProvider",
+            "LiteralSearchMatchingStrategy",
         ]
         var occurrences: [String] = []
         for fileURL in try swiftFiles(under: frontend) {

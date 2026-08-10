@@ -33,8 +33,6 @@ enum FileToolArgument: String, Sendable {
     case bookPage = "book_page"
     /// Inclusive physical PDF page range.
     case pageRange = "page_range"
-    /// PDF text query.
-    case query
     /// Maximum PDF pages returned.
     case maxPages = "max_pages"
     /// Format-specific update strategy.

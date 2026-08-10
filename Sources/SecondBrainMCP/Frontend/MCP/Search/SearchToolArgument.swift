@@ -1,14 +1,11 @@
 /// Stable wire names accepted by `search_vault`.
 enum SearchToolArgument: String, CaseIterable, Sendable {
+    case location
     case query
-    case strategy
-    case fields
-    case formats
-    case areas
-    case pathPrefix = "path_prefix"
+    case tags
+    case createdFrom = "created_from"
+    case createdThrough = "created_through"
     case limit
-    case minimumRelevance = "minimum_relevance"
-    case maxHitsPerFile = "max_hits_per_file"
     case cursor
 }
 

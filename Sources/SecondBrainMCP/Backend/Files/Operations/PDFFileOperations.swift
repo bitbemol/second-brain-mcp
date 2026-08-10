@@ -1,8 +1,8 @@
 import Foundation
 
-/// Adapts PDF reference rendering and search to generic read output.
+/// Adapts PDF reference rendering to generic read output.
 struct PDFFileOperations: Sendable {
-    /// The read-only PDF component used to locate and render requested pages.
+    /// The read-only PDF component used to render requested pages.
     let reader: PDFReader
 
     /// Renders selected PDF pages as paired extracted text and JPEG content.
@@ -19,16 +19,9 @@ struct PDFFileOperations: Sendable {
             page: options.page,
             pageRange: options.pageRange,
             bookPage: options.bookPage,
-            query: options.query,
             maxPages: min(max(options.maxPages ?? 5, 1), 20)
         )
         guard !result.renderedPages.isEmpty else {
-            if let status = result.queryStatus {
-                return .text(
-                    queryStatusText(status, path: target.relativePath)
-                        + renderLimitStatusText(result)
-                )
-            }
             return .text(
                 "No pages rendered from \(target.relativePath)"
                     + renderLimitStatusText(result)
@@ -50,9 +43,6 @@ struct PDFFileOperations: Sendable {
             }
             contents.append(.text("Table of Contents\n" + lines.joined(separator: "\n")))
         }
-        if let status = result.queryStatus {
-            contents.append(.text(queryStatusText(status, path: target.relativePath)))
-        }
         let renderingStatus = renderLimitStatusText(result)
         if !renderingStatus.isEmpty {
             contents.append(.text(renderingStatus.trimmingCharacters(
@@ -60,20 +50,6 @@ struct PDFFileOperations: Sendable {
             )))
         }
         return FileOperationOutput(contents: contents)
-    }
-
-    private func queryStatusText(
-        _ status: PDFTextSearchResult,
-        path: String
-    ) -> String {
-        "PDF query status for \(path): "
-            + "matching_page_count_lower_bound=\(status.matchingPageCountLowerBound), "
-            + "more_matches_available=\(status.moreMatchesAvailable), "
-            + "scanned_pages=\(status.scannedPageCount)/\(status.totalPageCount), "
-            + "text_extraction_status=\(status.textExtractionStatus.rawValue), "
-            + "rendered_page_count=\(status.renderedPageCount), "
-            + "render_failure_count=\(status.renderFailureCount), "
-            + "ocr_performed=\(status.ocrPerformed)"
     }
 
     private func renderLimitStatusText(_ result: PDFReadResult) -> String {

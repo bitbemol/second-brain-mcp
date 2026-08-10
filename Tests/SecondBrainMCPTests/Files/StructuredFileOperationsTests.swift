@@ -130,7 +130,6 @@ struct `Generic files — structured format operations` {
                 page: nil,
                 bookPage: nil,
                 pageRange: nil,
-                query: nil,
                 maxPages: nil
             )
         )
@@ -287,7 +286,7 @@ struct `Generic files — structured format operations` {
         )
         try await store.create(target: target, data: prepared.data)
 
-        let options = ReadFileOptions(raw: false, tailLines: 2, startLine: nil, maxLines: nil, page: nil, bookPage: nil, pageRange: nil, query: nil, maxPages: nil)
+        let options = ReadFileOptions(raw: false, tailLines: 2, startLine: nil, maxLines: nil, page: nil, bookPage: nil, pageRange: nil, maxPages: nil)
         let readSnapshot = try await store.snapshot(target.readable)
         let output = try operations.read(
             ReadFileRequest(format: .log, path: target.relativePath, options: options),
@@ -382,7 +381,6 @@ struct `Generic files — structured format operations` {
             page: nil,
             bookPage: nil,
             pageRange: nil,
-            query: nil,
             maxPages: nil
         )
 
@@ -424,7 +422,6 @@ struct `Generic files — structured format operations` {
             page: nil,
             bookPage: nil,
             pageRange: nil,
-            query: nil,
             maxPages: nil
         )
         let output = try operations.read(

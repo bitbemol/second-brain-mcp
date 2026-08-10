@@ -90,7 +90,6 @@ enum FileToolRequestDecoder {
                 page: try arguments.integer(.page),
                 bookPage: try arguments.string(.bookPage),
                 pageRange: try arguments.string(.pageRange),
-                query: try arguments.string(.query),
                 maxPages: try arguments.integer(.maxPages)
             )
         )

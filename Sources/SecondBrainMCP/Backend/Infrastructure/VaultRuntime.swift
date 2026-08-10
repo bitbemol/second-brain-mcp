@@ -6,9 +6,6 @@ import Foundation
 /// while the frontend consumes only the routed file service and shared,
 /// transport-neutral capability and rejection boundaries.
 struct VaultRuntime: Sendable {
-    /// Production PDF index policy owned by the backend composition root.
-    static let pdfSearchIndexConfiguration = PDFSearchIndex.Configuration.production
-
     /// Routed generic file service.
     let files: any FileCRUDService
     /// Atomic recursive notes-directory moves.
@@ -17,8 +14,6 @@ struct VaultRuntime: Sendable {
     let search: any VaultSearchService
     /// Immutable capability projection shared with MCP discovery.
     let capabilities: FileCapabilities
-    /// Searchable formats derived from the file capability projection.
-    let searchCapabilities: SearchCapabilities
 
     /// Prepares permitted process state and constructs the backend graph.
     ///
@@ -93,47 +88,24 @@ struct VaultRuntime: Sendable {
             readOnly: readOnly
         )
         let capabilities = catalog.capabilities()
-        let searchCapabilities = SearchCapabilities(
-            fileCapabilities: capabilities
-        )
-        let pdfIndex = PDFSearchIndex(
-            databaseURL: dataDirectory.searchIndexDirectoryURL
-                .appendingPathComponent("pdf-pages-v1.sqlite3"),
+        let searchSource = SearchCorpusBuilder(
             vaultPath: vaultPath,
-            admission: pdfAdmission,
-            writerLock: POSIXAdvisoryFileLock(
-                url: dataDirectory.lockDirectoryURL
-                    .appendingPathComponent("pdf-index-writer.lock")
-            ),
-            configuration: pdfSearchIndexConfiguration
-        )
-        // Schema preparation touches only derived process data and safely
-        // rebuilds a corrupt/incompatible private cache. If it still cannot be
-        // trusted or opened, search degrades explicitly for PDF content.
-        let preparedPDFIndex: PDFSearchIndex?
-        do {
-            try await pdfIndex.prepare()
-            preparedPDFIndex = pdfIndex
-        } catch {
-            preparedPDFIndex = nil
-        }
-        let search = VaultSearchEngine(
-            vaultPath: vaultPath,
-            capabilities: searchCapabilities,
+            capabilities: capabilities,
             store: store,
             operations: operations,
-            pdfIndex: preparedPDFIndex,
-            processSearchLock: POSIXAdvisoryFileLock(
-                url: dataDirectory.lockDirectoryURL
-                    .appendingPathComponent("vault-search.lock")
-            )
+            customProviders: [
+                .pdf: PDFSearchAtomProvider(
+                    cacheRoot: dataDirectory.searchIndexDirectoryURL,
+                    admission: pdfAdmission
+                ),
+            ]
         )
+        let search = VaultSearchEngine(source: searchSource)
         return VaultRuntime(
             files: files,
             directories: directories,
             search: search,
-            capabilities: capabilities,
-            searchCapabilities: searchCapabilities
+            capabilities: capabilities
         )
     }
 }

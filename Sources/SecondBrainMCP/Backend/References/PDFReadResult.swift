@@ -12,9 +12,6 @@ struct PDFReadResult: Sendable {
     /// Document bookmarks, when the PDF contains an outline.
     let outline: [PDFDocumentNavigation.OutlineEntry]?
 
-    /// Ranked query coverage facts, when the read used a text query.
-    let queryStatus: PDFTextSearchResult?
-
     /// Requested pages PDFKit could not rasterize.
     let renderFailureCount: Int
     /// Renderable pages omitted by the aggregate response budget.

@@ -66,12 +66,8 @@ struct `Vault directory move service` {
         #expect(output.metadata?.replayed == false)
 
         let search = try await runtime.search.search(VaultSearchRequest(
+            location: .notes,
             query: "unique subtree search sentinel",
-            strategy: .exact,
-            fields: [.content],
-            formats: [.markdown],
-            areas: [.notes],
-            pathPrefix: "notes/completed/ticket-123/",
             limit: 20
         ))
         #expect(search.results.map(\.path) == [

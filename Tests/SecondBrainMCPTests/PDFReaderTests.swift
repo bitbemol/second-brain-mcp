@@ -45,7 +45,7 @@ struct `PDFReader — read boundary` {
     }
 
     @Test
-    func `Rejects empty and oversized PDF queries before opening PDFKit`() async throws {
+    func `Rejects oversized PDF selectors before opening PDFKit`() async throws {
         let root = NSTemporaryDirectory() + "PDFReaderQueryTests-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(
@@ -57,18 +57,6 @@ struct `PDFReader — read boundary` {
             format: .pdf,
             vaultPath: root
         )
-        await #expect(throws: PDFReadError.self) {
-            try await PDFReader().read(target: target, query: "   ")
-        }
-        await #expect(throws: PDFReadError.self) {
-            try await PDFReader().read(
-                target: target,
-                query: String(
-                    repeating: "x",
-                    count: FileReadRequestLimits.maximumPDFQueryBytes + 1
-                )
-            )
-        }
         await #expect(throws: PDFReadError.self) {
             try await PDFReader().read(
                 target: target,

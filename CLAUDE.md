@@ -20,7 +20,7 @@ resource reference).
 - Swift 6.2 (strict concurrency), macOS 26 (Tahoe), Xcode 26
 - MCP SDK: `modelcontextprotocol/swift-sdk`, pinned `from: "0.12.0"` (see `Package.swift`)
 - Transport: `StdioTransport` (stdin/stdout JSON-RPC)
-- PDF: `PDFKit` (system framework, zero deps) — page→JPEG rendering + text extraction
+- PDF: `PDFKit` + `Vision` (system frameworks, zero deps) — page rendering, text extraction, and OCR
 - Built-in subprocess boundary: `/usr/bin/git` only (see Rule 4)
 
 ## Commands
@@ -55,7 +55,7 @@ Sources/SecondBrainMCP/
 │   └── MCP/
 │       ├── MCPServerSetup.swift       # Transport lifecycle and handler registration
 │       ├── Files/                     # Generic CRUD adapters + capability resource
-│       └── Search/                    # Ranked search schema, decoder, and mapper
+│       └── Search/                    # Locator-only search schema, decoder, and mapper
 ├── Backend/                          # Internal application behavior
 │   ├── Files/
 │   │   ├── Ingress/                  # Request-to-bytes policy for stored text
@@ -66,7 +66,7 @@ Sources/SecondBrainMCP/
 │   │   ├── Transactions/             # Mutation, receipt, and recovery sequencing
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
-│   ├── Search/                       # Safe corpus snapshots, extraction, and ranking
+│   ├── Search/                       # Atom providers, matching, and cursor pagination
 │   ├── VaultVersioning/              # Sole Git subprocess and serialization boundary
 │   └── …                             # Canvas, references, directories, infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
@@ -85,20 +85,20 @@ Search stays outside CRUD:
 
 ```
 search_vault
-  → SearchToolController decodes a Shared search request
-  → VaultSearchEngine validates limits, acquires one shared scan permit, and builds safe snapshots
-  → SearchDocumentExtractor validates/sanitizes bytes and projects sections
-  → SearchTextMatcher applies one exhaustive strategy switch and stable field ranking
+  → SearchToolController decodes a Shared VaultSearchRequest
+  → VaultSearchEngine validates criteria and cursor state
+  → SearchCorpusBuilder enumerates exactly one VaultArea through FileCapabilities
+  → a SearchAtomProvider represents each file as whole-file or page atoms
+  → a SearchMatchingStrategy ranks matches
+  → the frontend returns locators only
 ```
 
-There is deliberately no strategy factory, persistent index, or PDF-wide live scan. Searchable
-formats derive from textual formats with a notes-area read binding. Search holds a shared path
-lease only while capturing each immutable snapshot, then releases it before matching. Results are
-consistent per file, not a fictional whole-vault transaction, and never carry a mutation revision.
-The cancellation-aware scan permit prevents concurrent agents from multiplying corpus memory.
-Markdown line/front-matter/tag projections, source tokens, comparisons, snippets, and the complete
-encoded response all have explicit ceilings. Canvas search uses node values and returns a structured
-node locator rather than matching coordinates or schema keys in raw JSON.
+The Shared boundary is intentionally small: `VaultSearchService`, `VaultSearchRequest`, and the locator-only response. Search never returns snippets or content; callers pass the returned global `FileFormat`, path, and optional PDF page to `read_file`.
+
+Readable textual formats automatically use the whole-file atom provider, so adding a globally registered textual format requires no search-specific enum or capability type. Markdown remains one note atom and reuses the shared frontmatter parser for tags and created dates. PDFs register the only custom production provider: one atom per physical page, with revision-keyed extracted text under the private application-support directory and Vision OCR when embedded text is absent.
+
+Matching and representation are separate protocols, but the public tool exposes no strategy switch. The default literal strategy requires every normalized query term in the same atom, then uses phrase and occurrence strength only for deterministic order. Cursor pagination is request-bound and keyset-based; for an unchanged vault it exposes every match by repeating the same request until `next_cursor` is absent. A changed vault requires a fresh search for snapshot-style discovery.
+
 
 The generic file pipeline is:
 
@@ -250,8 +250,8 @@ succeeded—rather than swallowed with `try?`.
 
 Do not edit four MCP schemas when adding a format. Tool format enums and
 `secondbrain://file-capabilities` derive from the catalog automatically.
-Any textual format with a notes-area read binding also enters the `search_vault` format enum;
-add focused extraction tests if it needs behavior beyond generic validated text.
+Any readable textual format is searchable as one whole-file atom. Register a focused
+`SearchAtomProvider` only when a format needs a different atomic representation.
 
 ## Where data lives
 
@@ -267,19 +267,19 @@ Server logs (stderr) are captured by Claude Desktop at
 
 ## PDF subsystem
 
-- `read_file(format: pdf)` returns **dual content per page**: extracted text (`.text`) + a JPEG render
-  (`.image`). Text is fast and accurate; the image catches diagrams, equations, and scans. Defaults
-  to 5 pages, **hard cap 20**. Render tuning (DPI, JPEG quality, max dimension) lives in
-  `PDFPageRenderer.RenderConfig.default`.
-- Navigation: `page` (physical, 1-indexed), `book_page` (printed label, e.g. "42"/"xii"),
-  `page_range`, or `query` (bounded page-by-page search within that one PDF). Bookmark entries and
-  traversal are both capped; printed-label lookup also scans and releases one page at a time.
-- Cancellation propagates through `FileToolExecutor`; it does not advertise an in-process deadline
-  that structured concurrency cannot enforce around blocking PDFKit work. A hard deadline would
-  require isolating native framework work in a separate worker process.
-- PDF query search runs against the already-open `PDFDocument`, releases each page through an
-  autorelease pool, and stops as soon as the requested result count is reached. There is no
-  background index or cache to synchronize.
+- `read_file(format: pdf)` retrieves pages; it does not search. It returns dual content per page:
+  bounded extracted text plus a JPEG render so diagrams, equations, and scans remain visible.
+  It defaults to 5 pages with a hard cap of 20.
+- Read selectors are `page` (physical, 1-indexed), `book_page` (printed label), and
+  `page_range`. Content queries belong exclusively to `search_vault`.
+- `search_vault(location: references)` represents each PDF page as an atom. It caches page text
+  by exact file revision under `VaultDataDirectory.searchIndexDirectoryURL`, prefers embedded
+  PDFKit text, and uses Vision OCR only when a page has no embedded text.
+- PDF search extraction and direct reads share `PDFReadAdmission`; page work uses autorelease
+  scopes and cooperative cancellation. Render tuning lives in `PDFPageRenderer.RenderConfig.default`.
+- Search results carry only the physical page locator. The subsequent read creates its own stable
+  snapshot and renders the requested page; cached OCR text is derived data, never mutation authority.
+
 
 ## Gotchas
 

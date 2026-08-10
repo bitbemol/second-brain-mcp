@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients compact, ranked search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes request a recoverable Git snapshot; snapshot failures are surfaced explicitly and an exact retry completes versioning without applying the mutation twice.
+A local MCP server in Swift that gives MCP clients locator-only content search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes request a recoverable Git snapshot; snapshot failures are surfaced explicitly and an exact retry completes versioning without applying the mutation twice.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -12,7 +12,7 @@ stdio-capable MCP client ──> SecondBrainMCP
 ## Features
 
 - **Compact file and directory tools** — four format-aware file CRUD tools plus one atomic `move_directory` operation for complete note subtrees
-- **Ranked vault search** — `search_vault` supports smart, exact, phrase, lexical, and conservative fuzzy matching across safe note snapshots and page-aware PDF references
+- **Locator-only vault search** — `search_vault` searches content but returns only note/file paths or physical PDF page numbers for follow-up with `read_file`
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
@@ -156,7 +156,7 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 | Tool | Purpose |
 |------|---------|
-| `search_vault` | Rank matching notes and PDF references by title, heading, tags, path, or content without returning a mutation revision |
+| `search_vault` | Locate matching whole-file atoms or physical PDF pages without returning their content |
 | `create_file` | Validate/transform input, atomically create under `notes/`, and request a vault snapshot |
 | `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
@@ -167,31 +167,22 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path`, the exact unused `destination_path`, and a fresh `mutation_id`. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123`; no file contents need to be returned to the model or recreated individually. Missing destination parents are created safely, the destination is never overwritten, and a move into its own subtree is rejected.
 
-The complete subtree is validated before the descriptor-based no-follow rename, so a credential-bearing file is rejected before the move. The shared snapshot boundary then records the current `notes/` tree; pending changes from another agent may deliberately share that recovery point. A vault-wide shared/exclusive tree lease prevents cooperating reads or writes from observing half of the path change. Successful moves are immediately discoverable through `search_vault` using the destination `path_prefix`; search itself remains read-only.
+The complete subtree is validated before the descriptor-based no-follow rename, so a credential-bearing file is rejected before the move. The shared snapshot boundary then records the current `notes/` tree; pending changes from another agent may deliberately share that recovery point. A vault-wide shared/exclusive tree lease prevents cooperating reads or writes from observing half of the path change. Successful moves are immediately discoverable through `search_vault` at the destination path; search itself remains read-only.
 
 ### Search
 
-Only `query` is required. `strategy` defaults to `smart`, `limit` defaults to 20 (hard cap 50), and `minimum_relevance` defaults to `0.60` on a normalized `0...1` scale. Set the floor to `0` only when broad partial recall is more useful than precision. Omitted `areas` defaults to fast note-only discovery; selecting `references`, requesting the PDF format, or using a `references/` path prefix enables PDF search. Omitted `fields` and `formats` include every value supported inside the effective area selection. `path_prefix` can narrow traversal to a canonical, non-hidden, non-package directory. `max_hits_per_file` defaults to one and can retain up to five independently relevant passages from a large file.
+`search_vault` is a locator, not a reader. It searches content but returns only the atomic elements that contain a match: `path` and `format` for whole-file atoms, plus the one-based physical `page` for a PDF page. Use those values with `read_file` to retrieve the content.
 
-| Strategy | Behavior |
-|----------|----------|
-| `smart` | Removes conversational filler, preserves whole-token literal hits, ranks cohesive lexical coverage, repairs conservative per-token typos, then adds a local note-only semantic fallback when a conversational query has no strong ordinary result |
-| `exact` | Case/diacritic-insensitive literal substring; punctuation remains significant and whole-token occurrences outrank embedded substrings |
-| `phrase` | Adjacent ordered terms across punctuation and whitespace |
-| `lexical` | Word coverage ranked by field importance |
-| `fuzzy` | Bounded typo matching, including adjacent transpositions; one- and two-character terms remain exact-only |
+Every request selects exactly one `location`: `notes` or `references`. It must also supply at least one search criterion: a text `query`, one or more `tags`, `created_from`, or `created_through`. Tags and created-date filters apply only to Markdown notes. Literal text matching is case-, diacritic-, and width-insensitive; every whitespace-separated query term must occur in the same atom. Exact phrases and repeated occurrences only determine stable result order.
 
-Search covers Markdown, Canvas, HAR, patch/diff, log, JSON, and CSV under `notes/`, plus PDFs under `references/`. Markdown results are section-aware and rank title above heading, tags, path, and body. Canvas is projected into node values instead of raw layout JSON, and matching results include a bounded complete node ID, kind, and field; an unrepresentable locator is omitted rather than truncated. Identifier tokenization understands camel/Pascal case, acronym boundaries, snake case, digits, and punctuation-preserving compact code queries. Sentence punctuation remains conversational input. Each result includes `area`, `relevance` (ranking strength, not probability), `term_coverage`, contributing `matched_fields`, and `complete_query_fields` that individually satisfied the whole query. Semantic-only results truthfully report zero literal term coverage and no complete-query fields. Ranking rewards terms that occur in one tight passage, penalizes evidence assembled across unrelated fields, and lets a strong semantic paraphrase outrank weak generic-term noise without disturbing confident literal results. Bounded candidate admission uses the same deterministic score and source ordering as the final response, so a post-selection reranker cannot change which top results survived the resource ceiling. Smart search performs a corpus-wide whole-literal pass before fair per-file phrase/lexical/fuzzy work, so expensive evidence files cannot hide later literal or typo hits. Live notes remain bounded by 8 MiB per file, 128 MiB aggregate snapshots, 64 MiB retained projections, and 100,000 retained sections.
+Readable textual formats automatically participate without a search-specific format registry. Markdown notes are one atom each and expose their shared frontmatter `created` date and tags to metadata filters. JSON, CSV, HAR, Canvas, patch/diff, and log files are each searched as one whole-file atom. A format that needs a different representation can register a search atom provider without changing the public search contract.
 
-PDF page text is extracted once into a versioned per-vault SQLite/FTS5 index under `~/Library/Application Support/SecondBrainMCP/`, never inside the vault or Git repository. Persistent ingestion accepts the complete 512 MiB PDF format limit so large books remain searchable; each query separately hydrates at most 10,000 candidate pages and 64 MiB of indexed page text before the live corpus applies its own 64 MiB retained-projection ceiling. Each search validates the current descriptor identity; a new or changed PDF is copied to an immutable private snapshot, hashed, safely extracted one autorelease-scoped page at a time, and atomically replaces its previous index revision. Warm searches reuse unchanged pages and issue batched scoped candidate queries instead of reopening every PDF. A warm open performs bounded validation of the exact required application/schema identity, generation metadata, tables, and critical FTS query paths without rescanning a multi-gigabyte cache. Creation and rebuild perform exhaustive canonical-to-FTS verification; that exhaustive comparison is also available as an explicit diagnostic, but is deliberately not a guarantee made by ordinary warm opens. The configured private storage ceiling is a conservative peak envelope for the main database, WAL, and shared-memory sidecar together: the main file retains transaction headroom, each publication is preflighted from its bounded retained representations before `BEGIN`, and WAL is checkpointed before and after committing. Path-only searches read no file bytes, while title-only searches refresh bounded document metadata without enumerating pages. A first explicit PDF-body search may still wait while cold or changed files are extracted; that work is serialized with direct PDF reads so concurrent agents and MCP processes cannot multiply PDFKit or temporary-disk work. Corrupt or incompatible derived data is safely rebuilt; if the private index cannot be trusted, rebuilt, or opened, PDF content degrades with explicit incomplete coverage instead of falling back to an unbounded live full-library scan.
+PDF references are represented as one atom per physical page. Page text is cached by exact file revision under the vault's private `~/Library/Application Support/SecondBrainMCP/` data directory, never inside the vault or Git. Embedded PDF text is preferred; pages without embedded text use Vision OCR. Search returns only the matching page number. `read_file(format: pdf, page: ...)` then returns that page's bounded extracted text and rendered JPEG, preserving diagrams and non-text content for the model.
 
-PDF results include the physical page, a non-trivial bounded printed page label, page role, and `pdf_text_extraction_status`. Body pages rank above tables of contents, indexes, bibliographies, and glossaries. `pdf_summary` separately counts metadata-only, fully extracted, partial, textless, and unavailable PDFs even when no PDF page matched. Search stores text and locators only—never rendered page images and never implicit OCR. After choosing a result, call `read_file(format: pdf, page: ...)`; that operation makes a fresh stable snapshot and returns bounded page text plus a rendered JPEG so the LLM can inspect diagrams and other visual content. Direct PDF query reads accept at most 1,024 UTF-8 query bytes, rank substantive pages first, and report matching-page, scan, extraction, rendering, and OCR facts.
+`limit` defaults to 20 and is capped at 50. When `next_cursor` is present, repeat the identical criteria with that cursor; for an unchanged vault, every matching atom remains reachable until a response omits `next_cursor`. The cursor is bound to the location and criteria, so it cannot continue a different search. Start a fresh search after vault changes if snapshot-style pagination is required.
 
-When more ranked hits exist, `next_cursor` continues the same request; cursors are bound to the query, strategy, filters, relevance floor, passage count, and exact admitted file revisions. A changed corpus rejects the continuation instead of silently duplicating or skipping ranked hits. `omitted_result_count_lower_bound` states how many ranked hits are known to remain. This makes result sets larger than the per-call cap reachable without weakening the 64 KiB MCP response ceiling.
+Search results contain no snippets, file content, scores, diagnostics, or mutation revisions. Search discovers where information lives; `read_file` retrieves it and supplies the revision required for a later note update or delete.
 
-Coverage is explicit in every response. `more_results_available` means matching results were omitted by a result or encoded-output limit. `coverage_incomplete` means some requested searchable content could not be fully evaluated. `resource_limited_file_count` is the number of known files wholly or partially omitted by a resource ceiling; it is necessarily a lower bound if directory traversal itself ends before every entry is discovered. `resource_limit_samples` gives at most eight stable, non-sensitive `{path, reason, impact}` examples and is never exhaustive. A partially evaluated file can appear in both `searched_file_count` and `resource_limited_file_count`, so the counters are facts rather than a partition to sum. `skipped_file_count` covers eligible-file safe-read, availability, containment, or parse failures, while `skipped_sensitive_file_count` remains separate. The legacy `truncated` field is the union of `more_results_available` and `coverage_incomplete`.
-
-Search results are discovery data, not mutation authorization: they intentionally contain no revision. Call `read_file` before an update or delete. HAR is shape-bounded and sanitized before matching, PDF extraction is byte/page/text bounded, and legacy searchable content containing high-confidence credentials is skipped rather than projected into snippets. Whole-vault scans share a bounded in-process queue and one cancellation-aware vault-scoped cross-process permit, so concurrent agents or MCP processes cannot multiply the corpus memory ceiling; canceled queued calls leave the line immediately. The complete MCP result—including compatibility JSON text and structured content—is byte-bounded.
 
 ### Formats and operations
 
@@ -221,7 +212,7 @@ Format-specific CRUD behavior stays behind the four endpoints:
 - CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
 - Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
-- PDF reads return extracted text plus rendered page images and support page, printed-page, range, and ranked query navigation with truncation/extraction status.
+- PDF reads return extracted text plus rendered page images and support physical page, printed-page, and range navigation. Content queries belong to `search_vault`; `read_file` only retrieves selected pages.
 
 ## Resources
 
@@ -261,7 +252,7 @@ Sources/SecondBrainMCP/
 │   ├── Configuration/                  # Argument parsing
 │   └── MCP/
 │       ├── Files/                      # Four generic CRUD tools + capabilities
-│       └── Search/                     # One ranked read-only search tool
+│       └── Search/                     # Locator-only search schema and adapter
 ├── Backend/                            # Internal behavior; never imports MCP
 │   ├── Concurrency/                    # Reusable cancellation-aware async gates
 │   ├── Files/
@@ -273,7 +264,7 @@ Sources/SecondBrainMCP/
 │   │   ├── Transactions/               # Mutation, Git, receipt, and recovery sequencing
 │   │   └── Validation/                 # Vault and external-source security
 │   ├── Media/                          # Image and video processing
-│   ├── Search/                         # Bounded corpus extraction and ranking
+│   ├── Search/                         # Atom providers, literal matching, and pagination
 │   └── …                               # Canvas, references, Git, logging, infrastructure
 └── Shared/                             # Cross-boundary values and small utilities
     ├── Files/                          # Formats, requests, capabilities, and outputs

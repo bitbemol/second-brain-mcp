@@ -11,15 +11,13 @@ struct MCPServerSetup {
     ///   - directories: Atomic recursive directory-move boundary.
     ///   - search: Shared read-only vault search boundary.
     ///   - capabilities: Immutable format capability manifest.
-    ///   - searchCapabilities: Searchable formats derived from the manifest.
     /// - Throws: Transport or handler-registration errors.
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
         directories: any DirectoryMoveService,
         search: any VaultSearchService,
-        capabilities: FileCapabilities,
-        searchCapabilities: SearchCapabilities
+        capabilities: FileCapabilities
     ) async throws {
         let fileTools = FileToolController(
             readOnly: config.readOnly,
@@ -67,7 +65,7 @@ struct MCPServerSetup {
             ) {
                 tools.append(directoryDefinition)
             }
-            tools.append(SearchToolDefinition.build(capabilities: searchCapabilities))
+            tools.append(SearchToolDefinition.build())
             return ListTools.Result(tools: tools)
         }
 
