@@ -5,13 +5,13 @@ import Testing
 @Suite
 struct `File format catalog` {
     @Test
-    func `Typed binding access resolves each registered CRUD function`() throws {
+    func `Typed binding access resolves each registered CRUD operation`() throws {
         let catalog = makeCatalog()
 
-        #expect(try catalog.createBinding(for: .markdown, in: .notes).id.rawValue == "markdown")
-        #expect(try catalog.readBinding(for: .markdown, in: .notes).id.rawValue == "canvas")
-        #expect(try catalog.updateBinding(for: .markdown, in: .notes).id.rawValue == "log")
-        #expect(try catalog.deleteBinding(for: .markdown, in: .notes).id.rawValue == "soft_delete")
+        #expect(try catalog.createBinding(for: .markdown, in: .notes).allowedAreas == [.notes])
+        #expect(try catalog.readBinding(for: .markdown, in: .notes).allowedAreas == [.notes])
+        #expect(try catalog.updateBinding(for: .markdown, in: .notes).allowedAreas == [.notes])
+        #expect(try catalog.deleteBinding(for: .markdown, in: .notes).allowedAreas == [.notes])
     }
 
     @Test
@@ -42,26 +42,22 @@ struct `File format catalog` {
 
     private func makeCatalog() -> FileFormatCatalog {
         let create = CreateOperationBinding(
-            id: .markdown,
             allowedAreas: [.notes],
             execute: { _, _ in
                 PreparedFileWrite(data: Data(), output: .text("create"))
             }
         )
         let read = ReadOperationBinding(
-            id: .canvas,
             allowedAreas: [.notes],
             execute: { _, _ in .text("read") }
         )
         let update = UpdateOperationBinding(
-            id: .log,
             allowedAreas: [.notes],
             execute: { _, _, _ in
                 PreparedFileWrite(data: Data(), output: .text("update"))
             }
         )
         let delete = DeleteOperationBinding(
-            id: .softDelete,
             allowedAreas: [.notes],
             execute: { _, _ in }
         )

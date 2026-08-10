@@ -145,7 +145,6 @@ struct `Structured text routed CRUD` {
                 .appendingPathComponent("vault-versioning.lock")
         )
         try await versioning.recordSnapshot()
-        let audit = AuditLogger(dataDirectory: dataDirectory)
         let store = VaultCRUDStore(vaultPath: root.path)
         let limits = ImageLimits.default
         let externalSources = ExternalFileSourceValidator(vaultPath: root.path)
@@ -173,13 +172,11 @@ struct `Structured text routed CRUD` {
             store: store,
             mutations: VaultMutationExecutor(
                 versioning: versioning,
-                audit: audit,
                 receipts: MutationReceiptStore(dataDirectory: dataDirectory)
             ),
             operations: VaultOperationCoordinator(
                 lockDirectoryURL: dataDirectory.lockDirectoryURL
-            ),
-            audit: audit
+            )
         )
         return Context(
             root: root,

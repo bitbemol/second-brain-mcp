@@ -180,7 +180,6 @@ struct `Vault mutation recovery` {
         VaultMutationPlan(
             kind: .create,
             target: target,
-            handler: .markdown,
             mutationID: identifier
         )
     }
@@ -206,7 +205,6 @@ struct `Vault mutation recovery` {
     ) -> VaultMutationExecutor {
         VaultMutationExecutor(
             versioning: versioning,
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: receipts
         )
     }

@@ -221,14 +221,12 @@ struct `Generic files — structured format operations` {
         let family = StoredTextFileOperationFamily(
             store: VaultCRUDStore(vaultPath: root),
             delete: DeleteOperationBinding(
-                id: .softDelete,
                 allowedAreas: [.notes],
                 execute: { _, _ in }
             )
         )
         let definition = family.definition(
             format: .log,
-            handler: .log,
             create: operations.prepareCreate,
             read: operations.read,
             update: operations.prepareUpdate

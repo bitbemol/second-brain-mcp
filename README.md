@@ -21,7 +21,6 @@ stdio-capable MCP client ──> SecondBrainMCP
 - **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
 - **Read-only mode** — `--read-only` hides write tools and disables vault migration/Git mutation in the backend
 - **Path security** — symlink resolution, traversal prevention, extension allowlists
-- **Audit log** — best-effort operation records live under `~/Library/Application Support/SecondBrainMCP/`
 - **Works alongside Obsidian, iA Writer, Logseq** — the vault is plain Markdown; app config directories are ignored
 - **Custom instructions** — drop an `INSTRUCTIONS.md` in your vault root to define your own conventions
 
@@ -140,7 +139,7 @@ If new tools still don't appear, confirm the client's `command` points at `.buil
 └── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Writable startup prepares Git metadata as needed; read-only startup leaves the vault untouched. Size-rotated audit logs live outside the vault under `~/Library/Application Support/SecondBrainMCP/`.
+Only `notes/` and `references/` need to exist. Writable startup prepares Git metadata as needed; read-only startup leaves the vault untouched.
 
 ## CLI Flags
 
@@ -271,7 +270,7 @@ Sources/SecondBrainMCP/
 │   │   ├── Routing/                    # Catalog, bindings, and routed service
 │   │   ├── Storage/                    # Generic snapshots, persistence, and soft deletion
 │   │   ├── Targets/                    # Validated readable/writable vault paths
-│   │   ├── Transactions/               # Mutation, Git, and audit sequencing
+│   │   ├── Transactions/               # Mutation, Git, receipt, and recovery sequencing
 │   │   └── Validation/                 # Vault and external-source security
 │   ├── Media/                          # Image and video processing
 │   ├── Search/                         # Bounded corpus extraction and ranking
@@ -291,7 +290,7 @@ does not belong there. Backend and Shared never depend on Frontend.
 concrete format registers only the operations it supports and binds those operations to reusable
 functions. `VaultFileService` validates and routes requests; `TextFileIngress` converts stored-text
 create requests into bounded inline bytes before their semantic handler; and
-`VaultMutationExecutor` persists the prepared mutation, requests a vault snapshot, and records audit and retry state.
+`VaultMutationExecutor` persists the prepared mutation, requests a vault snapshot, and records durable retry state.
 Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
 persistence component for the generic API. Writable targets cannot represent `references/`.
 
@@ -302,8 +301,7 @@ OS scheduling does not promise strict FIFO ordering between separate processes. 
 a versioned cooperating-host protocol: after an upgrade, fully stop and restart every MCP host for
 the vault before resuming mutations; mixed old/new hosts are not supported. Unrelated note mutations may persist concurrently. Only `GitRepository` serializes the complete
 Git init–stage–check–commit sequence, using one application-owned cross-process lock so cooperating agents
-cannot race Git's index. Short receipt and audit locks protect their own metadata without enclosing note
-persistence. Exact-byte revisions reject stale edits by
+cannot race Git's index. Short receipt locks protect retry metadata without enclosing note persistence. Exact-byte revisions reject stale edits by
 every cooperating MCP caller. The store also rechecks bytes immediately before persistence to catch
 ordinary external edits, but an application that ignores these locks can still write inside the
 final compare-to-rename window; filesystem path replacement has no universal cross-application CAS.

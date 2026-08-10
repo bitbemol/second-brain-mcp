@@ -26,7 +26,7 @@
 - Keep `references/` structurally read-only and restrict writes to supported content under `notes/`.
 - Never add caller-selected command execution. `GitRepository` and `/usr/bin/git` remain the only subprocess boundary.
 - Preserve soft-delete behavior; user content moves to `.trash/` and is never permanently deleted.
-- Keep preparation separate from persistence. `VaultMutationExecutor` owns persistence, audit, and receipt sequencing under the operation coordinator's leases; `VaultVersioning` is the only Git boundary and owns all Git state and serialization.
+- Keep preparation separate from persistence. `VaultMutationExecutor` owns persistence, versioning requests, and receipt sequencing under the operation coordinator's leases; `VaultVersioning` is the only Git boundary and owns all Git state and serialization.
 - Preserve exact-byte revisions, mutation-id idempotency, bounded search, cancellation behavior, and strict Swift concurrency unless a reviewed design explicitly replaces them.
 
 ## Test-driven changes
@@ -50,7 +50,7 @@
 
 - Documentation or harness-only changes: confirm Xcode visibility and validate the affected configuration; a Swift build is not required.
 - Localized Swift changes: refresh Xcode diagnostics and run the smallest relevant test group.
-- Cross-layer, concurrency, path-security, mutation, Git/audit, search-bounds, MCP-schema, startup, or public-contract changes: run focused tests, then the full Xcode test plan and an Xcode build.
+- Cross-layer, concurrency, path-security, mutation, Git, search-bounds, MCP-schema, startup, or public-contract changes: run focused tests, then the full Xcode test plan and an Xcode build.
 - Dependency or toolchain changes: review `Package.resolved`, follow the audit in `SECURITY.md`, run the full test plan, and verify a release build.
 - Treat any failing relevant test, new error diagnostic, reference inconsistency, or documentation mismatch as incomplete work.
 

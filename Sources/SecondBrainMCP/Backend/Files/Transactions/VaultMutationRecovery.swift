@@ -16,17 +16,14 @@ struct VaultMutationRecovery: Sendable {
 
     private let receipts: MutationReceiptStore
     private let versioning: any VaultVersioning
-    private let audit: AuditLogger
 
     /// Creates recovery orchestration for one vault's receipt and versioning boundaries.
     init(
         receipts: MutationReceiptStore,
-        versioning: any VaultVersioning,
-        audit: AuditLogger
+        versioning: any VaultVersioning
     ) {
         self.receipts = receipts
         self.versioning = versioning
-        self.audit = audit
     }
 
     /// Clears safe pre-persistence state, replays completion, or retries snapshotting.
@@ -112,22 +109,12 @@ struct VaultMutationRecovery: Sendable {
                     )
                 }
             } catch {
-                await audit.log(
-                    operation: VaultOperation(plan.kind.fileOperation),
-                    path: plan.path,
-                    details: "\(plan.auditDetails); recovery state persistence failed: \(error)"
-                )
                 throw VaultMutationExecutor.ExecutionError
                     .recoveryStatePersistenceFailed(
                         path: plan.path,
                         underlying: "snapshot failure: \(failure); receipt failure: \(error)"
                     )
             }
-            await audit.log(
-                operation: VaultOperation(plan.kind.fileOperation),
-                path: plan.path,
-                details: "\(plan.auditDetails); recovery snapshot failed: \(failure)"
-            )
             throw VaultMutationExecutor.ExecutionError.snapshotFailed(
                 path: plan.path,
                 mutationID: plan.mutationID,
@@ -135,11 +122,6 @@ struct VaultMutationRecovery: Sendable {
             )
         }
 
-        await audit.log(
-            operation: VaultOperation(plan.kind.fileOperation),
-            path: plan.path,
-            details: "\(plan.auditDetails); recovered vault snapshot after prior failure"
-        )
         do {
             try await receipts.updatingReceipt { store in
                 try store.save(

@@ -369,8 +369,7 @@ struct `Vault directory move service` {
         identity = observed
         let summary = try DirectoryMoveSecurityPreflight.validate(source).summary
         let dataDirectory = try VaultDataDirectory.prepare(
-            vaultPath: root,
-            migrateLegacyData: false
+            vaultPath: root
         )
         let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
         try receipts.saveInProgress(
@@ -426,8 +425,7 @@ struct `Vault directory move service` {
         }
         let summary = try DirectoryMoveSecurityPreflight.validate(source).summary
         let receipts = MutationReceiptStore(dataDirectory: try VaultDataDirectory.prepare(
-            vaultPath: root,
-            migrateLegacyData: false
+            vaultPath: root
         ))
         try receipts.saveInProgress(
             identifier: request.mutationID,

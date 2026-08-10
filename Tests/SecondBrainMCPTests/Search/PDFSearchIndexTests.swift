@@ -1360,8 +1360,7 @@ struct `Persistent PDF search index` {
         )
         let dataDirectory = try VaultDataDirectory.prepare(
             vaultPath: root.path,
-            supportRoot: root.appendingPathComponent("support"),
-            migrateLegacyData: false
+            supportRoot: root.appendingPathComponent("support")
         )
         return Fixture(root: root, dataDirectory: dataDirectory)
     }

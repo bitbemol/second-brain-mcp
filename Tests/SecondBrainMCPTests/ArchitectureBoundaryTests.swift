@@ -90,7 +90,6 @@ struct `Architecture boundaries` {
             "FileFormat.swift": "enum FileFormat",
             "VaultArea.swift": "enum VaultArea",
             "FileCRUDOperation.swift": "enum FileCRUDOperation",
-            "VaultOperation.swift": "enum VaultOperation",
             "FileUpdateMode.swift": "enum FileUpdateMode",
             "FileCreateTransform.swift": "enum FileCreateTransform",
             "FileRoutingError.swift": "enum FileRoutingError",
@@ -343,28 +342,6 @@ struct `Architecture boundaries` {
         let occurrences = forbidden.filter { source.contains($0) }
 
         #expect(occurrences.isEmpty, "Binding resolution leaked into the file service: \(occurrences)")
-    }
-
-    @Test
-    func `Backend audit types do not leak across layer boundaries`() throws {
-        var occurrences: [String] = []
-
-        for layer in ["Frontend", "Shared"] {
-            let directory = sourceRoot.appendingPathComponent(layer, isDirectory: true)
-            for fileURL in try swiftFiles(under: directory) {
-                let lines = try String(contentsOf: fileURL, encoding: .utf8)
-                    .split(separator: "\n", omittingEmptySubsequences: false)
-                for (index, line) in lines.enumerated() where line.contains("AuditLogger") {
-                    let relativePath = fileURL.path.replacingOccurrences(
-                        of: sourceRoot.path + "/",
-                        with: ""
-                    )
-                    occurrences.append("\(relativePath):\(index + 1)")
-                }
-            }
-        }
-
-        #expect(occurrences.isEmpty, "Backend audit types leaked across boundaries: \(occurrences)")
     }
 
     @Test

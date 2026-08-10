@@ -49,8 +49,7 @@ struct `Vault search engine` {
             .appendingPathComponent(".test-support", isDirectory: true)
         let dataDirectory = try VaultDataDirectory.prepare(
             vaultPath: root,
-            supportRoot: supportRoot,
-            migrateLegacyData: false
+            supportRoot: supportRoot
         )
         let pdfAdmission = PDFReadAdmission()
         let pdfIndex = PDFSearchIndex(
@@ -598,8 +597,7 @@ struct `Vault search engine` {
         let dataDirectory = try VaultDataDirectory.prepare(
             vaultPath: root,
             supportRoot: URL(fileURLWithPath: root)
-                .appendingPathComponent(".test-support", isDirectory: true),
-            migrateLegacyData: false
+                .appendingPathComponent(".test-support", isDirectory: true)
         )
         let corpus = try await SearchCorpusBuilder(
             vaultPath: root,
@@ -1476,8 +1474,7 @@ struct `Vault search engine` {
         let dataDirectory = try VaultDataDirectory.prepare(
             vaultPath: root,
             supportRoot: URL(fileURLWithPath: root)
-                .appendingPathComponent(".test-support", isDirectory: true),
-            migrateLegacyData: false
+                .appendingPathComponent(".test-support", isDirectory: true)
         )
         let contention = SearchLockContentionProbe()
         let lock = POSIXAdvisoryFileLock(

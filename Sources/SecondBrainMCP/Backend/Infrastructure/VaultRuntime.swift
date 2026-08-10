@@ -19,8 +19,6 @@ struct VaultRuntime: Sendable {
     let capabilities: FileCapabilities
     /// Searchable formats derived from the file capability projection.
     let searchCapabilities: SearchCapabilities
-    /// Boundary used by the frontend to report requests rejected before routing.
-    let rejections: any FileRequestRejectionReporting
 
     /// Prepares permitted process state and constructs the backend graph.
     ///
@@ -32,12 +30,7 @@ struct VaultRuntime: Sendable {
         vaultPath: String,
         readOnly: Bool = false
     ) async throws -> VaultRuntime {
-        let dataDirectory = try VaultDataDirectory.prepare(
-            vaultPath: vaultPath,
-            // Writable startup performs migration below before requesting its
-            // initial notes snapshot. Read-only startup never migrates.
-            migrateLegacyData: false
-        )
+        let dataDirectory = try VaultDataDirectory.prepare(vaultPath: vaultPath)
 
         let mutationReceipts = MutationReceiptStore(dataDirectory: dataDirectory)
         let versioning = try GitRepository(
@@ -46,19 +39,11 @@ struct VaultRuntime: Sendable {
                 .appendingPathComponent("vault-versioning.lock")
         )
         if !readOnly {
-            try dataDirectory.migrateLegacyData(from: vaultPath)
             try await versioning.recordSnapshot()
         }
-
-        let audit = AuditLogger(
-            dataDirectory: dataDirectory,
-            coordinateAcrossProcesses: true
-        )
-        let rejections = AuditRejectionReporter(audit: audit)
         let store = VaultCRUDStore(vaultPath: vaultPath)
         let mutations = VaultMutationExecutor(
             versioning: versioning,
-            audit: audit,
             receipts: mutationReceipts
         )
         let operations = VaultOperationCoordinator(
@@ -98,13 +83,11 @@ struct VaultRuntime: Sendable {
             store: store,
             mutations: mutations,
             operations: operations,
-            audit: audit,
             readOnly: readOnly
         )
         let directories = VaultDirectoryMoveService(
             vaultPath: vaultPath,
             versioning: versioning,
-            audit: audit,
             receipts: mutationReceipts,
             operations: operations,
             readOnly: readOnly
@@ -150,8 +133,7 @@ struct VaultRuntime: Sendable {
             directories: directories,
             search: search,
             capabilities: capabilities,
-            searchCapabilities: searchCapabilities,
-            rejections: rejections
+            searchCapabilities: searchCapabilities
         )
     }
 }

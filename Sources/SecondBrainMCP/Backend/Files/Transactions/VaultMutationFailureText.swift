@@ -1,4 +1,4 @@
-/// Bounds diagnostics before persisting them in recovery receipts and audit logs.
+/// Bounds diagnostics before persisting them in recovery receipts.
 enum VaultMutationFailureText {
     /// Prevents subprocess diagnostics from producing unbounded transaction data.
     static func bounded(_ error: any Error) -> String {

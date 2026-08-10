@@ -63,12 +63,12 @@ Sources/SecondBrainMCP/
 │   │   ├── Routing/                  # Bindings, catalog, operation families, service
 │   │   ├── Storage/                  # Generic snapshots, persistence, and soft deletion
 │   │   ├── Targets/                  # Validated readable/writable paths
-│   │   ├── Transactions/             # Mutation, receipt, recovery, and audit sequencing
+│   │   ├── Transactions/             # Mutation, receipt, and recovery sequencing
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
 │   ├── Search/                       # Safe corpus snapshots, extraction, and ranking
 │   ├── VaultVersioning/              # Sole Git subprocess and serialization boundary
-│   └── …                             # Canvas, references, logging, infrastructure
+│   └── …                             # Canvas, references, directories, infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
     ├── Files/                        # Concrete formats, CRUD contracts, capabilities, output
     ├── Search/                       # Search request/result/service contracts
@@ -108,8 +108,8 @@ MCP request
   → VaultFileService resolves an explicit FileFormat binding + safe target
   → stored-text ingress validates inline content before its format handler
   → format handler prepares/interprets bytes
-      ├─ read: VaultFileService returns output and records the audit event
-      └─ mutation: VaultMutationExecutor persists → VaultVersioning.recordSnapshot() → audit → receipt
+      ├─ read: VaultFileService returns the routed output
+      └─ mutation: VaultMutationExecutor persists → VaultVersioning.recordSnapshot() → receipt
 ```
 
 `FileFormat` is concrete storage format only. Semantic roles such as “attachment” or “reference”
@@ -118,7 +118,7 @@ independently, so multiple formats can share a handler and a format can use a sp
 only one operation.
 
 **Concurrency:** note reads use shared per-path leases; note mutations use exclusive per-path leases
-held through persistence, versioning, audit, and receipt storage. A fair actor prevents reader barging
+held through persistence, versioning, and receipt storage. A fair actor prevents reader barging
 in one runtime, and persistent advisory locks coordinate independent processes. Unrelated note
 mutations may persist concurrently. `GitRepository`, behind `VaultVersioning`, alone serializes the
 complete initialize-stage-check-commit sequence so Git never races its index or ref locks. `read_file`
@@ -195,10 +195,10 @@ general process sandbox.
 `delete_file` moves user content to a collision-proof path under `.trash/`. Never permanently
 remove user content. Removing a temporary file created by the store itself is allowed cleanup.
 
-### 6. Mutation → versioning → audit is one transaction responsibility
+### 6. Mutation → versioning → receipt is one transaction responsibility
 
 `VaultFileService` validates, prepares, and submits a `VaultMutationPlan`.
-`VaultMutationExecutor` owns persistence, audit, and mutation-receipt sequencing.
+`VaultMutationExecutor` owns persistence, versioning requests, and mutation-receipt sequencing.
 `VaultOperationCoordinator` owns the shared/exclusive notes-path lease surrounding the complete
 service operation. `VaultVersioning` is the only version-control interface, and `GitRepository` owns
 all Git state and its cross-process lock. Do not persist or invoke Git in a format handler, service,
@@ -260,9 +260,7 @@ add focused extraction tests if it needs behavior beyond generic validated text.
 
 **MCP-internal data lives OUTSIDE the vault** at
 `~/Library/Application Support/SecondBrainMCP/<sha256-of-vault-path>/` — see
-`VaultDataDirectory`. This avoids iCloud conflicts from process-owned data. Writable startup uses
-`LegacyVaultDataMigrator` to preserve an old in-vault audit log and remove known obsolete cache
-entries; read-only startup deliberately performs no vault migration.
+`VaultDataDirectory`. This avoids iCloud conflicts from process-owned receipts, locks, and derived search data.
 
 Server logs (stderr) are captured by Claude Desktop at
 `~/Library/Logs/Claude/mcp-server-second-brain.log`.

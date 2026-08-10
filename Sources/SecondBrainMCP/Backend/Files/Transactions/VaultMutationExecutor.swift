@@ -1,7 +1,7 @@
-/// Executes persistence, vault versioning, audit, and receipt finalization in order.
+/// Executes persistence, vault versioning, and receipt finalization in order.
 ///
 /// Version-control state and serialization belong exclusively to ``VaultVersioning``.
-/// This actor coordinates only mutation identity, persistence, audit, and receipts.
+/// This actor coordinates only mutation identity, persistence, and receipts.
 /// Recovery policy lives in ``VaultMutationRecovery``.
 ///
 /// Transaction records cover cooperating-process concurrency, cancellation,
@@ -48,17 +48,14 @@ actor VaultMutationExecutor {
     }
 
     private let versioning: any VaultVersioning
-    private let audit: AuditLogger
     private let receipts: MutationReceiptStore
 
-    /// Creates an executor for one vault's versioning and audit adapters.
+    /// Creates an executor for one vault's versioning and receipt boundaries.
     init(
         versioning: any VaultVersioning,
-        audit: AuditLogger,
         receipts: MutationReceiptStore
     ) {
         self.versioning = versioning
-        self.audit = audit
         self.receipts = receipts
     }
 
@@ -73,14 +70,12 @@ actor VaultMutationExecutor {
         prepare: @escaping @Sendable () async throws -> PreparedVaultMutation
     ) async throws -> FileOperationOutput {
         let versioning = self.versioning
-        let audit = self.audit
         let receipts = self.receipts
 
         let identifier = plan.mutationID
         let recovery = VaultMutationRecovery(
             receipts: receipts,
-            versioning: versioning,
-            audit: audit
+            versioning: versioning
         )
 
         return try await receipts.withIdentityLock(identifier) {
@@ -117,7 +112,6 @@ actor VaultMutationExecutor {
                     plan,
                     mutation: prepared,
                     versioning: versioning,
-                    audit: audit,
                     receiptContext: (receipts, identifier, fingerprint)
                 )
             }.value
@@ -134,20 +128,9 @@ actor VaultMutationExecutor {
         _ plan: VaultMutationPlan,
         mutation: PreparedVaultMutation,
         versioning: any VaultVersioning,
-        audit: AuditLogger,
         receiptContext: ReceiptContext
     ) async throws -> FileOperationOutput {
-        let persisted: PersistedVaultMutation
-        do {
-            persisted = try await mutation.perform()
-        } catch {
-            await audit.log(
-                operation: VaultOperation(plan.kind.fileOperation),
-                path: plan.path,
-                details: "\(plan.auditDetails); persistence outcome unknown: \(error)"
-            )
-            throw error
-        }
+        let persisted = try await mutation.perform()
         let output = persisted.output
 
         if mutation.requiresSnapshot {
@@ -168,21 +151,11 @@ actor VaultMutationExecutor {
                         )
                     }
                 } catch {
-                    await audit.log(
-                        operation: VaultOperation(plan.kind.fileOperation),
-                        path: plan.path,
-                        details: "\(plan.auditDetails); recovery state persistence failed: \(error)"
-                    )
                     throw ExecutionError.recoveryStatePersistenceFailed(
                         path: plan.path,
                         underlying: "snapshot failure: \(failure); receipt failure: \(error)"
                     )
                 }
-                await audit.log(
-                    operation: VaultOperation(plan.kind.fileOperation),
-                    path: plan.path,
-                    details: "\(plan.auditDetails); snapshot failed: \(failure)"
-                )
                 throw ExecutionError.snapshotFailed(
                     path: plan.path,
                     mutationID: plan.mutationID,
@@ -190,14 +163,6 @@ actor VaultMutationExecutor {
                 )
             }
         }
-
-        await audit.log(
-            operation: VaultOperation(plan.kind.fileOperation),
-            path: plan.path,
-            details: mutation.requiresSnapshot
-                ? plan.auditDetails
-                : "\(plan.auditDetails); no changes"
-        )
 
         do {
             try await receiptContext.store.updatingReceipt { store in

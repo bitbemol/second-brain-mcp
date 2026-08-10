@@ -12,7 +12,6 @@ struct MCPServerSetup {
     ///   - search: Shared read-only vault search boundary.
     ///   - capabilities: Immutable format capability manifest.
     ///   - searchCapabilities: Searchable formats derived from the manifest.
-    ///   - rejections: Boundary-level rejection reporter.
     /// - Throws: Transport or handler-registration errors.
     static func start(
         config: ServerConfig,
@@ -20,18 +19,15 @@ struct MCPServerSetup {
         directories: any DirectoryMoveService,
         search: any VaultSearchService,
         capabilities: FileCapabilities,
-        searchCapabilities: SearchCapabilities,
-        rejections: any FileRequestRejectionReporting
+        searchCapabilities: SearchCapabilities
     ) async throws {
         let fileTools = FileToolController(
             readOnly: config.readOnly,
-            rejections: rejections,
             files: files
         )
         let searchTool = SearchToolController(search: search)
         let directoryTool = DirectoryMoveToolController(
             readOnly: config.readOnly,
-            rejections: rejections,
             directories: directories
         )
         let customInstructions = CustomInstructionsLoader.load(

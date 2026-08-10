@@ -31,8 +31,7 @@ struct `Vault search production acceptance` {
         let support = try VaultDataDirectory.prepare(
             vaultPath: root,
             supportRoot: URL(fileURLWithPath: root)
-                .appendingPathComponent(".test-support", isDirectory: true),
-            migrateLegacyData: false
+                .appendingPathComponent(".test-support", isDirectory: true)
         )
         let capabilities = SearchCapabilities(fileCapabilities: FileCapabilities(
             formats: FileFormat.allCases.filter(\.isTextual).map {

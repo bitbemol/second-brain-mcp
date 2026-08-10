@@ -4,13 +4,10 @@ import Foundation
 
 /// Prepared process-owned storage associated with one managed vault.
 ///
-/// Preparation creates the hashed support directory and may migrate legacy
-/// state. Production coordinates that migration through its vault-wide lock.
+/// Preparation creates the hashed support directory and its private infrastructure.
 struct VaultDataDirectory: Sendable {
     /// Vault-specific process-data directory outside the managed vault.
     let rootURL: URL
-    /// Append-only audit-log destination inside ``rootURL``.
-    let auditLogURL: URL
     /// Persistent advisory-lock files shared by every process for this vault.
     let lockDirectoryURL: URL
     /// Durable successful-mutation receipts used for timeout-safe replay.
@@ -20,7 +17,6 @@ struct VaultDataDirectory: Sendable {
 
     private init(rootURL: URL) {
         self.rootURL = rootURL
-        self.auditLogURL = rootURL.appendingPathComponent("audit.log")
         self.lockDirectoryURL = rootURL.appendingPathComponent("locks", isDirectory: true)
         self.receiptDirectoryURL = rootURL.appendingPathComponent("receipts", isDirectory: true)
         self.searchIndexDirectoryURL = rootURL.appendingPathComponent(
@@ -33,38 +29,31 @@ struct VaultDataDirectory: Sendable {
     ///
     /// - Parameters:
     ///   - vaultPath: Canonical absolute vault root.
-    ///   - migrateLegacyData: Whether obsolete vault-local process data may move.
     /// - Returns: Ready process-owned paths for downstream infrastructure.
-    /// - Throws: A filesystem error when creation or legacy migration fails.
-    static func prepare(
-        vaultPath: String,
-        migrateLegacyData: Bool = true
-    ) throws -> VaultDataDirectory {
+    /// - Throws: A filesystem error when directory creation fails.
+    static func prepare(vaultPath: String) throws -> VaultDataDirectory {
         let supportRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/SecondBrainMCP")
         return try prepare(
             vaultPath: vaultPath,
-            supportRoot: supportRoot,
-            migrateLegacyData: migrateLegacyData
+            supportRoot: supportRoot
         )
     }
 
     /// Prepares process storage beneath an injected support root.
     ///
-    /// This overload keeps migration behavior deterministic and isolated in
-    /// tests while production uses the standard Application Support location.
+    /// This overload keeps process storage deterministic and isolated in tests
+    /// while production uses the standard Application Support location.
     ///
     /// - Parameters:
-    ///   - vaultPath: Absolute vault root whose legacy directory may be migrated.
+    ///   - vaultPath: Absolute vault root used to derive stable process storage.
     ///   - supportRoot: Parent directory for hashed per-vault process data.
-    ///   - migrateLegacyData: Whether obsolete vault-local process data may move.
     ///   - fileManager: Filesystem implementation used for preparation.
     /// - Returns: Ready process-owned paths for downstream infrastructure.
-    /// - Throws: A filesystem error when creation or legacy migration fails.
+    /// - Throws: A filesystem error when directory creation fails.
     static func prepare(
         vaultPath: String,
         supportRoot: URL,
-        migrateLegacyData: Bool = true,
         fileManager: FileManager = .default
     ) throws -> VaultDataDirectory {
         let directory = VaultDataDirectory(
@@ -88,32 +77,7 @@ struct VaultDataDirectory: Sendable {
             directory.searchIndexDirectoryURL,
             fileManager: fileManager
         )
-        if migrateLegacyData {
-            try directory.migrateLegacyData(
-                from: vaultPath,
-                fileManager: fileManager
-            )
-        }
         return directory
-    }
-
-    /// Migrates obsolete vault-local process data into this prepared directory.
-    ///
-    /// The migration itself validates its owned legacy inputs and destinations;
-    /// it does not participate in the Git snapshot lock.
-    ///
-    /// - Parameters:
-    ///   - vaultPath: Canonical managed vault root.
-    ///   - fileManager: Filesystem implementation used for migration.
-    func migrateLegacyData(
-        from vaultPath: String,
-        fileManager: FileManager = .default
-    ) throws {
-        try LegacyVaultDataMigrator.migrate(
-            from: URL(fileURLWithPath: vaultPath),
-            destinationAuditLog: auditLogURL,
-            fileManager: fileManager
-        )
     }
 
     private static func hashPath(_ path: String) -> String {

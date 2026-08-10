@@ -37,7 +37,6 @@ enum FileFormatCatalogFactory {
         let pdf = PDFFileOperations(reader: pdfReader)
 
         let softDelete = DeleteOperationBinding(
-            id: .softDelete,
             allowedAreas: [.notes],
             execute: { _, _ in }
         )
@@ -47,60 +46,51 @@ enum FileFormatCatalogFactory {
         let definitions: [FileFormatDefinition] = [
             storedFiles.definition(
                 format: .markdown,
-                handler: .markdown,
                 create: markdown.prepareCreate,
                 read: markdown.read,
                 update: markdown.prepareUpdate
             ),
             storedFiles.definition(
                 format: .canvas,
-                handler: .canvas,
                 create: canvas.prepareCreate,
                 read: canvas.read,
                 update: canvas.prepareUpdate
             ),
             storedFiles.definition(
                 format: .har,
-                handler: .har,
                 create: har.prepareCreate,
                 read: har.read
             ),
             storedFiles.definition(
                 format: .patch,
-                handler: .patch,
                 create: patch.prepareCreate,
                 read: patch.read
             ),
             storedFiles.definition(
                 format: .log,
-                handler: .log,
                 create: log.prepareCreate,
                 read: log.read,
                 update: log.prepareUpdate
             ),
             storedFiles.definition(
                 format: .json,
-                handler: .json,
                 create: json.prepareCreate,
                 read: json.read,
                 update: json.prepareUpdate
             ),
             storedFiles.definition(
                 format: .csv,
-                handler: .csv,
                 create: csv.prepareCreate,
                 read: csv.read,
                 update: csv.prepareUpdate
             ),
             imageFiles.definition(
                 .png,
-                createHandler: .image,
                 create: image.preparePNG
             ),
             imageFiles.definition(.jpeg),
             imageFiles.definition(
                 .gif,
-                createHandler: .videoToGIF,
                 create: image.prepareVideoGIF
             ),
             imageFiles.definition(.webp),
@@ -112,7 +102,6 @@ enum FileFormatCatalogFactory {
                 operations: FormatOperations(
                     create: nil,
                     read: ReadOperationBinding(
-                        id: .pdf,
                         allowedAreas: [.references],
                         execute: pdf.read
                     ),

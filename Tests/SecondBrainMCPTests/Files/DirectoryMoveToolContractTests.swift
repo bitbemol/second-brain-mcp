@@ -22,12 +22,6 @@ struct `MCP directory move contract` {
         func lastRequest() -> MoveDirectoryRequest? { requests.last }
     }
 
-    private actor RejectionSpy: FileRequestRejectionReporting {
-        var values: [FileRequestRejection] = []
-        func record(_ rejection: FileRequestRejection) { values.append(rejection) }
-        func last() -> FileRequestRejection? { values.last }
-    }
-
     @Test
     func `Schema describes one closed replay-safe recursive move`() throws {
         let tool = try #require(DirectoryMoveToolDefinition.build(readOnly: false))
@@ -57,7 +51,6 @@ struct `MCP directory move contract` {
         let service = ServiceSpy()
         let controller = DirectoryMoveToolController(
             readOnly: false,
-            rejections: RejectionSpy(),
             directories: service
         )
         let mutation = MutationID()
@@ -85,10 +78,8 @@ struct `MCP directory move contract` {
     @Test
     func `Unknown arguments and read-only mutations are rejected before service`() async throws {
         let service = ServiceSpy()
-        let rejections = RejectionSpy()
         let readOnly = DirectoryMoveToolController(
             readOnly: true,
-            rejections: rejections,
             directories: service
         )
         let blocked = try await readOnly.call(.init(
@@ -96,12 +87,10 @@ struct `MCP directory move contract` {
             arguments: ["source_path": .string("notes/work")]
         ))
         #expect(blocked.isError == true)
-        #expect(await rejections.last()?.operation == .move)
         #expect(await service.lastRequest() == nil)
 
         let writable = DirectoryMoveToolController(
             readOnly: false,
-            rejections: rejections,
             directories: service
         )
         let invalid = try await writable.call(.init(

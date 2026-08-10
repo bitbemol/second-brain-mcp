@@ -70,8 +70,7 @@ struct `Vault runtime recovery` {
 
     private func productionDataDirectory(for root: String) throws -> VaultDataDirectory {
         try VaultDataDirectory.prepare(
-            vaultPath: root,
-            migrateLegacyData: false
+            vaultPath: root
         )
     }
 

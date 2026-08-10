@@ -9,7 +9,6 @@ actor VaultFileService: FileCRUDService {
     private let store: VaultCRUDStore
     private let mutations: VaultMutationExecutor
     private let operations: VaultOperationCoordinator
-    private let audit: AuditLogger
     private let readOnly: Bool
 
     /// Creates the single routed CRUD service.
@@ -18,9 +17,8 @@ actor VaultFileService: FileCRUDService {
     ///   - vaultPath: Canonical vault root.
     ///   - catalog: Immutable format-operation registrations.
     ///   - store: Sole generic persistence actor.
-    ///   - mutations: Persistence, versioning, audit, and retry transaction boundary.
+    ///   - mutations: Persistence, versioning, and retry transaction boundary.
     ///   - operations: Fair notes-path coordination shared across processes.
-    ///   - audit: Append-only operation log.
     ///   - readOnly: Whether mutation methods must fail before resolving or writing.
     init(
         vaultPath: String,
@@ -28,7 +26,6 @@ actor VaultFileService: FileCRUDService {
         store: VaultCRUDStore,
         mutations: VaultMutationExecutor,
         operations: VaultOperationCoordinator,
-        audit: AuditLogger,
         readOnly: Bool = false
     ) {
         self.vaultPath = vaultPath
@@ -36,11 +33,10 @@ actor VaultFileService: FileCRUDService {
         self.store = store
         self.mutations = mutations
         self.operations = operations
-        self.audit = audit
         self.readOnly = readOnly
     }
 
-    /// Validates, prepares, persists, commits, and audits a file creation.
+    /// Validates, prepares, persists, and snapshots a file creation.
     ///
     /// - Parameter request: Transport-neutral create input.
     /// - Returns: Handler-specific presentation output.
@@ -62,7 +58,6 @@ actor VaultFileService: FileCRUDService {
         let plan = VaultMutationPlan(
             kind: .create,
             target: target,
-            handler: binding.id,
             mutationID: request.mutationID
         )
         return try await operations.withWrite(target: target) {
@@ -106,7 +101,7 @@ actor VaultFileService: FileCRUDService {
         }
     }
 
-    /// Validates a target, routes its format-specific read, and audits access.
+    /// Validates a target and routes its format-specific read.
     ///
     /// - Parameter request: Transport-neutral read input.
     /// - Returns: Ordered text or image content blocks.
@@ -153,18 +148,12 @@ actor VaultFileService: FileCRUDService {
                 )
             )
         }
-        await audit.log(
-            operation: .read,
-            area: target.area,
-            path: target.relativePath,
-            details: binding.id.rawValue
-        )
         return output
     }
 
     /// Prepares and atomically replaces a file when its snapshot is still current.
     ///
-    /// No-op replacements are audited without requesting an unnecessary snapshot.
+    /// No-op replacements do not request an unnecessary snapshot.
     ///
     /// - Parameter request: Transport-neutral update input.
     /// - Returns: Handler-specific presentation output.
@@ -186,7 +175,6 @@ actor VaultFileService: FileCRUDService {
         let plan = VaultMutationPlan(
             kind: .update,
             target: target,
-            handler: binding.id,
             mutationID: request.mutationID
         )
         return try await operations.withWrite(target: target) {
@@ -241,7 +229,7 @@ actor VaultFileService: FileCRUDService {
         }
     }
 
-    /// Moves a writable file to `.trash/`, commits, and audits the deletion.
+    /// Moves a writable file to `.trash/` and snapshots the deletion.
     ///
     /// - Parameter request: Transport-neutral delete input.
     /// - Returns: Text identifying the recoverable trash destination.
@@ -262,7 +250,6 @@ actor VaultFileService: FileCRUDService {
         let plan = VaultMutationPlan(
             kind: .delete,
             target: target,
-            handler: binding.id,
             mutationID: request.mutationID
         )
         return try await operations.withWrite(target: target) {

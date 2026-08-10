@@ -3,16 +3,13 @@ import MCP
 /// Strict MCP adapter for the standalone directory-move mutation.
 struct DirectoryMoveToolController: Sendable {
     private let readOnly: Bool
-    private let rejections: any FileRequestRejectionReporting
     private let directories: any DirectoryMoveService
 
     init(
         readOnly: Bool,
-        rejections: any FileRequestRejectionReporting,
         directories: any DirectoryMoveService
     ) {
         self.readOnly = readOnly
-        self.rejections = rejections
         self.directories = directories
     }
 
@@ -22,13 +19,7 @@ struct DirectoryMoveToolController: Sendable {
             return FileToolResultMapper.failure("Unknown tool: \(params.name)")
         }
         let values = params.arguments ?? [:]
-        let sourcePath = values["source_path"]?.stringValue
         if readOnly {
-            await rejections.record(FileRequestRejection(
-                operation: .move,
-                path: sourcePath,
-                reason: .readOnly
-            ))
             try Task.checkCancellation()
             return FileToolResultMapper.failure(
                 "Server is running in read-only mode; 'move_directory' is not permitted."

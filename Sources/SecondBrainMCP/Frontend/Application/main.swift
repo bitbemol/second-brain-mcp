@@ -29,8 +29,7 @@ do {
         directories: runtime.directories,
         search: runtime.search,
         capabilities: runtime.capabilities,
-        searchCapabilities: runtime.searchCapabilities,
-        rejections: runtime.rejections
+        searchCapabilities: runtime.searchCapabilities
     )
 
 } catch {

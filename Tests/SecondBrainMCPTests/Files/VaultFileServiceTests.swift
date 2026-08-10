@@ -337,8 +337,7 @@ struct `Generic files — routed service` {
     func `Runtime file operations create no redundant audit log`() async throws {
         let (root, runtime) = try await makeRuntime()
         let dataDirectory = try VaultDataDirectory.prepare(
-            vaultPath: root,
-            migrateLegacyData: false
+            vaultPath: root
         )
         let path = "notes/no-audit.md"
 
@@ -373,7 +372,6 @@ struct `Generic files — routed service` {
         let path = "notes/race.md"
         try Data("before".utf8).write(to: URL(fileURLWithPath: root + "/" + path))
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
-        let audit = AuditLogger(dataDirectory: dataDirectory)
         let store = VaultCRUDStore(vaultPath: root)
         let catalog = FileFormatCatalog(definitions: [
             FileFormatDefinition(
@@ -381,7 +379,6 @@ struct `Generic files — routed service` {
                 operations: FormatOperations(
                     create: nil,
                     read: ReadOperationBinding(
-                        id: .markdown,
                         allowedAreas: [.notes],
                         execute: { _, target in
                             try Data("after".utf8).write(
@@ -406,13 +403,11 @@ struct `Generic files — routed service` {
                     lockURL: dataDirectory.lockDirectoryURL
                         .appendingPathComponent("vault-versioning.lock")
                 ),
-                audit: audit,
                 receipts: MutationReceiptStore(dataDirectory: dataDirectory)
             ),
             operations: VaultOperationCoordinator(
                 lockDirectoryURL: dataDirectory.lockDirectoryURL
-            ),
-            audit: audit
+            )
         )
 
         do {
@@ -675,7 +670,6 @@ struct `Generic files — routed service` {
         try Data("protected".utf8).write(to: URL(fileURLWithPath: root + "/" + path))
 
         let delete = DeleteOperationBinding(
-            id: .softDelete,
             allowedAreas: [.notes],
             execute: { _, _ in throw DeleteHookError.rejected }
         )
@@ -691,7 +685,6 @@ struct `Generic files — routed service` {
             )
         ])
         let dataDirectory = try makeTestDataDirectory(vaultPath: root)
-        let audit = AuditLogger(dataDirectory: dataDirectory)
         let store = VaultCRUDStore(vaultPath: root)
         let service = VaultFileService(
             vaultPath: root,
@@ -703,13 +696,11 @@ struct `Generic files — routed service` {
                     lockURL: dataDirectory.lockDirectoryURL
                         .appendingPathComponent("vault-versioning.lock")
                 ),
-                audit: audit,
                 receipts: MutationReceiptStore(dataDirectory: dataDirectory)
             ),
             operations: VaultOperationCoordinator(
                 lockDirectoryURL: dataDirectory.lockDirectoryURL
-            ),
-            audit: audit
+            )
         )
 
         await #expect(throws: DeleteHookError.self) {

@@ -6,7 +6,7 @@ import Foundation
 struct WritableFileTarget: Sendable {
     /// Canonical absolute filesystem URL under `notes/`.
     let url: URL
-    /// Original vault-relative path used for output, recovery, and audit metadata.
+    /// Original vault-relative path used for output and recovery metadata.
     let relativePath: String
     /// Declared concrete format verified against the path extension.
     let format: FileFormat

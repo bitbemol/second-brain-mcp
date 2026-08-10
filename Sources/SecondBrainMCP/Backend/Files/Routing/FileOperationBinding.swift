@@ -1,7 +1,5 @@
-/// Associates a reusable operation function with its identity and allowed areas.
+/// Associates a reusable operation function with its allowed vault areas.
 struct FileOperationBinding<Handler: Sendable>: Sendable {
-    /// Internal diagnostic identity.
-    let id: FileHandlerID
     /// Structural areas accepted by the handler.
     let allowedAreas: Set<VaultArea>
     /// Reusable operation function.

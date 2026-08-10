@@ -11,7 +11,6 @@ struct `Vault mutation executor` {
         let versioning = VersioningProbe()
         let executor = VaultMutationExecutor(
             versioning: versioning,
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: MutationReceiptStore(dataDirectory: dataDirectory)
         )
         let store = VaultCRUDStore(vaultPath: root)
@@ -50,7 +49,6 @@ struct `Vault mutation executor` {
         let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
         let executor = VaultMutationExecutor(
             versioning: versioning,
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: receipts
         )
         let target = try makeTarget("notes/replay.md", root: root)
@@ -95,7 +93,6 @@ struct `Vault mutation executor` {
         let versioning = VersioningProbe(failuresBeforeSuccess: 1)
         let executor = VaultMutationExecutor(
             versioning: versioning,
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: MutationReceiptStore(dataDirectory: dataDirectory)
         )
         let target = try makeTarget("notes/recover.md", root: root)
@@ -152,7 +149,6 @@ struct `Vault mutation executor` {
         )
         let executor = VaultMutationExecutor(
             versioning: VersioningProbe(),
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: receipts
         )
         let target = try makeTarget("notes/uncertain.md", root: root)
@@ -186,7 +182,6 @@ struct `Vault mutation executor` {
                 repositoryURL: URL(fileURLWithPath: root, isDirectory: true),
                 lockURL: versioningLockURL
             ),
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: MutationReceiptStore(dataDirectory: dataDirectory)
         )
         let secondExecutor = VaultMutationExecutor(
@@ -194,7 +189,6 @@ struct `Vault mutation executor` {
                 repositoryURL: URL(fileURLWithPath: root, isDirectory: true),
                 lockURL: versioningLockURL
             ),
-            audit: AuditLogger(dataDirectory: dataDirectory),
             receipts: MutationReceiptStore(dataDirectory: dataDirectory)
         )
         let firstStore = VaultCRUDStore(vaultPath: root)
@@ -215,7 +209,6 @@ struct `Vault mutation executor` {
                     requiresSnapshot: true,
                     perform: {
                         await concurrency.enter()
-                        try await Task.sleep(for: .milliseconds(30))
                         try await firstStore.create(
                             target: firstTarget,
                             data: firstData
@@ -238,7 +231,6 @@ struct `Vault mutation executor` {
                     requiresSnapshot: true,
                     perform: {
                         await concurrency.enter()
-                        try await Task.sleep(for: .milliseconds(30))
                         try await secondStore.create(
                             target: secondTarget,
                             data: secondData
@@ -287,7 +279,6 @@ struct `Vault mutation executor` {
         VaultMutationPlan(
             kind: .create,
             target: target,
-            handler: .markdown,
             mutationID: identifier
         )
     }
@@ -360,14 +351,37 @@ private actor Counter {
 
 private actor ConcurrencyProbe {
     private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
     private(set) var maximum = 0
 
-    func enter() {
+    func enter() async {
         active += 1
         maximum = max(maximum, active)
+
+        if active == 2 {
+            releaseWaiters()
+        } else if !released {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    self.releaseWaiters()
+                }
+            }
+        }
     }
 
     func leave() {
         active -= 1
+    }
+
+    private func releaseWaiters() {
+        released = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
     }
 }

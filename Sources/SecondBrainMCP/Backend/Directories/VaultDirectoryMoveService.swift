@@ -29,7 +29,6 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
     private let vaultPath: String
     private let store: DirectoryTreeStore
     private let versioning: any VaultVersioning
-    private let audit: AuditLogger
     private let receipts: MutationReceiptStore
     private let operations: VaultOperationCoordinator
     private let readOnly: Bool
@@ -38,7 +37,6 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
     init(
         vaultPath: String,
         versioning: any VaultVersioning,
-        audit: AuditLogger,
         receipts: MutationReceiptStore,
         operations: VaultOperationCoordinator,
         readOnly: Bool
@@ -46,7 +44,6 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
         self.vaultPath = vaultPath
         self.store = DirectoryTreeStore(vaultPath: vaultPath)
         self.versioning = versioning
-        self.audit = audit
         self.receipts = receipts
         self.operations = operations
         self.readOnly = readOnly
@@ -292,11 +289,6 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
                     )
                 }
             }
-            await audit.log(
-                operation: .move,
-                path: request.sourcePath,
-                details: "destination=\(request.destinationPath); persistence failed: \(error)"
-            )
             throw error
         }
         return try await finishSnapshot(
@@ -340,19 +332,9 @@ actor VaultDirectoryMoveService: DirectoryMoveService {
                     failure: failure
                 )
             }
-            await audit.log(
-                operation: .move,
-                path: request.sourcePath,
-                details: "destination=\(request.destinationPath); snapshot failed: \(failure)"
-            )
             throw ExecutionError.snapshotFailed(request.mutationID, failure)
         }
 
-        await audit.log(
-            operation: .move,
-            path: request.sourcePath,
-            details: "destination=\(request.destinationPath); mutation_id=\(request.mutationID.rawValue)"
-        )
         do {
             try await receipts.updatingReceipt { store in
                 try store.save(
