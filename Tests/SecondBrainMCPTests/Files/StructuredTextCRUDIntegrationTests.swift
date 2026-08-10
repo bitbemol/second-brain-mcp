@@ -12,7 +12,7 @@ struct `Structured text routed CRUD` {
         let original = "{\n  \"enabled\": false,\n  \"count\": 1\n}\n"
 
         let created = try await context.service.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .json,
             path: path,
             content: original,
@@ -31,7 +31,7 @@ struct `Structured text routed CRUD` {
         #expect(read.metadata?.revision == createdRevision)
 
         let updated = try await context.service.update(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: createdRevision,
             format: .json,
             path: path,
@@ -49,7 +49,7 @@ struct `Structured text routed CRUD` {
         ).contains("\"enabled\": true"))
 
         _ = try await context.service.delete(DeleteFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: updatedRevision,
             format: .json,
             path: path
@@ -67,7 +67,7 @@ struct `Structured text routed CRUD` {
         let original = "id,result\n1,pass"
 
         let created = try await context.service.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .csv,
             path: path,
             content: original,
@@ -86,7 +86,7 @@ struct `Structured text routed CRUD` {
         #expect(read.metadata?.revision == createdRevision)
 
         let updated = try await context.service.update(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: createdRevision,
             format: .csv,
             path: path,
@@ -102,7 +102,7 @@ struct `Structured text routed CRUD` {
         ) == "id,result\n1,pass\n2,fail")
 
         _ = try await context.service.delete(DeleteFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: updatedRevision,
             format: .csv,
             path: path
@@ -139,11 +139,7 @@ struct `Structured text routed CRUD` {
         )
 
         let dataDirectory = try makeTestDataDirectory(vaultPath: root.path)
-        let versioning = try GitRepository(
-            repositoryURL: root,
-            lockURL: dataDirectory.lockDirectoryURL
-                .appendingPathComponent("vault-versioning.lock")
-        )
+        let versioning = try GitRepository(repositoryURL: root)
         try await versioning.recordSnapshot()
         let store = VaultCRUDStore(vaultPath: root.path)
         let limits = ImageLimits.default
@@ -166,17 +162,16 @@ struct `Structured text routed CRUD` {
             ),
             pdfReader: PDFReader()
         )
+        let access = VaultAccessCoordinator(
+            lockURL: dataDirectory.lockDirectoryURL
+                .appendingPathComponent("vault-access.lock")
+        )
         let service = VaultFileService(
             vaultPath: root.path,
             catalog: catalog,
             store: store,
-            mutations: VaultMutationExecutor(
-                versioning: versioning,
-                receipts: MutationReceiptStore(dataDirectory: dataDirectory)
-            ),
-            operations: VaultOperationCoordinator(
-                lockDirectoryURL: dataDirectory.lockDirectoryURL
-            )
+            mutations: VaultMutationExecutor(versioning: versioning),
+            access: access
         )
         return Context(
             root: root,

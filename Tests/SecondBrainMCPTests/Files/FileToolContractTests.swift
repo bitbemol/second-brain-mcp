@@ -38,16 +38,16 @@ struct `MCP file consistency contract` {
 
         #expect(Set(tools.keys) == Set(FileToolName.allCases.map(\.rawValue)))
         #expect(try requiredInputs(of: #require(tools["create_file"])) == [
-            "format", "mutation_id", "path",
+            "format", "path",
         ])
         #expect(try requiredInputs(of: #require(tools["read_file"])) == [
             "format", "path",
         ])
         #expect(try requiredInputs(of: #require(tools["update_file"])) == [
-            "expected_revision", "format", "mutation_id", "path",
+            "expected_revision", "format", "path",
         ])
         #expect(try requiredInputs(of: #require(tools["delete_file"])) == [
-            "expected_revision", "format", "mutation_id", "path",
+            "expected_revision", "format", "path",
         ])
 
         let updateProperties = try inputProperties(of: #require(tools["update_file"]))
@@ -55,10 +55,7 @@ struct `MCP file consistency contract` {
             updateProperties["expected_revision"]?.objectValue?["pattern"]?.stringValue
                 == "^sha256:[0-9a-f]{64}$"
         )
-        #expect(
-            updateProperties["mutation_id"]?.objectValue?["format"]?.stringValue
-                == "uuid"
-        )
+        #expect(updateProperties["mutation_id"] == nil)
         let replacementDescription = updateProperties["replacements"]?
             .objectValue?["description"]?.stringValue ?? ""
         #expect(replacementDescription.contains("Markdown"))
@@ -82,32 +79,32 @@ struct `MCP file consistency contract` {
     }
 
     @Test
-    func `Structured result schemas expose revision and replay metadata`() throws {
+    func `Structured result schemas expose only path area and revisions`() throws {
         let tools = Dictionary(uniqueKeysWithValues: FileToolDefinitions.build(
             capabilities: capabilities,
             readOnly: false
         ).map { ($0.name, $0) })
 
         #expect(try requiredOutputs(of: #require(tools["read_file"])) == [
-            "area", "path", "replayed",
+            "area", "path",
         ])
         #expect(try requiredOutputs(of: #require(tools["create_file"])) == [
-            "area", "mutation_id", "path", "replayed", "revision",
+            "area", "path", "revision",
         ])
         #expect(try requiredOutputs(of: #require(tools["update_file"])) == [
-            "area", "mutation_id", "path", "replayed", "revision",
+            "area", "path", "revision",
         ])
         #expect(try requiredOutputs(of: #require(tools["delete_file"])) == [
-            "area", "mutation_id", "path", "replayed",
+            "area", "path",
         ])
 
         for operation in ["create_file", "update_file", "delete_file"] {
-            #expect(try #require(tools[operation]).annotations.idempotentHint == true)
+            #expect(try #require(tools[operation]).annotations.idempotentHint != true)
         }
     }
 
     @Test
-    func `Capabilities describe revisions, compare-and-swap, and durable replay`() throws {
+    func `Capabilities describe revisions and compare-and-swap`() throws {
         let result = try FileCapabilitiesResource.read(
             capabilities: capabilities,
             readOnly: false
@@ -126,10 +123,10 @@ struct `MCP file consistency contract` {
         let delete = try #require(operations["delete"] as? [String: Any])
 
         #expect(read["revision_areas"] as? [String] == ["notes"])
-        #expect(read["requires_mutation_id"] as? Bool == false)
+        #expect(read["requires_mutation_id"] == nil)
         #expect(create["create_requires_absence"] as? Bool == true)
-        #expect(create["requires_mutation_id"] as? Bool == true)
-        #expect(create["durable_replay"] as? Bool == true)
+        #expect(create["requires_mutation_id"] == nil)
+        #expect(create["durable_replay"] == nil)
         #expect(update["requires_expected_revision"] as? Bool == true)
         #expect(update["revision_areas"] as? [String] == ["notes"])
         #expect(delete["requires_expected_revision"] as? Bool == true)

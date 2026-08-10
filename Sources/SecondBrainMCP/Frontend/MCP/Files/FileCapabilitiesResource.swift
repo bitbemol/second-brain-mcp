@@ -21,10 +21,6 @@ enum FileCapabilitiesResource {
         let revisionAreas: [VaultArea]
         /// Whether the request must carry the revision returned by `read_file`.
         let requiresExpectedRevision: Bool
-        /// Whether the request must carry a caller-generated replay identity.
-        let requiresMutationID: Bool
-        /// Whether safe retries return the durable result of the original mutation.
-        let durableReplay: Bool
         /// Whether creation succeeds only when the destination is absent.
         let createRequiresAbsence: Bool
 
@@ -32,8 +28,6 @@ enum FileCapabilitiesResource {
             case areas
             case revisionAreas = "revision_areas"
             case requiresExpectedRevision = "requires_expected_revision"
-            case requiresMutationID = "requires_mutation_id"
-            case durableReplay = "durable_replay"
             case createRequiresAbsence = "create_requires_absence"
         }
     }
@@ -46,7 +40,7 @@ enum FileCapabilitiesResource {
             Resource(
                 name: "File Capabilities",
                 uri: "secondbrain://file-capabilities",
-                description: "Concrete file formats and their effective CRUD operations, extensions, vault areas, revision preconditions, and durable-replay requirements",
+                description: "Concrete file formats and their effective CRUD operations, extensions, vault areas, revision preconditions, and create-absence requirements",
                 mimeType: "application/json"
             )
         ]
@@ -80,8 +74,6 @@ enum FileCapabilitiesResource {
                         allowedAreas: areas
                     ),
                     requiresExpectedRevision: operation == .update || operation == .delete,
-                    requiresMutationID: operation.isMutation,
-                    durableReplay: operation.isMutation,
                     createRequiresAbsence: operation == .create
                 )
             }

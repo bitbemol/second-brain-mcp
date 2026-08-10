@@ -213,7 +213,6 @@ struct `CSV file operations` {
         replacements: [TextReplacement] = []
     ) -> UpdateFileRequest {
         UpdateFileRequest(
-            mutationID: MutationID(),
             expectedRevision: snapshot.revision,
             format: .csv,
             path: target.relativePath,

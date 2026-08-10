@@ -1,10 +1,6 @@
 import Foundation
 
 /// Fully initialized backend dependencies for one vault process.
-///
-/// This is the backend composition root. It owns construction and startup order,
-/// while the frontend consumes only the routed file service and shared,
-/// transport-neutral capability and rejection boundaries.
 struct VaultRuntime: Sendable {
     /// Routed generic file service.
     let files: any FileCRUDService
@@ -16,34 +12,27 @@ struct VaultRuntime: Sendable {
     let capabilities: FileCapabilities
 
     /// Prepares permitted process state and constructs the backend graph.
-    ///
-    /// - Parameters:
-    ///   - vaultPath: Canonical absolute vault root.
-    ///   - readOnly: Whether bootstrap and routed operations must avoid vault mutations.
-    /// - Returns: A ready-to-serve backend runtime.
     static func bootstrap(
         vaultPath: String,
-        readOnly: Bool = false
+        readOnly: Bool = false,
+        injectedAccess: (any VaultAccessCoordinating)? = nil
     ) async throws -> VaultRuntime {
         let dataDirectory = try VaultDataDirectory.prepare(vaultPath: vaultPath)
-
-        let mutationReceipts = MutationReceiptStore(dataDirectory: dataDirectory)
-        let versioning = try GitRepository(
-            repositoryURL: URL(fileURLWithPath: vaultPath, isDirectory: true),
+        let access = injectedAccess ?? VaultAccessCoordinator(
             lockURL: dataDirectory.lockDirectoryURL
-                .appendingPathComponent("vault-versioning.lock")
+                .appendingPathComponent("vault-access.lock")
+        )
+        let versioning = try GitRepository(
+            repositoryURL: URL(fileURLWithPath: vaultPath, isDirectory: true)
         )
         if !readOnly {
-            try await versioning.recordSnapshot()
+            try await access.withMutation {
+                try await versioning.recordSnapshot()
+            }
         }
+
         let store = VaultCRUDStore(vaultPath: vaultPath)
-        let mutations = VaultMutationExecutor(
-            versioning: versioning,
-            receipts: mutationReceipts
-        )
-        let operations = VaultOperationCoordinator(
-            lockDirectoryURL: dataDirectory.lockDirectoryURL
-        )
+        let mutations = VaultMutationExecutor(versioning: versioning)
         let limits = ImageLimits.default
         let externalSources = ExternalFileSourceValidator(vaultPath: vaultPath)
         let imageReader = ImageReader(
@@ -77,14 +66,13 @@ struct VaultRuntime: Sendable {
             catalog: catalog,
             store: store,
             mutations: mutations,
-            operations: operations,
+            access: access,
             readOnly: readOnly
         )
         let directories = VaultDirectoryMoveService(
             vaultPath: vaultPath,
             versioning: versioning,
-            receipts: mutationReceipts,
-            operations: operations,
+            access: access,
             readOnly: readOnly
         )
         let capabilities = catalog.capabilities()
@@ -92,7 +80,7 @@ struct VaultRuntime: Sendable {
             vaultPath: vaultPath,
             capabilities: capabilities,
             store: store,
-            operations: operations,
+            access: access,
             customProviders: [
                 .pdf: PDFSearchAtomProvider(
                     cacheRoot: dataDirectory.searchIndexDirectoryURL,

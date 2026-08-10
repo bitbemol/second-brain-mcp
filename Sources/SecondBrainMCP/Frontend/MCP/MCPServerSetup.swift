@@ -40,8 +40,8 @@ struct MCPServerSetup {
             concrete format. Use move_directory for a complete notes subtree; it does not take a format. \
             Read secondbrain://file-capabilities before file CRUD when \
             format support is uncertain. Every file mutation that changes vault bytes is \
-            automatically committed to git. Every mutation requires a fresh caller-generated mutation_id UUID; \
-            reuse it only when retrying that exact request after a lost response. Before \
+            automatically committed to git before the tool returns. If a mutation response is lost, \
+            read the current vault state before deciding whether another mutation is needed. Before \
             update_file or delete_file, read the note and return its structured revision \
             as expected_revision. Use move_directory to relocate an entire notes subtree \
             in one call; do not recreate or move its files individually. A revision conflict requires reading and reconsidering \

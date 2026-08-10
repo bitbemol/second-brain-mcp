@@ -65,7 +65,6 @@ enum FileToolRequestDecoder {
             transform = nil
         }
         return CreateFileRequest(
-            mutationID: try mutationID(from: arguments),
             format: format,
             path: path,
             content: try arguments.string(.content),
@@ -120,7 +119,6 @@ enum FileToolRequestDecoder {
             }
         }
         return UpdateFileRequest(
-            mutationID: try mutationID(from: arguments),
             expectedRevision: try expectedRevision(from: arguments),
             format: format,
             path: path,
@@ -135,24 +133,10 @@ enum FileToolRequestDecoder {
     ) throws -> DeleteFileRequest {
         let (format, path) = try identity(from: arguments)
         return DeleteFileRequest(
-            mutationID: try mutationID(from: arguments),
             expectedRevision: try expectedRevision(from: arguments),
             format: format,
             path: path
         )
-    }
-
-    /// Decodes the required UUID used to make one mutation safely replayable.
-    private static func mutationID(
-        from arguments: FileToolArguments
-    ) throws -> MutationID {
-        let value = try arguments.requiredString(.mutationID)
-        guard let identifier = MutationID(rawValue: value) else {
-            throw DecodingError.invalid(
-                "Invalid mutation_id: expected a UUID"
-            )
-        }
-        return identifier
     }
 
     /// Decodes the exact-byte revision required by update and delete.

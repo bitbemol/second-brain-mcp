@@ -145,7 +145,7 @@ struct `JSON file operations` {
 
         let patched = try operations.prepareUpdate(
             UpdateFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: snapshot.revision,
                 format: .json,
                 path: target.relativePath,
@@ -176,7 +176,7 @@ struct `JSON file operations` {
         #expect(throws: FileResourcePolicy.Violation.self) {
             try JSONFileOperations().prepareUpdate(
                 UpdateFileRequest(
-                    mutationID: MutationID(),
+
                     expectedRevision: snapshot.revision,
                     format: .json,
                     path: target.relativePath,
@@ -252,7 +252,7 @@ struct `JSON file operations` {
         replacements: [TextReplacement] = []
     ) -> UpdateFileRequest {
         UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: FileSnapshot(
                 data: Data(#"{"enabled":false,"count":1}"#.utf8),
                 modifiedDate: nil

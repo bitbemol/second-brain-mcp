@@ -20,7 +20,6 @@ struct `Vault process-data directory` {
 
         #expect(prepared.rootURL == repeated.rootURL)
         #expect(FileManager.default.fileExists(atPath: prepared.lockDirectoryURL.path))
-        #expect(FileManager.default.fileExists(atPath: prepared.receiptDirectoryURL.path))
         #expect(FileManager.default.fileExists(atPath: prepared.searchIndexDirectoryURL.path))
         #expect(!FileManager.default.fileExists(
             atPath: prepared.rootURL.appendingPathComponent("audit.log").path

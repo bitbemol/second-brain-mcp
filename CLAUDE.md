@@ -58,6 +58,7 @@ Sources/SecondBrainMCP/
 │       ├── Files/                     # Generic CRUD adapters + capability resource
 │       └── Search/                    # Locator-only search schema, decoder, and mapper
 ├── Backend/                          # Internal application behavior
+│   ├── Concurrency/                  # Injected global vault access coordinator
 │   ├── Directories/                  # Atomic subtree move implementation
 │   ├── Files/
 │   │   ├── Ingress/                  # Request-to-bytes policy for stored text
@@ -65,11 +66,11 @@ Sources/SecondBrainMCP/
 │   │   ├── Routing/                  # Bindings, catalog, operation families, service
 │   │   ├── Storage/                  # Generic snapshots, persistence, and soft deletion
 │   │   ├── Targets/                  # Validated readable/writable paths
-│   │   ├── Transactions/             # Mutation, receipt, and recovery sequencing
+│   │   ├── Transactions/             # Prepared persistence and awaited Git sequencing
 │   │   └── Validation/               # Vault and external-source security
 │   ├── Media/                        # Image and video processing
 │   ├── Search/                       # Atom providers, matching, and cursor pagination
-│   ├── VaultVersioning/              # Sole Git subprocess and serialization boundary
+│   ├── VaultVersioning/              # Sole Git subprocess boundary
 │   └── …                             # Canvas, references, and infrastructure
 └── Shared/                           # Cross-boundary contracts and utilities
     ├── Files/                        # File and directory operation contracts, formats, output
@@ -111,37 +112,33 @@ MCP request
   → stored-text ingress validates inline content before its format handler
   → format handler prepares/interprets bytes
       ├─ read: VaultFileService returns the routed output
-      └─ mutation: VaultMutationExecutor persists → VaultVersioning.recordSnapshot() → receipt
+      └─ mutation: VaultMutationExecutor persists → awaits VaultVersioning.recordSnapshot()
 ```
 
 `move_directory` remains outside file CRUD because it changes one tree boundary over a set of
 file atoms rather than one atom's bytes. Its frontend controller decodes the Shared
 `MoveDirectoryRequest` and calls the Shared `DirectoryMoveService` port; the backend implementation
-owns path policy, subtree validation, the atomic rename, snapshot request, and exact-retry receipt.
-The tool has no `format` argument and returns only its source path, destination path, mutation ID,
-and replay state.
+owns path policy, subtree validation, the atomic rename, and the awaited snapshot request. The tool
+has no `format` argument and returns only its source and destination paths.
 
 `FileFormat` is concrete storage format only. Semantic roles such as “attachment” or “reference”
 belong to vault area/policy, never in that enum. `FileFormatDefinition` binds each operation
 independently, so multiple formats can share a handler and a format can use a special handler for
 only one operation.
 
-**Concurrency:** note reads use shared per-path leases; note mutations use exclusive per-path leases
-held through persistence, versioning, and receipt storage. A fair actor prevents reader barging
-in one runtime, and persistent advisory locks coordinate independent processes. Unrelated note
-mutations may persist concurrently. `GitRepository`, behind `VaultVersioning`, alone serializes the
-complete initialize-stage-check-commit sequence so Git never races its index or ref locks. `read_file`
-returns an exact-byte revision for notes; update/delete must compare that opaque value before changing
-bytes. References are read-only and remain concurrent.
+**Concurrency:** `VaultRuntime` creates one `VaultAccessCoordinator` and injects it through the
+`VaultAccessCoordinating` protocol. Shared leases allow reads to overlap. A mutation waits for every
+active read, then holds the exclusive lease through validation, preparation, persistence, and Git.
+Writer preference prevents later reads from bypassing a queued mutation. Independent processes use
+shared/exclusive modes on the same advisory lock file. `read_file` returns an exact-byte revision
+for notes; update/delete must compare that opaque value before changing bytes.
 
-Every mutation requires a caller-generated `mutation_id`. The executor stores a durable per-ID
-receipt so an exact retry after a lost response replays the original outcome; reuse with different
-request bytes is rejected. Queued cancellation does no work. After the point of no return, the
-mutation finishes in a cancellation-independent task. An uncertain crash fails closed only for that
-mutation ID; unrelated mutations are not globally blocked. A snapshot retry validates the saved
-outcome and calls `recordSnapshot()` again. That call may create a commit or may succeed because
-another agent's snapshot already contains the bytes. Sudden machine or storage power loss remains
-outside the transaction guarantee: vault bytes, Git refs, and external receipts are not one jointly
+Queued cancellation does no work. Cancellation is checked before prepared persistence begins; after
+that point `VaultMutationExecutor` finishes persistence and the required snapshot in a detached task
+before the exclusive lease is released. There is no mutation ID or durable response replay. After a
+lost response, the caller reads the current target state before deciding whether another mutation is
+needed. A snapshot may coalesce pending changes from several agents. Sudden machine or storage power
+loss remains outside the transaction guarantee because vault bytes and Git refs are not one jointly
 synchronized filesystem transaction.
 
 ### Layering & guardrails
@@ -204,15 +201,14 @@ general process sandbox.
 `delete_file` moves user content to a collision-proof path under `.trash/`. Never permanently
 remove user content. Removing a temporary file created by the store itself is allowed cleanup.
 
-### 6. Mutation → versioning → receipt is one transaction responsibility
+### 6. Mutation → versioning is one awaited transaction responsibility
 
-`VaultFileService` validates, prepares, and submits a `VaultMutationPlan`.
-`VaultMutationExecutor` owns persistence, versioning requests, and mutation-receipt sequencing.
-`VaultOperationCoordinator` owns the shared/exclusive notes-path lease surrounding the complete
-service operation. `VaultVersioning` is the only version-control interface, and `GitRepository` owns
-all Git state and its cross-process lock. Do not persist or invoke Git in a format handler, service,
-or MCP adapter. Snapshot failures are propagated explicitly—even if the filesystem mutation already
-succeeded—rather than swallowed with `try?`.
+`VaultFileService` validates and prepares under the exclusive `VaultAccessCoordinating` lease.
+`VaultMutationExecutor` owns prepared persistence followed by any required versioning request.
+`VaultVersioning` is the only version-control interface, and `GitRepository` owns all Git state.
+Do not persist or invoke Git in a format handler or MCP adapter. The caller's mutation lease must
+remain held through the complete persistence-and-snapshot chain. Snapshot failures are propagated
+explicitly—even if the filesystem mutation already succeeded—rather than swallowed with `try?`.
 
 ## Conventions & design intent
 
@@ -269,7 +265,7 @@ Any readable textual format is searchable as one whole-file atom. Register a foc
 
 **MCP-internal data lives OUTSIDE the vault** at
 `~/Library/Application Support/SecondBrainMCP/<sha256-of-vault-path>/` — see
-`VaultDataDirectory`. This avoids iCloud conflicts from process-owned receipts, locks, and derived search data.
+`VaultDataDirectory`. This keeps process-owned locks and derived search data out of user content and Git.
 
 Server logs (stderr) are captured by Claude Desktop at
 `~/Library/Logs/Claude/mcp-server-second-brain.log`.

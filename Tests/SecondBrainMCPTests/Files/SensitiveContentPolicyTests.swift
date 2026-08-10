@@ -267,7 +267,7 @@ struct `Sensitive content policy` {
     func `Mutation text is bounded before fingerprinting and format parsing`() throws {
         let limit = FileFormat.markdown.maximumFileBytes
         try FileMutationResourcePreflight.validate(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: "notes/near-limit.md",
             content: String(repeating: "a", count: limit),
@@ -278,7 +278,7 @@ struct `Sensitive content policy` {
 
         let largeReplacement = String(repeating: "b", count: 8 * 1024 * 1024)
         try FileMutationResourcePreflight.validate(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: FileSnapshot(
                 data: Data(),
                 modifiedDate: nil
@@ -295,7 +295,7 @@ struct `Sensitive content policy` {
 
         #expect(throws: FileResourcePolicy.Violation.self) {
             try FileMutationResourcePreflight.validate(UpdateFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: FileSnapshot(
                     data: Data(),
                     modifiedDate: nil
@@ -319,7 +319,7 @@ struct `Sensitive content policy` {
 
         #expect(throws: FileMutationResourcePreflight.Violation.self) {
             try FileMutationResourcePreflight.validate(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .markdown,
                 path: "notes/tags.md",
                 content: "safe",
@@ -333,7 +333,7 @@ struct `Sensitive content policy` {
         }
         #expect(throws: FileMutationResourcePreflight.Violation.self) {
             try FileMutationResourcePreflight.validate(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .png,
                 path: "notes/image.png",
                 content: nil,

@@ -15,11 +15,8 @@ import Subprocess
 /// all of their changes. A later request that finds nothing new is successful
 /// because the requested state has already been recorded.
 ///
-/// The versioning lock serializes Git operations; it intentionally does not stop
-/// agents from writing notes. Any note change visible when the scoped commit reads
-/// the notes tree may join the snapshot currently in progress, even when another
-/// agent initiated it. A later change remains pending for the next snapshot
-/// request. This is deliberate: commits are vault recovery points, not ownership
+/// The vault access coordinator serializes the complete mutation and snapshot
+/// chain. Commits are recovery points for coherent vault states, not ownership
 /// records for individual agents or mutations.
 actor GitRepository: VaultVersioning {
     /// A deliberately generic subject because commits describe vault states,
@@ -49,50 +46,21 @@ actor GitRepository: VaultVersioning {
     }()
 
     private let repositoryURL: URL
-    private let versioningLock: POSIXAdvisoryFileLock
 
-    /// Creates a Git-backed vault versioner.
-    ///
-    /// Every actor instance and MCP process operating on the same vault must
-    /// receive the same `lockURL`. The lock's parent directory must already
-    /// exist. The lock is intentionally separate from Git's `.git/index.lock`:
-    /// Git owns that file, while this lock coordinates our complete multi-command
-    /// snapshot transaction.
-    ///
-    /// - Parameters:
-    ///   - repositoryURL: The vault directory that Git should initialize or use.
-    ///   - lockURL: A stable application-owned lock file shared by every process
-    ///     operating on this vault.
-    /// - Throws: ``VaultVersioningError`` when either URL is not a file URL.
-    init(repositoryURL: URL, lockURL: URL) throws {
+    /// Creates the sole Git subprocess boundary for one validated vault.
+    init(repositoryURL: URL) throws {
         guard repositoryURL.isFileURL else {
             throw VaultVersioningError.invalidRepositoryURL
         }
-        guard lockURL.isFileURL else {
-            throw VaultVersioningError.invalidLockURL
-        }
-
         self.repositoryURL = repositoryURL.standardizedFileURL
-        self.versioningLock = POSIXAdvisoryFileLock(
-            url: lockURL.standardizedFileURL
-        )
     }
 
     /// Records the current notes state, or succeeds without committing when that
     /// state was already captured by another concurrent request.
     ///
-    /// Swift actors are reentrant whenever an async method suspends. The
-    /// application-owned advisory lock therefore covers the entire Git sequence,
-    /// preventing overlapping `git add`, `git diff`, and `git commit` processes
-    /// both locally and across MCP processes. It does not freeze the notes
-    /// directory, so concurrent writes may join this snapshot according to what
-    /// the scoped commit observes; that coalescing is part of the snapshot contract.
+    /// Runs only while the caller holds the coordinator's mutation lease.
     func recordSnapshot() async throws {
-        let versioningLock = self.versioningLock
-
-        try await versioningLock.withLock(.exclusive) {
-            try await self.performSnapshot()
-        }
+        try await performSnapshot()
     }
 }
 

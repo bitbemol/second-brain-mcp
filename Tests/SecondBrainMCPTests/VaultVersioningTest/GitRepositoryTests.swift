@@ -105,23 +105,26 @@ struct `GitRepository snapshots` {
         )
     }
 
-    /// Exercises separate actor instances sharing one lock, matching several MCP
-    /// agents or processes that target the same vault concurrently.
+    /// Exercises separate runtime boundaries sharing the same advisory lock.
     @Test
-    func `concurrent snapshot requests share one reliable Git transaction`() async throws {
+    func `concurrent mutation chains share one reliable Git transaction`() async throws {
         let vault = try makeVault()
         defer { try? FileManager.default.removeItem(at: vault.root) }
         let agentCount = 16
+        let lockURL = vault.root.appendingPathComponent(".vault-access.lock")
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for agent in 0..<agentCount {
                 group.addTask {
                     let repository = try makeRepository(for: vault)
-                    try Data("agent \(agent)".utf8).write(
-                        to: vault.notes.appendingPathComponent("note-\(agent).md"),
-                        options: .atomic
-                    )
-                    try await repository.recordSnapshot()
+                    let access = VaultAccessCoordinator(lockURL: lockURL)
+                    try await access.withMutation {
+                        try Data("agent \(agent)".utf8).write(
+                            to: vault.notes.appendingPathComponent("note-\(agent).md"),
+                            options: .atomic
+                        )
+                        try await repository.recordSnapshot()
+                    }
                 }
             }
 
@@ -149,15 +152,17 @@ struct `GitRepository snapshots` {
         )
     }
 
-    /// Fixes the intended coalescing behavior in place: when two agents have
-    /// already written their notes, whichever actor acquires the lock first
-    /// commits both changes and the second actor succeeds against a clean index.
+    /// When two runtimes see the same pending bytes, their shared mutation lease
+    /// permits one coalesced snapshot and one clean no-op.
     @Test
-    func `two agents can share one coalesced vault snapshot`() async throws {
+    func `two runtimes can share one coalesced vault snapshot`() async throws {
         let vault = try makeVault()
         defer { try? FileManager.default.removeItem(at: vault.root) }
         let firstAgent = try makeRepository(for: vault)
         let secondAgent = try makeRepository(for: vault)
+        let lockURL = vault.root.appendingPathComponent(".vault-access.lock")
+        let firstAccess = VaultAccessCoordinator(lockURL: lockURL)
+        let secondAccess = VaultAccessCoordinator(lockURL: lockURL)
 
         try Data("first agent".utf8).write(
             to: vault.notes.appendingPathComponent("first.md"),
@@ -168,8 +173,12 @@ struct `GitRepository snapshots` {
             options: .atomic
         )
 
-        async let firstSnapshot: Void = firstAgent.recordSnapshot()
-        async let secondSnapshot: Void = secondAgent.recordSnapshot()
+        async let firstSnapshot: Void = firstAccess.withMutation {
+            try await firstAgent.recordSnapshot()
+        }
+        async let secondSnapshot: Void = secondAccess.withMutation {
+            try await secondAgent.recordSnapshot()
+        }
         _ = try await (firstSnapshot, secondSnapshot)
 
         let committedNotes = try runGit(
@@ -217,7 +226,6 @@ private extension `GitRepository snapshots` {
     struct TestVault: Sendable {
         let root: URL
         let notes: URL
-        let lock: URL
     }
 
     /// Creates an isolated vault and the parent directory required by its lock.
@@ -233,18 +241,13 @@ private extension `GitRepository snapshots` {
 
         return TestVault(
             root: root,
-            notes: notes,
-            lock: root.appendingPathComponent(".vault-versioning.lock")
+            notes: notes
         )
     }
 
-    /// Constructs an independently isolated actor that coordinates through the
-    /// vault's shared cross-process lock file.
+    /// Constructs an independently isolated Git boundary for this vault.
     func makeRepository(for vault: TestVault) throws -> GitRepository {
-        try GitRepository(
-            repositoryURL: vault.root,
-            lockURL: vault.lock
-        )
+        try GitRepository(repositoryURL: vault.root)
     }
 
     /// Runs a small Git setup or assertion command and returns trimmed output.

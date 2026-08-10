@@ -104,7 +104,6 @@ enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
     case hiddenDirectory(String)
     case resourceLimit(String)
     case unsafeFilesystemOperation(String)
-    case recoveryRequired(MutationID)
 
     var description: String {
         switch self {
@@ -128,8 +127,6 @@ enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
             "Directory move exceeds its bounded resource policy: \(detail)"
         case .unsafeFilesystemOperation(let operation):
             "Directory move could not safely \(operation)"
-        case .recoveryRequired(let identifier):
-            "Directory move \(identifier) has an ambiguous prior outcome and requires manual reconciliation"
         }
     }
 }

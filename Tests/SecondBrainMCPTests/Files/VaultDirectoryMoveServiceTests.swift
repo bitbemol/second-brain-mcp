@@ -5,6 +5,20 @@ import Testing
 
 @Suite(.serialized)
 struct `Vault directory move service` {
+    private actor DelayedVersioning: VaultVersioning {
+        private var started = false
+        private var finished = false
+
+        func recordSnapshot() async throws {
+            started = true
+            try await Task.sleep(for: .milliseconds(100))
+            finished = true
+        }
+
+        func hasStarted() -> Bool { started }
+        func hasFinished() -> Bool { finished }
+    }
+
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory() + "VaultDirectoryMoveServiceTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
@@ -43,12 +57,46 @@ struct `Vault directory move service` {
     }
 
     @Test
+    func `Cancellation after rename begins does not skip the snapshot`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let dataDirectory = try makeTestDataDirectory(vaultPath: root)
+        let versioning = DelayedVersioning()
+        let service = VaultDirectoryMoveService(
+            vaultPath: root,
+            versioning: versioning,
+            access: VaultAccessCoordinator(
+                lockURL: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("vault-access.lock")
+            ),
+            readOnly: false
+        )
+        let task = Task {
+            try await service.move(MoveDirectoryRequest(
+                sourcePath: "notes/in-progress/ticket-123",
+                destinationPath: "notes/completed/ticket-123"
+            ))
+        }
+
+        while !(await versioning.hasStarted()) {
+            await Task.yield()
+        }
+        task.cancel()
+
+        _ = try await task.value
+        #expect(await versioning.hasFinished())
+        #expect(FileManager.default.fileExists(
+            atPath: root + "/notes/completed/ticket-123/overview.md"
+        ))
+    }
+
+    @Test
     func `One move preserves a nested subtree, commits once, and search sees its new prefix`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
         let request = MoveDirectoryRequest(
-            mutationID: MutationID(),
+
             sourcePath: "notes//in-progress/ticket-123/",
             destinationPath: "notes/completed/ticket-123"
         )
@@ -63,7 +111,6 @@ struct `Vault directory move service` {
         ) == "nested bytes")
         #expect(output.metadata?.sourcePath == "notes/in-progress/ticket-123")
         #expect(output.metadata?.path == "notes/completed/ticket-123")
-        #expect(output.metadata?.replayed == false)
 
         let search = try await runtime.search.search(VaultSearchRequest(
             location: .notes,
@@ -78,10 +125,6 @@ struct `Vault directory move service` {
         let commitCount = try git(["rev-list", "--count", "HEAD"], root: root)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "2")
-        let replay = try await runtime.directories.move(request)
-        #expect(replay.metadata?.replayed == true)
-        #expect(try git(["rev-list", "--count", "HEAD"], root: root)
-            .trimmingCharacters(in: .whitespacesAndNewlines) == "2")
     }
 
     @Test
@@ -96,7 +139,7 @@ struct `Vault directory move service` {
         let before = try git(["rev-list", "--count", "HEAD"], root: root)
 
         _ = try await runtime.directories.move(MoveDirectoryRequest(
-            mutationID: MutationID(),
+
             sourcePath: "notes/in-progress/empty",
             destinationPath: "notes/completed/empty"
         ))
@@ -118,7 +161,7 @@ struct `Vault directory move service` {
 
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/in-progress/TICKET-123"
             ))
@@ -140,35 +183,35 @@ struct `Vault directory move service` {
 
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
         }
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/Ticket.app/ticket-123"
             ))
         }
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/in-progress/ticket-123/inside"
             ))
         }
         await #expect(throws: FileRoutingError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "references/books",
                 destinationPath: "notes/completed/books"
             ))
         }
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123/overview.md",
                 destinationPath: "notes/completed/overview"
             ))
@@ -185,7 +228,7 @@ struct `Vault directory move service` {
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
         await #expect(throws: FileRoutingError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -209,7 +252,7 @@ struct `Vault directory move service` {
 
         await #expect(throws: SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -237,7 +280,7 @@ struct `Vault directory move service` {
 
         await #expect(throws: PersistedFileSecurityPolicy.Violation.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -266,7 +309,7 @@ struct `Vault directory move service` {
 
         await #expect(throws: TextFileSupport.TextError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -301,7 +344,7 @@ struct `Vault directory move service` {
         }
 
         _ = try await runtime.directories.move(MoveDirectoryRequest(
-            mutationID: MutationID(),
+
             sourcePath: "notes/in-progress/ticket-123",
             destinationPath: "notes/completed/ticket-123"
         ))
@@ -312,43 +355,6 @@ struct `Vault directory move service` {
                 .hasPrefix("100644 blob "))
         }
         #expect(try git(["status", "--porcelain"], root: root).isEmpty)
-    }
-
-    @Test
-    func `An exact retry records a snapshot after the directory was already moved`() async throws {
-        let root = try makeVault()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        let reference = try git(["symbolic-ref", "HEAD"], root: root)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let referenceLock = URL(fileURLWithPath: root + "/.git/" + reference + ".lock")
-        try FileManager.default.createDirectory(
-            at: referenceLock.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data("locked".utf8).write(to: referenceLock)
-        let request = MoveDirectoryRequest(
-            mutationID: MutationID(),
-            sourcePath: "notes/in-progress/ticket-123",
-            destinationPath: "notes/completed/ticket-123"
-        )
-
-        await #expect(throws: VaultDirectoryMoveService.ExecutionError.self) {
-            _ = try await runtime.directories.move(request)
-        }
-        #expect(!FileManager.default.fileExists(
-            atPath: root + "/notes/in-progress/ticket-123"
-        ))
-        #expect(FileManager.default.fileExists(
-            atPath: root + "/notes/completed/ticket-123/overview.md"
-        ))
-
-        try FileManager.default.removeItem(at: referenceLock)
-        let recovered = try await runtime.directories.move(request)
-        #expect(recovered.metadata?.replayed == true)
-        #expect(try git(["status", "--porcelain"], root: root).isEmpty)
-        #expect(try git(["rev-list", "--count", "HEAD"], root: root)
-            .trimmingCharacters(in: .whitespacesAndNewlines) == "2")
     }
 
     @Test
@@ -364,7 +370,7 @@ struct `Vault directory move service` {
         _ = try git(["add", "--", "notes/unrelated.md"], root: root)
 
         _ = try await runtime.directories.move(MoveDirectoryRequest(
-            mutationID: MutationID(),
+
             sourcePath: "notes/in-progress/ticket-123",
             destinationPath: "notes/completed/ticket-123"
         ))
@@ -379,214 +385,6 @@ struct `Vault directory move service` {
     }
 
     @Test
-    func `A crash after rename is recovered only for the recorded source inode`() async throws {
-        let root = try makeVault()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        let request = MoveDirectoryRequest(
-            mutationID: MutationID(),
-            sourcePath: "notes/in-progress/ticket-123",
-            destinationPath: "notes/completed/ticket-123"
-        )
-        let fingerprint = try MutationRequestFingerprint.make(
-            operationIdentifier: MoveDirectoryRequest.operationIdentifier,
-            request: request
-        )
-        let source = try NotesDirectoryTarget.resolve(
-            path: request.sourcePath,
-            vaultPath: root
-        )
-        let destination = try NotesDirectoryTarget.resolve(
-            path: request.destinationPath,
-            vaultPath: root
-        )
-        let tree = DirectoryTreeStore(vaultPath: root)
-        let identity: DirectoryTreeStore.Identity
-        guard case .directory(let observed) = try tree.state(of: source) else {
-            Issue.record("Expected source directory")
-            return
-        }
-        identity = observed
-        let summary = try DirectoryMoveSecurityPreflight.validate(source).summary
-        let dataDirectory = try VaultDataDirectory.prepare(
-            vaultPath: root
-        )
-        let receipts = MutationReceiptStore(dataDirectory: dataDirectory)
-        try receipts.saveInProgress(
-            identifier: request.mutationID,
-            fingerprint: fingerprint,
-            recoveryEvidence: .directoryMoveIntent(
-                sourcePath: request.sourcePath,
-                destinationPath: request.destinationPath,
-                identity: identity,
-                summary: summary
-            )
-        )
-        try receipts.markPersistenceStarted(
-            identifier: request.mutationID,
-            fingerprint: fingerprint
-        )
-        _ = try tree.move(
-            source: source,
-            destination: destination,
-            expectedIdentity: identity
-        )
-
-        let recovered = try await runtime.directories.move(request)
-        #expect(recovered.metadata?.replayed == true)
-        #expect(try git(["status", "--porcelain"], root: root).isEmpty)
-        #expect(FileManager.default.fileExists(
-            atPath: root + "/notes/completed/ticket-123/overview.md"
-        ))
-    }
-
-    @Test
-    func `A pre-persistence directory intent is safely restarted`() async throws {
-        let root = try makeVault()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        let request = MoveDirectoryRequest(
-            mutationID: MutationID(),
-            sourcePath: "notes/in-progress/ticket-123",
-            destinationPath: "notes/completed/ticket-123"
-        )
-        let fingerprint = try MutationRequestFingerprint.make(
-            operationIdentifier: MoveDirectoryRequest.operationIdentifier,
-            request: request
-        )
-        let tree = DirectoryTreeStore(vaultPath: root)
-        let source = try NotesDirectoryTarget.resolve(
-            path: request.sourcePath,
-            vaultPath: root
-        )
-        guard case .directory(let identity) = try tree.state(of: source) else {
-            Issue.record("Expected source directory")
-            return
-        }
-        let summary = try DirectoryMoveSecurityPreflight.validate(source).summary
-        let receipts = MutationReceiptStore(dataDirectory: try VaultDataDirectory.prepare(
-            vaultPath: root
-        ))
-        try receipts.saveInProgress(
-            identifier: request.mutationID,
-            fingerprint: fingerprint,
-            recoveryEvidence: .directoryMoveIntent(
-                sourcePath: request.sourcePath,
-                destinationPath: request.destinationPath,
-                identity: identity,
-                summary: summary
-            )
-        )
-
-        let result = try await runtime.directories.move(request)
-        #expect(result.metadata?.replayed == false)
-        #expect(FileManager.default.fileExists(
-            atPath: root + "/notes/completed/ticket-123/overview.md"
-        ))
-    }
-
-    @Test
-    func `A completed directory move replays without moving again`() async throws {
-        let root = try makeVault()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        let request = MoveDirectoryRequest(
-            mutationID: MutationID(),
-            sourcePath: "notes/in-progress/ticket-123",
-            destinationPath: "notes/completed/ticket-123"
-        )
-
-        _ = try await runtime.directories.move(request)
-        let replay = try await runtime.directories.move(request)
-
-        #expect(replay.metadata?.replayed == true)
-    }
-
-    @Test
-    func `A prior commit mentioning the mutation ID cannot suppress a snapshot`() async throws {
-        let root = try makeVault()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        let identifier = MutationID()
-        try "prior edit".write(
-            toFile: root + "/notes/in-progress/ticket-123/overview.md",
-            atomically: true,
-            encoding: .utf8
-        )
-        _ = try git(["add", "--", "notes/in-progress/ticket-123/overview.md"], root: root)
-        _ = try git([
-            "commit", "-m", "manual [mutation \(identifier.rawValue)]",
-        ], root: root)
-        let before = try git(["rev-list", "--count", "HEAD"], root: root)
-
-        _ = try await runtime.directories.move(MoveDirectoryRequest(
-            mutationID: identifier,
-            sourcePath: "notes/in-progress/ticket-123",
-            destinationPath: "notes/completed/ticket-123"
-        ))
-        let after = try git(["rev-list", "--count", "HEAD"], root: root)
-        #expect(Int(after.trimmingCharacters(in: .whitespacesAndNewlines))
-            == Int(before.trimmingCharacters(in: .whitespacesAndNewlines))! + 1)
-        #expect(try git(["status", "--porcelain"], root: root).isEmpty)
-    }
-
-    @Test(
-        arguments: RecoveredSubtreeMutation.allCases
-    )
-    func `Move recovery refuses any descendant state change`(
-        mutation: RecoveredSubtreeMutation
-    ) async throws {
-        let root = try makeVault()
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        let reference = try git(["symbolic-ref", "HEAD"], root: root)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let referenceLock = URL(fileURLWithPath: root + "/.git/" + reference + ".lock")
-        try Data("locked".utf8).write(to: referenceLock)
-        let request = MoveDirectoryRequest(
-            mutationID: MutationID(),
-            sourcePath: "notes/in-progress/ticket-123",
-            destinationPath: "notes/completed/ticket-123"
-        )
-        await #expect(throws: VaultDirectoryMoveService.ExecutionError.self) {
-            _ = try await runtime.directories.move(request)
-        }
-        try FileManager.default.removeItem(at: referenceLock)
-        let destination = root + "/notes/completed/ticket-123"
-        switch mutation {
-        case .change:
-            try "changed safe bytes".write(
-                toFile: destination + "/overview.md",
-                atomically: true,
-                encoding: .utf8
-            )
-        case .add:
-            try "added safe bytes".write(
-                toFile: destination + "/added.md",
-                atomically: true,
-                encoding: .utf8
-            )
-        case .delete:
-            try FileManager.default.removeItem(
-                atPath: destination + "/research/context.log"
-            )
-        case .chmod:
-            #expect(Darwin.chmod(destination + "/overview.md", 0o755) == 0)
-        case .addEmptyDirectory:
-            try FileManager.default.createDirectory(
-                atPath: destination + "/new-empty",
-                withIntermediateDirectories: false
-            )
-        }
-
-        await #expect(throws: DirectoryMoveError.self) {
-            _ = try await runtime.directories.move(request)
-        }
-        #expect(try git(["rev-list", "--count", "HEAD"], root: root)
-            .trimmingCharacters(in: .whitespacesAndNewlines) == "1")
-    }
-
-    @Test
     func `Hidden and package descendants are refused before rename`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
@@ -595,7 +393,7 @@ struct `Vault directory move service` {
         try "*.md".write(toFile: hidden, atomically: true, encoding: .utf8)
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -607,7 +405,7 @@ struct `Vault directory move service` {
         )
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -623,7 +421,7 @@ struct `Vault directory move service` {
         #expect(Darwin.chflags(flagged, UInt32(UF_HIDDEN)) == 0)
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
-                mutationID: MutationID(),
+
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
@@ -736,12 +534,4 @@ struct `Vault directory move service` {
     }
 
     private enum TestFailure: Error { case git }
-}
-
-enum RecoveredSubtreeMutation: String, CaseIterable {
-    case change
-    case add
-    case delete
-    case chmod
-    case addEmptyDirectory
 }

@@ -26,8 +26,8 @@
 - Keep `references/` structurally read-only and restrict writes to supported content under `notes/`.
 - Never add caller-selected command execution. `GitRepository` and `/usr/bin/git` remain the only subprocess boundary.
 - Preserve soft-delete behavior; user content moves to `.trash/` and is never permanently deleted.
-- Keep preparation separate from persistence. `VaultMutationExecutor` owns persistence, versioning requests, and receipt sequencing under the operation coordinator's leases; `VaultVersioning` is the only Git boundary and owns all Git state and serialization.
-- Preserve exact-byte revisions, mutation-id idempotency, bounded search, cancellation behavior, and strict Swift concurrency unless a reviewed design explicitly replaces them.
+- Keep preparation separate from persistence. `VaultMutationExecutor` owns prepared persistence followed by any required versioning request under the global `VaultAccessCoordinating` mutation lease; `VaultVersioning` is the only Git boundary.
+- Preserve exact-byte revisions, the shared/exclusive global vault-access boundary, bounded search, cancellation behavior, and strict Swift concurrency unless a reviewed design explicitly replaces them.
 
 ## Test-driven changes
 

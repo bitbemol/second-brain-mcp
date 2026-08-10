@@ -20,6 +20,4 @@ enum VaultVersioningError: Error, Sendable {
     /// The repository location cannot represent a local filesystem directory.
     case invalidRepositoryURL
 
-    /// The coordination lock location cannot represent a local filesystem file.
-    case invalidLockURL
 }

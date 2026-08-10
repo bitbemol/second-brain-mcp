@@ -7,8 +7,6 @@ enum FileToolArgument: String, Sendable {
     case format
     /// Vault-relative source or destination path.
     case path
-    /// Caller-generated UUID that identifies one safely replayable mutation.
-    case mutationID = "mutation_id"
     /// Exact-byte revision that an update or delete expects to replace.
     case expectedRevision = "expected_revision"
     /// Inline text content for create and update operations.

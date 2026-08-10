@@ -2,7 +2,7 @@
 ///
 /// Frontend adapters depend on this contract rather than a concrete backend
 /// router. Requests and outputs remain shared values without exposing storage,
-/// handler, Git, or receipt implementation details.
+/// handler, persistence, Git, or coordination implementation details.
 protocol FileCRUDService: Sendable {
     /// Creates a supported concrete file.
     ///

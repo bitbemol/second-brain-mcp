@@ -4,7 +4,6 @@ import Testing
 
 @Suite
 struct `MCP file request decoder` {
-    private let mutationID = "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
     private let revision = "sha256:" + String(repeating: "a", count: 64)
 
     @Test
@@ -14,7 +13,6 @@ struct `MCP file request decoder` {
             arguments: [
                 "format": .string("gif"),
                 "path": .string("notes/demo.gif"),
-                "mutation_id": .string(mutationID),
                 "source": .string("/tmp/demo.mov"),
                 "tags": .array([.string("demo"), .string("video")]),
                 "transform": .string("video_to_gif"),
@@ -31,7 +29,6 @@ struct `MCP file request decoder` {
 
         #expect(request.format == .gif)
         #expect(request.path == "notes/demo.gif")
-        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.source == "/tmp/demo.mov")
         #expect(request.tags == ["demo", "video"])
         #expect(request.transform == .videoToGIF)
@@ -69,7 +66,6 @@ struct `MCP file request decoder` {
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/page.md"),
-                "mutation_id": .string(mutationID),
                 "expected_revision": .string(revision),
                 "mode": .string("patch"),
                 "replacements": .array([
@@ -90,7 +86,6 @@ struct `MCP file request decoder` {
         }
 
         #expect(request.mode == .patch)
-        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.expectedRevision.rawValue == revision)
         #expect(request.replacements.count == 1)
         #expect(request.replacements.first?.oldText == "before")
@@ -98,13 +93,12 @@ struct `MCP file request decoder` {
     }
 
     @Test
-    func `Delete requires and preserves mutation consistency values`() throws {
+    func `Delete requires and preserves its expected revision`() throws {
         let params = CallTool.Parameters(
             name: "delete_file",
             arguments: [
                 "format": .string("markdown"),
                 "path": .string("notes/page.md"),
-                "mutation_id": .string(mutationID.uppercased()),
                 "expected_revision": .string(revision),
             ]
         )
@@ -117,35 +111,11 @@ struct `MCP file request decoder` {
             return
         }
 
-        #expect(request.mutationID.rawValue == mutationID)
         #expect(request.expectedRevision.rawValue == revision)
     }
 
     @Test
-    func `Mutation identities and expected revisions are strict`() {
-        expectError(
-            "Missing required parameter: mutation_id",
-            decoding: CallTool.Parameters(
-                name: FileToolName.create.rawValue,
-                arguments: [
-                    "format": .string("markdown"),
-                    "path": .string("notes/page.md"),
-                ]
-            ),
-            for: .create
-        )
-        expectError(
-            "Invalid mutation_id: expected a UUID",
-            decoding: CallTool.Parameters(
-                name: FileToolName.create.rawValue,
-                arguments: [
-                    "format": .string("markdown"),
-                    "path": .string("notes/page.md"),
-                    "mutation_id": .string("retry-this"),
-                ]
-            ),
-            for: .create
-        )
+    func `Expected revisions are strict`() {
         expectError(
             "Missing required parameter: expected_revision",
             decoding: CallTool.Parameters(
@@ -153,8 +123,7 @@ struct `MCP file request decoder` {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
-                    "mutation_id": .string(mutationID),
-                ]
+                    ]
             ),
             for: .delete
         )
@@ -165,8 +134,7 @@ struct `MCP file request decoder` {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
-                    "mutation_id": .string(mutationID),
-                    "expected_revision": .string("sha256:ABC"),
+                        "expected_revision": .string("sha256:ABC"),
                 ]
             ),
             for: .delete
@@ -279,8 +247,7 @@ struct `MCP file request decoder` {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
-                    "mutation_id": .string(mutationID),
-                    "tags": .array([.string("valid"), .int(1)]),
+                        "tags": .array([.string("valid"), .int(1)]),
                 ]
             ),
             for: .create

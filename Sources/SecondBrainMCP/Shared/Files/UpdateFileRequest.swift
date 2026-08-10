@@ -8,8 +8,6 @@ struct TextReplacement: Sendable, Codable {
 
 /// Transport-neutral input for a generic file update.
 struct UpdateFileRequest: Sendable, Codable {
-    /// Caller-generated identity used to replay a timed-out mutation safely.
-    let mutationID: MutationID
     /// Revision returned by the read on which this update is based.
     let expectedRevision: FileRevision
     /// Declared concrete storage format.

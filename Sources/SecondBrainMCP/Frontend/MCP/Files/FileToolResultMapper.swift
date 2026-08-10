@@ -14,8 +14,7 @@ enum FileToolResultMapper {
     /// Converts a directory move into its compact structural result.
     static func directoryMoveSuccess(_ output: FileOperationOutput) -> CallTool.Result {
         guard let metadata = output.metadata,
-              let sourcePath = metadata.sourcePath,
-              let mutationID = metadata.mutationID else {
+              let sourcePath = metadata.sourcePath else {
             return failure("Directory move completed without required result metadata")
         }
         return CallTool.Result(
@@ -23,8 +22,6 @@ enum FileToolResultMapper {
             structuredContent: .object([
                 FileToolOutputField.sourcePath.rawValue: .string(sourcePath),
                 FileToolOutputField.destinationPath.rawValue: .string(metadata.path),
-                FileToolOutputField.mutationID.rawValue: .string(mutationID.rawValue),
-                FileToolOutputField.replayed.rawValue: .bool(metadata.replayed),
             ])
         )
     }
@@ -62,13 +59,9 @@ enum FileToolResultMapper {
         var values: [String: Value] = [
             FileToolOutputField.path.rawValue: .string(metadata.path),
             FileToolOutputField.area.rawValue: .string(metadata.area.rawValue),
-            FileToolOutputField.replayed.rawValue: .bool(metadata.replayed),
         ]
         if let revision = metadata.revision {
             values[FileToolOutputField.revision] = .string(revision.rawValue)
-        }
-        if let mutationID = metadata.mutationID {
-            values[FileToolOutputField.mutationID] = .string(mutationID.rawValue)
         }
         return .object(values)
     }

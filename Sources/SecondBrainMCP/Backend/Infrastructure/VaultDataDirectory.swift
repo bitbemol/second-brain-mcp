@@ -10,15 +10,12 @@ struct VaultDataDirectory: Sendable {
     let rootURL: URL
     /// Persistent advisory-lock files shared by every process for this vault.
     let lockDirectoryURL: URL
-    /// Durable successful-mutation receipts used for timeout-safe replay.
-    let receiptDirectoryURL: URL
     /// Derived persistent search data that never enters the managed vault.
     let searchIndexDirectoryURL: URL
 
     private init(rootURL: URL) {
         self.rootURL = rootURL
         self.lockDirectoryURL = rootURL.appendingPathComponent("locks", isDirectory: true)
-        self.receiptDirectoryURL = rootURL.appendingPathComponent("receipts", isDirectory: true)
         self.searchIndexDirectoryURL = rootURL.appendingPathComponent(
             "search-index",
             isDirectory: true
@@ -64,15 +61,6 @@ struct VaultDataDirectory: Sendable {
         )
         try prepareDirectory(directory.rootURL, fileManager: fileManager)
         try prepareDirectory(directory.lockDirectoryURL, fileManager: fileManager)
-        try prepareDirectory(
-            directory.lockDirectoryURL.appendingPathComponent("paths", isDirectory: true),
-            fileManager: fileManager
-        )
-        try prepareDirectory(
-            directory.lockDirectoryURL.appendingPathComponent("mutations", isDirectory: true),
-            fileManager: fileManager
-        )
-        try prepareDirectory(directory.receiptDirectoryURL, fileManager: fileManager)
         try preparePrivateDirectory(
             directory.searchIndexDirectoryURL,
             fileManager: fileManager

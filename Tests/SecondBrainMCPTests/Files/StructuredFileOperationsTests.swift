@@ -233,7 +233,7 @@ struct `Generic files — structured format operations` {
         let create = try #require(definition.operations.create)
         let target = try WritableFileTarget.resolve(path: "notes/import.log", format: .log, vaultPath: root)
         let request = CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .log,
             path: target.relativePath,
             content: nil,
@@ -302,7 +302,7 @@ struct `Generic files — structured format operations` {
 
         let snapshot = try await store.snapshot(target.readable)
         let update = UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: snapshot.revision,
             format: .log,
             path: target.relativePath,
@@ -325,7 +325,7 @@ struct `Generic files — structured format operations` {
             vaultPath: root
         )
         let markdownRequest = UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: snapshot.revision,
             format: .markdown,
             path: markdownTarget.relativePath,
@@ -345,7 +345,7 @@ struct `Generic files — structured format operations` {
             vaultPath: root
         )
         let logRequest = UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: snapshot.revision,
             format: .log,
             path: logTarget.relativePath,

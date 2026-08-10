@@ -28,13 +28,12 @@ enum FileToolDefinitions {
         case .create:
             Tool(
                 name: tool.rawValue,
-                description: "Create a supported concrete file under notes/. mutation_id is a caller-generated UUID: reuse it only to retry this exact request after a timeout. Creation is atomic and requires the destination to be absent. The declared format, destination extension, and actual content must agree. Text and structured formats require inline content and reject high-confidence credentials before Git persistence; use explicit redaction placeholders in documentation. HAR imports redact known authorization, cookie, token, URL-userinfo, and JSON/form-body credential fields. PNG imports and cleans an external image source. GIF creation accepts an external video source with transform=video_to_gif. Successful results return the stored revision and are git-committed.",
+                description: "Create a supported concrete file under notes/. Creation is atomic and requires the destination to be absent. The declared format, destination extension, and actual content must agree. Text and structured formats require inline content and reject high-confidence credentials before Git persistence; use explicit redaction placeholders in documentation. HAR imports redact known authorization, cookie, token, URL-userinfo, and JSON/form-body credential fields. PNG imports and cleans an external image source. GIF creation accepts an external video source with transform=video_to_gif. Successful results return the stored revision and are git-committed.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .create),
                     formatDescription: "Concrete stored file format",
                     pathDescription: "Destination under notes/ with an extension matching format",
                     additionalProperties: [
-                        .mutationID: mutationIDSchema,
                         .content: .object([
                             "type": .string("string"),
                             "description": .string("Inline UTF-8 content; required for text and structured formats")
@@ -64,17 +63,16 @@ enum FileToolDefinitions {
                             "enum": .array([.string("video_to_gif")]),
                             "description": .string("Required when creating a GIF from an external video")
                         ])
-                    ],
-                    additionalRequired: [.mutationID]
+                    ]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
                     destructiveHint: false,
-                    idempotentHint: true,
+                    idempotentHint: false,
                     openWorldHint: true
                 ),
                 outputSchema: outputSchema(
-                    required: [.path, .area, .revision, .mutationID, .replayed]
+                    required: [.path, .area, .revision]
                 )
             )
         case .read:
@@ -128,19 +126,18 @@ enum FileToolDefinitions {
                     openWorldHint: false
                 ),
                 outputSchema: outputSchema(
-                    required: [.path, .area, .replayed]
+                    required: [.path, .area]
                 )
             )
         case .update:
             Tool(
                 name: tool.rawValue,
-                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. Text updates reject high-confidence credentials before persistence. Markdown and CSV support replace, append, and exact text replacements. JSON supports replace and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
+                description: "Update a supported file under notes/. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. Text updates reject high-confidence credentials before persistence. Markdown and CSV support replace, append, and exact text replacements. JSON supports replace and exact text replacements. Canvas supports replace. Log supports append only. Changed-byte results return the new stored revision and are git-committed; no-op results return the unchanged revision without creating a commit.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .update),
                     formatDescription: "Concrete file format",
                     pathDescription: "Existing file under notes/",
                     additionalProperties: [
-                        .mutationID: mutationIDSchema,
                         .expectedRevision: expectedRevisionSchema,
                         .mode: .object([
                             "type": .string("string"),
@@ -164,40 +161,39 @@ enum FileToolDefinitions {
                             ])
                         ])
                     ],
-                    additionalRequired: [.mutationID, .expectedRevision]
+                    additionalRequired: [.expectedRevision]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
                     destructiveHint: true,
-                    idempotentHint: true,
+                    idempotentHint: false,
                     openWorldHint: false
                 ),
                 outputSchema: outputSchema(
-                    required: [.path, .area, .revision, .mutationID, .replayed]
+                    required: [.path, .area, .revision]
                 )
             )
         case .delete:
             Tool(
                 name: tool.rawValue,
-                description: "Soft-delete a supported file under notes/ by moving it to .trash/. expected_revision must be the opaque revision returned by the read that authorized deletion; a conflict requires a fresh read. mutation_id is a caller-generated UUID and must be reused only for an exact retry after a timeout. The declared format and extension must agree. References are structurally read-only. Git auto-commits the deletion.",
+                description: "Soft-delete a supported file under notes/ by moving it to .trash/. expected_revision must be the opaque revision returned by the read that authorized deletion; a conflict requires a fresh read. The declared format and extension must agree. References are structurally read-only. Git auto-commits the deletion.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .delete),
                     formatDescription: "Concrete file format",
                     pathDescription: "Existing file under notes/",
                     additionalProperties: [
-                        .mutationID: mutationIDSchema,
                         .expectedRevision: expectedRevisionSchema,
                     ],
-                    additionalRequired: [.mutationID, .expectedRevision]
+                    additionalRequired: [.expectedRevision]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
                     destructiveHint: true,
-                    idempotentHint: true,
+                    idempotentHint: false,
                     openWorldHint: false
                 ),
                 outputSchema: outputSchema(
-                    required: [.path, .area, .mutationID, .replayed]
+                    required: [.path, .area]
                 )
             )
         }
@@ -228,17 +224,6 @@ enum FileToolDefinitions {
         ])
     }
 
-    /// Schema for caller-generated identities used by durable mutation replay.
-    private static var mutationIDSchema: Value {
-        .object([
-            "type": .string("string"),
-            "format": .string("uuid"),
-            "description": .string(
-                "Required caller-generated UUID. Reuse only when retrying the exact same mutation after a timeout or lost response."
-            ),
-        ])
-    }
-
     /// Schema for exact-byte compare-and-swap revision preconditions.
     private static var expectedRevisionSchema: Value {
         .object([
@@ -264,11 +249,6 @@ enum FileToolDefinitions {
                     "type": .string("string"),
                     "pattern": .string("^sha256:[0-9a-f]{64}$"),
                 ]),
-                FileToolOutputField.mutationID.rawValue: .object([
-                    "type": .string("string"),
-                    "format": .string("uuid"),
-                ]),
-                FileToolOutputField.replayed.rawValue: .object(["type": .string("boolean")]),
             ]),
             "required": .array(required.map { .string($0.rawValue) }),
             "additionalProperties": .bool(false),

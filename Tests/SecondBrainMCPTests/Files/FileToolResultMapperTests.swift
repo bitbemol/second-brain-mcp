@@ -10,9 +10,6 @@ struct `MCP file result mapper` {
         let revision = try #require(FileRevision(
             rawValue: "sha256:" + String(repeating: "a", count: 64)
         ))
-        let mutationID = try #require(MutationID(
-            rawValue: "e7dc1f3a-5a20-41e9-91d8-3b9d289787b0"
-        ))
         let result = FileToolResultMapper.success(FileOperationOutput(
             contents: [
                 .text("summary"),
@@ -21,9 +18,7 @@ struct `MCP file result mapper` {
             metadata: FileOperationMetadata(
                 path: "notes/demo.gif",
                 area: .notes,
-                revision: revision,
-                mutationID: mutationID,
-                replayed: true
+                revision: revision
             )
         ))
 
@@ -39,11 +34,10 @@ struct `MCP file result mapper` {
         #expect(mimeType == "image/gif")
 
         let metadata = try #require(result.structuredContent?.objectValue)
+        #expect(Set(metadata.keys) == ["path", "area", "revision"])
         #expect(metadata["path"]?.stringValue == "notes/demo.gif")
         #expect(metadata["area"]?.stringValue == "notes")
         #expect(metadata["revision"]?.stringValue == revision.rawValue)
-        #expect(metadata["mutation_id"]?.stringValue == mutationID.rawValue)
-        #expect(metadata["replayed"]?.boolValue == true)
     }
 
     @Test

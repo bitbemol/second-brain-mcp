@@ -9,7 +9,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
     private let vaultPath: String
     private let capabilities: FileCapabilities
     private let store: VaultCRUDStore
-    private let operations: VaultOperationCoordinator
+    private let access: any VaultAccessCoordinating
     private let textProvider: any SearchAtomProvider
     private let customProviders: [FileFormat: any SearchAtomProvider]
 
@@ -17,19 +17,25 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         vaultPath: String,
         capabilities: FileCapabilities,
         store: VaultCRUDStore,
-        operations: VaultOperationCoordinator,
+        access: any VaultAccessCoordinating,
         textProvider: any SearchAtomProvider = TextSearchAtomProvider(),
         customProviders: [FileFormat: any SearchAtomProvider] = [:]
     ) {
         self.vaultPath = vaultPath
         self.capabilities = capabilities
         self.store = store
-        self.operations = operations
+        self.access = access
         self.textProvider = textProvider
         self.customProviders = customProviders
     }
 
     func atoms(in location: VaultArea) async throws -> [SearchAtom] {
+        try await access.withRead {
+            try await buildAtoms(in: location)
+        }
+    }
+
+    private func buildAtoms(in location: VaultArea) async throws -> [SearchAtom] {
         let readable = Set(
             capabilities.supportedFormats(for: .read, in: location)
         )
@@ -47,22 +53,11 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
                 format: candidate.format,
                 vaultPath: vaultPath
             )
-            let snapshot: FileSnapshot
-            if location == .notes {
-                snapshot = try await operations.withRead(target: target) {
-                    try await store.snapshot(
-                        target,
-                        maximumBytes: target.format.maximumFileBytes,
-                        rejectHiddenComponents: true
-                    )
-                }
-            } else {
-                snapshot = try await store.snapshot(
-                    target,
-                    maximumBytes: target.format.maximumFileBytes,
-                    rejectHiddenComponents: true
-                )
-            }
+            let snapshot = try await store.snapshot(
+                target,
+                maximumBytes: target.format.maximumFileBytes,
+                rejectHiddenComponents: true
+            )
             guard let provider = provider(for: target.format) else { continue }
             result.append(contentsOf: try await provider.atoms(
                 for: target,

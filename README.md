@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients locator-only content search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes request a recoverable Git snapshot; snapshot failures are surfaced explicitly and an exact retry completes versioning without applying the mutation twice.
+A local MCP server in Swift that gives MCP clients locator-only content search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes await a recoverable Git snapshot, and snapshot failures are surfaced explicitly.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -14,7 +14,7 @@ stdio-capable MCP client ──> SecondBrainMCP
 - **Compact file and directory tools** — four format-aware file CRUD tools plus one atomic `move_directory` operation for complete note subtrees
 - **Locator-only vault search** — `search_vault` searches content but returns only note/file paths or physical PDF page numbers for follow-up with `read_file`
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
-- **Multi-agent-safe note edits** — exact-byte revisions reject stale updates and deletes; caller-generated mutation IDs make timed-out mutations safely replayable
+- **Multi-agent-safe vault access** — concurrent reads overlap, complete mutations are exclusive through their Git snapshot, and exact-byte revisions reject stale updates and deletes
 - **Capability discovery** — `secondbrain://file-capabilities` reports supported extensions, operations, and vault areas
 - **Git snapshots** — note changes request a local `Vault snapshot`; concurrent agents may share one recovery point, and `references/` is never included
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed
@@ -152,7 +152,7 @@ Only `notes/` and `references/` need to exist. Writable startup prepares Git met
 
 The public API has four generic file CRUD tools, one atomic directory-move tool, and one read-only search tool. File CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. Directory moves operate on the subtree path itself and therefore do not require or guess a file format.
 
-Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse that UUID only when retrying the exact same request after a timeout or lost response. Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions.
+Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions. A mutation call returns only after its filesystem change and required Git snapshot finish. If the transport loses that response, read the target state before deciding whether another mutation is needed.
 
 | Tool | Purpose |
 |------|---------|
@@ -165,9 +165,9 @@ Every mutation also requires a caller-generated UUID in `mutation_id`. Reuse tha
 
 ### Directory moves
 
-Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path`, the exact unused `destination_path`, and a fresh `mutation_id`; there is no `format` argument because this is a structural operation over a set of file atoms. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123` without returning or recreating any file content. Missing destination parents are created safely, the destination is never overwritten, moves into the source subtree are rejected, and case- or Unicode-equivalent source and destination paths are treated as the same directory. Success returns only `source_path`, `destination_path`, `mutation_id`, and `replayed`.
+Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path` and exact unused `destination_path`; there is no `format` argument because this is a structural operation over a set of file atoms. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123` without returning or recreating any file content. Missing destination parents are created safely, the destination is never overwritten, moves into the source subtree are rejected, and case- or Unicode-equivalent source and destination paths are treated as the same directory. Success returns only `source_path` and `destination_path`.
 
-The complete subtree is validated before the descriptor-based no-follow rename, so hidden/package descendants and credential-bearing files are rejected before the move. The shared snapshot boundary then records the current `notes/` tree; pending changes from another agent may deliberately share that recovery point. Empty directories move on the filesystem, but Git has no directory objects and therefore cannot preserve an empty directory by itself. A vault-wide shared/exclusive tree lease prevents cooperating reads or writes from observing half of the path change. Successful files are immediately discoverable through `search_vault` at their destination paths; search itself remains read-only.
+The complete subtree is validated before the descriptor-based no-follow rename, so hidden/package descendants and credential-bearing files are rejected before the move. The global mutation lease remains held through the rename and Git snapshot, so cooperating reads cannot observe a half-completed operation. Pending note changes may deliberately share that snapshot. Empty directories move on the filesystem, but Git has no directory objects and therefore cannot preserve an empty directory by itself. Successful files are immediately discoverable through `search_vault` at their destination paths; search itself remains read-only.
 
 ### Search
 
@@ -261,7 +261,7 @@ Sources/SecondBrainMCP/
 │   │   ├── Routing/                    # Catalog, bindings, and routed service
 │   │   ├── Storage/                    # Generic snapshots, persistence, and soft deletion
 │   │   ├── Targets/                    # Validated readable/writable vault paths
-│   │   ├── Transactions/               # Mutation, Git, receipt, and recovery sequencing
+│   │   ├── Transactions/               # Prepared persistence and awaited Git sequencing
 │   │   └── Validation/                 # Vault and external-source security
 │   ├── Media/                          # Image and video processing
 │   ├── Search/                         # Atom providers, literal matching, and pagination
@@ -281,41 +281,22 @@ does not belong there. Backend and Shared never depend on Frontend.
 concrete format registers only the operations it supports and binds those operations to reusable
 functions. `VaultFileService` validates and routes requests; `TextFileIngress` converts stored-text
 create requests into bounded inline bytes before their semantic handler; and
-`VaultMutationExecutor` persists the prepared mutation, requests a vault snapshot, and records durable retry state.
+`VaultMutationExecutor` performs the prepared persistence and awaits any required vault snapshot.
 Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
 persistence component for the generic API. Writable targets cannot represent `references/`.
 
-**Concurrency model:** reads of the same note may overlap, while a fair keyed reader/writer actor
-gives each note mutation exclusive access and prevents later readers from bypassing a queued writer
-inside one runtime. Persistent advisory locks extend exclusion across independent MCP processes;
-OS scheduling does not promise strict FIFO ordering between separate processes. Lock-file naming is
-a versioned cooperating-host protocol: after an upgrade, fully stop and restart every MCP host for
-the vault before resuming mutations; mixed old/new hosts are not supported. Unrelated note mutations may persist concurrently. Only `GitRepository` serializes the complete
-Git init–stage–check–commit sequence, using one application-owned cross-process lock so cooperating agents
-cannot race Git's index. Short receipt locks protect retry metadata without enclosing note persistence. Exact-byte revisions reject stale edits by
-every cooperating MCP caller. The store also rechecks bytes immediately before persistence to catch
-ordinary external edits, but an application that ignores these locks can still write inside the
-final compare-to-rename window; filesystem path replacement has no universal cross-application CAS.
-Reference reads bypass note locks and remain concurrent because `references/` has no writable
-representation.
+**Concurrency model:** one `VaultAccessCoordinator` is created per `VaultRuntime` and injected
+through the `VaultAccessCoordinating` protocol. Shared leases let reads overlap. A mutation waits
+for existing reads, then holds the exclusive lease through validation, preparation, filesystem
+persistence, and Git snapshot. Once a mutation is queued, later reads wait behind it. Independent
+MCP processes use shared/exclusive modes on the same advisory lock file. OS scheduling does not
+promise strict FIFO ordering between separate processes, so mixed old/new hosts must be fully
+restarted after an upgrade.
 
-Cancellation while queued performs no mutation. Once persistence begins, recovery bookkeeping and
-snapshotting continue even if the MCP caller stops listening; retrying the exact request with the same
-`mutation_id` returns its durable result instead of applying it again. The server records an intent
-and then a per-ID `persistenceStarted` state before bytes may change. If the process stops in that
-uncertain phase, only the same mutation ID fails closed or enters operation-specific recovery;
-unrelated mutations continue. A snapshot request may include pending note changes from several agents,
-and a later request succeeds without a new commit when its state was already captured. Sudden machine
-or storage power loss remains outside this guarantee because vault bytes, Git objects/refs, and the
-external receipt directory are not one jointly synchronized filesystem transaction.
-
-Completed receipts are retained for exact retries and are never silently expired. Their private
-store has a hard 65,536-record / 512 MiB admission ceiling, with capacity reserved when an intent is
-created so finalization cannot fail after vault persistence. At the ceiling, new mutation IDs fail
-closed while every retained retry remains available; export or archival policy must be an explicit
-administrative decision because deleting a receipt also deletes that ID's replay proof. Identity
-locks use a fixed 256-stripe set, so retry coordination itself does not create one permanent file per
-UUID. A constant-size durable quota ledger is reconciled against the receipt directory on the first
-admission after bootstrap or after a detected crash/out-of-band change; ordinary saves update it in
-constant work instead of rescanning every retained receipt. Reconciliation is entry-bounded and
-removes only recognizable, validated crash-left receipt temporaries.
+Queued cancellation performs no mutation. Cancellation is checked again before prepared persistence
+starts; once persistence starts, the persistence-and-snapshot chain finishes before the exclusive
+lease is released. Exact-byte revisions reject stale cooperating edits, and the store rechecks bytes
+immediately before persistence. Applications that ignore the MCP lock can still write inside the
+final compare-to-rename window because filesystem path replacement has no universal cross-application
+compare-and-swap. If a response is lost, callers must read the target and decide from its current
+state whether another mutation is necessary.

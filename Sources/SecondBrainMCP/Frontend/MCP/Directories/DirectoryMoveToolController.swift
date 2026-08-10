@@ -52,16 +52,11 @@ struct DirectoryMoveToolController: Sendable {
     }
 
     private static func decode(_ values: [String: Value]) throws -> MoveDirectoryRequest {
-        let allowed: Set<String> = ["mutation_id", "source_path", "destination_path"]
+        let allowed: Set<String> = ["source_path", "destination_path"]
         guard values.keys.allSatisfy(allowed.contains) else {
             throw DecodingError.invalid("Directory move contains an unknown parameter")
         }
-        let mutation = try requiredString("mutation_id", values: values)
-        guard let mutationID = MutationID(rawValue: mutation) else {
-            throw DecodingError.invalid("Invalid mutation_id: expected a UUID")
-        }
         return MoveDirectoryRequest(
-            mutationID: mutationID,
             sourcePath: try requiredString("source_path", values: values),
             destinationPath: try requiredString("destination_path", values: values)
         )

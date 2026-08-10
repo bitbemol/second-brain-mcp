@@ -57,7 +57,7 @@ struct `Generic files — routed service` {
         #expect(FileManager.default.fileExists(atPath: legacyCache))
         await #expect(throws: FileRoutingError.self) {
             _ = try await runtime.files.create(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .markdown,
                 path: "notes/blocked.md",
                 content: "blocked",
@@ -178,7 +178,7 @@ struct `Generic files — routed service` {
         let service = runtime.files
         let path = "notes/architecture.md"
         let create = CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "# Architecture\nInitial",
@@ -192,7 +192,7 @@ struct `Generic files — routed service` {
         #expect(created.contains("tags: [\"design\"]"))
 
         let update = UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: createdRevision,
             format: .markdown,
             path: path,
@@ -209,7 +209,7 @@ struct `Generic files — routed service` {
         #expect(commitCount == "2")
 
         _ = try await service.delete(DeleteFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: updatedRevision,
             format: .markdown,
             path: path
@@ -224,7 +224,7 @@ struct `Generic files — routed service` {
         let service = runtime.files
         let path = "notes/stable.md"
         let createOutput = try await service.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "---\ntitle: Stable\n---\nunchanged",
@@ -234,7 +234,7 @@ struct `Generic files — routed service` {
         ))
 
         let output = try await service.update(UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: try #require(createOutput.metadata?.revision),
             format: .markdown,
             path: path,
@@ -261,7 +261,7 @@ struct `Generic files — routed service` {
 
         await #expect(throws: SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.files.create(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .markdown,
                 path: rejectedPath,
                 content: secret,
@@ -276,7 +276,7 @@ struct `Generic files — routed service` {
 
         let safePath = "notes/safe.md"
         let created = try await runtime.files.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: safePath,
             content: "safe content",
@@ -286,7 +286,7 @@ struct `Generic files — routed service` {
         ))
         await #expect(throws: SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.files.update(UpdateFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: try #require(created.metadata?.revision),
                 format: .markdown,
                 path: safePath,
@@ -307,7 +307,7 @@ struct `Generic files — routed service` {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/revision.md"
         _ = try await runtime.files.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "revision body",
@@ -329,8 +329,6 @@ struct `Generic files — routed service` {
             data: stored,
             modifiedDate: nil
         ).revision)
-        #expect(output.metadata?.mutationID == nil)
-        #expect(output.metadata?.replayed == false)
     }
 
     @Test
@@ -342,7 +340,7 @@ struct `Generic files — routed service` {
         let path = "notes/no-audit.md"
 
         _ = try await runtime.files.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "Git is the operation history",
@@ -399,14 +397,12 @@ struct `Generic files — routed service` {
             store: store,
             mutations: VaultMutationExecutor(
                 versioning: try GitRepository(
-                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true),
-                    lockURL: dataDirectory.lockDirectoryURL
-                        .appendingPathComponent("vault-versioning.lock")
-                ),
-                receipts: MutationReceiptStore(dataDirectory: dataDirectory)
+                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true)
+                )
             ),
-            operations: VaultOperationCoordinator(
-                lockDirectoryURL: dataDirectory.lockDirectoryURL
+            access: VaultAccessCoordinator(
+                lockURL: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("vault-access.lock")
             )
         )
 
@@ -429,7 +425,7 @@ struct `Generic files — routed service` {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/stale.md"
         let created = try await runtime.files.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "original",
@@ -449,7 +445,7 @@ struct `Generic files — routed service` {
                 switch operation {
                 case .update:
                     _ = try await runtime.files.update(UpdateFileRequest(
-                        mutationID: MutationID(),
+
                         expectedRevision: staleRevision,
                         format: .markdown,
                         path: path,
@@ -459,7 +455,7 @@ struct `Generic files — routed service` {
                     ))
                 case .delete:
                     _ = try await runtime.files.delete(DeleteFileRequest(
-                        mutationID: MutationID(),
+
                         expectedRevision: staleRevision,
                         format: .markdown,
                         path: path
@@ -485,42 +481,11 @@ struct `Generic files — routed service` {
     }
 
     @Test
-    func `Identical mutation retry replays one durable outcome`() async throws {
-        let (root, runtime) = try await makeRuntime()
-        let path = "notes/replayed.md"
-        let request = CreateFileRequest(
-            mutationID: MutationID(),
-            format: .markdown,
-            path: path,
-            content: "one write",
-            source: nil,
-            tags: [],
-            transform: nil
-        )
-
-        let first = try await runtime.files.create(request)
-        let replay = try await runtime.files.create(request)
-
-        #expect(first.metadata?.replayed == false)
-        #expect(replay.metadata?.replayed == true)
-        #expect(replay.metadata?.revision == first.metadata?.revision)
-        #expect(try String(
-            contentsOfFile: root + "/" + path,
-            encoding: .utf8
-        ).hasSuffix("one write"))
-        let commitCount = try runGit(
-            ["rev-list", "--count", "HEAD", "--", path],
-            at: root
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(commitCount == "1")
-    }
-
-    @Test
-    func `Existing-file rejection does not poison its mutation ID`() async throws {
+    func `Existing-file rejection leaves a later create independent`() async throws {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/existing.md"
         _ = try await runtime.files.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "first",
@@ -529,7 +494,7 @@ struct `Generic files — routed service` {
             transform: nil
         ))
         let retryable = CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "second",
@@ -544,7 +509,6 @@ struct `Generic files — routed service` {
         try FileManager.default.removeItem(atPath: root + "/" + path)
 
         let output = try await runtime.files.create(retryable)
-        #expect(output.metadata?.replayed == false)
         #expect(try String(
             contentsOfFile: root + "/" + path,
             encoding: .utf8
@@ -556,7 +520,7 @@ struct `Generic files — routed service` {
         let (root, runtime) = try await makeRuntime()
         let path = "notes/concurrent.md"
         let created = try await runtime.files.create(CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: path,
             content: "base",
@@ -570,7 +534,7 @@ struct `Generic files — routed service` {
             Task {
                 do {
                     _ = try await runtime.files.update(UpdateFileRequest(
-                        mutationID: MutationID(),
+
                         expectedRevision: baseRevision,
                         format: .markdown,
                         path: path,
@@ -608,7 +572,7 @@ struct `Generic files — routed service` {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
         let request = UpdateFileRequest(
-            mutationID: MutationID(),
+
             expectedRevision: revision("missing"),
             format: .har,
             path: "notes/capture.har",
@@ -629,7 +593,7 @@ struct `Generic files — routed service` {
 
         await expectAreaNotWritable("references/create.md") {
             try await service.create(CreateFileRequest(
-                mutationID: MutationID(),
+
                 format: .markdown,
                 path: "references/create.md",
                 content: "blocked",
@@ -640,7 +604,7 @@ struct `Generic files — routed service` {
         }
         await expectAreaNotWritable("references/update.md") {
             try await service.update(UpdateFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: revision("blocked"),
                 format: .markdown,
                 path: "references/update.md",
@@ -651,7 +615,7 @@ struct `Generic files — routed service` {
         }
         await expectAreaNotWritable("references/delete.pdf") {
             try await service.delete(DeleteFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: revision("blocked"),
                 format: .pdf,
                 path: "references/delete.pdf"
@@ -692,20 +656,18 @@ struct `Generic files — routed service` {
             store: store,
             mutations: VaultMutationExecutor(
                 versioning: try GitRepository(
-                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true),
-                    lockURL: dataDirectory.lockDirectoryURL
-                        .appendingPathComponent("vault-versioning.lock")
-                ),
-                receipts: MutationReceiptStore(dataDirectory: dataDirectory)
+                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true)
+                )
             ),
-            operations: VaultOperationCoordinator(
-                lockDirectoryURL: dataDirectory.lockDirectoryURL
+            access: VaultAccessCoordinator(
+                lockURL: dataDirectory.lockDirectoryURL
+                    .appendingPathComponent("vault-access.lock")
             )
         )
 
         await #expect(throws: DeleteHookError.self) {
             try await service.delete(DeleteFileRequest(
-                mutationID: MutationID(),
+
                 expectedRevision: revision("protected"),
                 format: .markdown,
                 path: path

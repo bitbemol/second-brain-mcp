@@ -42,7 +42,7 @@ struct `File resource policy` {
         )
         let accepted = String(repeating: "a", count: limit)
         let acceptedRequest = CreateFileRequest(
-            mutationID: MutationID(),
+
             format: .markdown,
             path: target.relativePath,
             content: accepted,
@@ -54,7 +54,7 @@ struct `File resource policy` {
         #expect(throws: FileResourcePolicy.Violation.self) {
             try ingress.prepare(
                 CreateFileRequest(
-                    mutationID: MutationID(),
+
                     format: .markdown,
                     path: target.relativePath,
                     content: accepted + "a",
