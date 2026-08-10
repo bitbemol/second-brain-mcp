@@ -1,8 +1,8 @@
 /// Composition root for concrete file-format operation bindings.
 ///
-/// Adding a format means registering a ``FileFormatDefinition`` here. Multiple
-/// definitions may share the same handler function, and each operation may bind
-/// independently.
+/// Every ``FileFormat`` case is exhaustively wired here. Adding a format cannot
+/// compile until this factory defines its supported operations; formats may share
+/// handlers, and each operation may bind independently.
 enum FileFormatCatalogFactory {
     /// Constructs the immutable catalog used by the service and MCP discovery.
     ///
@@ -43,73 +43,85 @@ enum FileFormatCatalogFactory {
         let storedFiles = StoredTextFileOperationFamily(store: store, delete: softDelete)
         let imageFiles = ImageFileOperationFamily(read: image.read, delete: softDelete)
 
-        let definitions: [FileFormatDefinition] = [
-            storedFiles.definition(
-                format: .markdown,
-                create: markdown.prepareCreate,
-                read: markdown.read,
-                update: markdown.prepareUpdate
-            ),
-            storedFiles.definition(
-                format: .canvas,
-                create: canvas.prepareCreate,
-                read: canvas.read,
-                update: canvas.prepareUpdate
-            ),
-            storedFiles.definition(
-                format: .har,
-                create: har.prepareCreate,
-                read: har.read
-            ),
-            storedFiles.definition(
-                format: .patch,
-                create: patch.prepareCreate,
-                read: patch.read
-            ),
-            storedFiles.definition(
-                format: .log,
-                create: log.prepareCreate,
-                read: log.read,
-                update: log.prepareUpdate
-            ),
-            storedFiles.definition(
-                format: .json,
-                create: json.prepareCreate,
-                read: json.read,
-                update: json.prepareUpdate
-            ),
-            storedFiles.definition(
-                format: .csv,
-                create: csv.prepareCreate,
-                read: csv.read,
-                update: csv.prepareUpdate
-            ),
-            imageFiles.definition(
-                .png,
-                create: image.preparePNG
-            ),
-            imageFiles.definition(.jpeg),
-            imageFiles.definition(
-                .gif,
-                create: image.prepareVideoGIF
-            ),
-            imageFiles.definition(.webp),
-            imageFiles.definition(.heic),
-            imageFiles.definition(.tiff),
-            imageFiles.definition(.bmp),
-            FileFormatDefinition(
-                format: .pdf,
-                operations: FormatOperations(
-                    create: nil,
-                    read: ReadOperationBinding(
-                        allowedAreas: [.references],
-                        execute: pdf.read
-                    ),
-                    update: nil,
-                    delete: nil
+        func definition(for format: FileFormat) -> FileFormatDefinition {
+            switch format {
+            case .markdown:
+                storedFiles.definition(
+                    format: format,
+                    create: markdown.prepareCreate,
+                    read: markdown.read,
+                    update: markdown.prepareUpdate
                 )
-            )
-        ]
-        return FileFormatCatalog(definitions: definitions)
+            case .canvas:
+                storedFiles.definition(
+                    format: format,
+                    create: canvas.prepareCreate,
+                    read: canvas.read,
+                    update: canvas.prepareUpdate
+                )
+            case .har:
+                storedFiles.definition(
+                    format: format,
+                    create: har.prepareCreate,
+                    read: har.read
+                )
+            case .patch:
+                storedFiles.definition(
+                    format: format,
+                    create: patch.prepareCreate,
+                    read: patch.read
+                )
+            case .log:
+                storedFiles.definition(
+                    format: format,
+                    create: log.prepareCreate,
+                    read: log.read,
+                    update: log.prepareUpdate
+                )
+            case .json:
+                storedFiles.definition(
+                    format: format,
+                    create: json.prepareCreate,
+                    read: json.read,
+                    update: json.prepareUpdate
+                )
+            case .csv:
+                storedFiles.definition(
+                    format: format,
+                    create: csv.prepareCreate,
+                    read: csv.read,
+                    update: csv.prepareUpdate
+                )
+            case .png:
+                imageFiles.definition(
+                    format,
+                    create: image.preparePNG
+                )
+            case .gif:
+                imageFiles.definition(
+                    format,
+                    create: image.prepareVideoGIF
+                )
+            case .jpeg, .webp, .heic, .tiff, .bmp:
+                imageFiles.definition(format)
+            case .pdf:
+                FileFormatDefinition(
+                    format: format,
+                    operations: FormatOperations(
+                        create: nil,
+                        read: ReadOperationBinding(
+                            allowedAreas: [.references],
+                            execute: pdf.read
+                        ),
+                        update: nil,
+                        delete: nil
+                    )
+                )
+            }
+        }
+
+        return FileFormatCatalog(
+            definitions: FileFormat.allCases.map { definition(for: $0) }
+        )
     }
 }

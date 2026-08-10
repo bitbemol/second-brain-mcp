@@ -246,9 +246,9 @@ explicitly—even if the filesystem mutation already succeeded—rather than swa
    `Backend/Files/Validation/FileResourcePolicy.swift`.
 3. Reuse an existing operation function or add a focused handler in
    `Backend/Files/Operations/`. Handlers validate/prepare/read; they do not persist.
-4. Register a `FileFormatDefinition` in
+4. Handle the new case in the exhaustive `FileFormat` switch in
    `Backend/Files/Routing/FileFormatCatalogFactory.swift`, binding only supported operations and
-   allowed vault areas.
+   allowed vault areas. Never add a `default`; the compiler must require every format to be wired.
 5. Extend the exact capability-matrix expectation in `VaultFileServiceTests`.
 6. Add focused handler tests plus a routed service test when mutation policy changes.
 7. Run `swift test` and the DocC warnings-as-errors check.
