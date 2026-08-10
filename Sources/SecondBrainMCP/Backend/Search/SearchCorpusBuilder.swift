@@ -53,16 +53,28 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
                 format: candidate.format,
                 vaultPath: vaultPath
             )
-            let snapshot = try await store.snapshot(
-                target,
-                maximumBytes: target.format.maximumFileBytes,
-                rejectHiddenComponents: true
-            )
             guard let provider = provider(for: target.format) else { continue }
-            result.append(contentsOf: try await provider.atoms(
-                for: target,
-                snapshot: snapshot
-            ))
+            do {
+                let snapshot = try await store.snapshot(
+                    target,
+                    maximumBytes: target.format.maximumFileBytes,
+                    rejectHiddenComponents: true
+                )
+                result.append(contentsOf: try await provider.atoms(
+                    for: target,
+                    snapshot: snapshot
+                ))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as PathValidationError {
+                throw error
+            } catch let error as FileRoutingError {
+                throw error
+            } catch {
+                // One malformed, oversized, unreadable, or raced file must not
+                // make every healthy file in the selected area undiscoverable.
+                continue
+            }
         }
         return result
     }

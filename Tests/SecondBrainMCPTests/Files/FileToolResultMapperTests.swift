@@ -23,7 +23,7 @@ struct `MCP file result mapper` {
         ))
 
         #expect(result.isError != true)
-        #expect(result.content.count == 2)
+        #expect(result.content.count == 3)
         guard case .text(let text, _, _) = result.content[0],
               case .image(let data, let mimeType, _, _) = result.content[1] else {
             Issue.record("Expected ordered text and image content")
@@ -38,6 +38,36 @@ struct `MCP file result mapper` {
         #expect(metadata["path"]?.stringValue == "notes/demo.gif")
         #expect(metadata["area"]?.stringValue == "notes")
         #expect(metadata["revision"]?.stringValue == revision.rawValue)
+    }
+
+    @Test
+    func `Revision metadata is mirrored into ordinary content`() throws {
+        let revision = try #require(FileRevision(
+            rawValue: "sha256:" + String(repeating: "b", count: 64)
+        ))
+        let result = FileToolResultMapper.success(FileOperationOutput(
+            contents: [.text("stored content")],
+            metadata: FileOperationMetadata(
+                path: "notes/demo.md",
+                area: .notes,
+                revision: revision
+            )
+        ))
+
+        #expect(result.content.count == 2)
+        guard case .text(let metadataText, _, _) = result.content.last else {
+            Issue.record("Expected a trailing metadata text block")
+            return
+        }
+        let data = try #require(metadataText.data(using: .utf8))
+        let metadata = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: String]
+        )
+        #expect(metadata == [
+            "path": "notes/demo.md",
+            "area": "notes",
+            "revision": revision.rawValue,
+        ])
     }
 
     @Test

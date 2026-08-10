@@ -5,8 +5,14 @@ import MCP
 enum FileToolResultMapper {
     /// Converts ordered text and image blocks into a successful file-tool result.
     static func success(_ output: FileOperationOutput) -> CallTool.Result {
-        CallTool.Result(
-            content: content(from: output),
+        var content = content(from: output)
+        if let metadata = output.metadata,
+           metadata.revision != nil,
+           let text = metadataText(metadata) {
+            content.append(.text(text: text, annotations: nil, _meta: nil))
+        }
+        return CallTool.Result(
+            content: content,
             structuredContent: output.metadata.map(fileStructuredContent)
         )
     }
@@ -50,6 +56,24 @@ enum FileToolResultMapper {
                 )
             }
         }
+    }
+
+    /// Mirrors revision-bearing metadata for clients that expose only content blocks.
+    private static func metadataText(_ metadata: FileOperationMetadata) -> String? {
+        guard let revision = metadata.revision else { return nil }
+        let values = [
+            FileToolOutputField.path.rawValue: metadata.path,
+            FileToolOutputField.area.rawValue: metadata.area.rawValue,
+            FileToolOutputField.revision.rawValue: revision.rawValue,
+        ]
+        guard JSONSerialization.isValidJSONObject(values),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: values,
+                  options: [.sortedKeys]
+              ) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Converts transport-neutral file metadata to its stable MCP shape.

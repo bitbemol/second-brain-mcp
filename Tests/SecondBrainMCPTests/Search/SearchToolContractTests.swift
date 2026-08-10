@@ -55,6 +55,32 @@ struct `MCP vault search contract` {
         }
     }
 
+    private actor FailingSearch: VaultSearchService {
+        func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
+            throw PathValidationError.pathChangedSinceValidation("notes/changed.md")
+        }
+    }
+
+    @Test
+    func `Controller returns actionable safe search failures`() async throws {
+        let result = try await SearchToolController(search: FailingSearch()).call(.init(
+            name: "search_vault",
+            arguments: [
+                "location": .string("notes"),
+                "query": .string("actors"),
+            ]
+        ))
+
+        #expect(result.isError == true)
+        guard case .text(let message, _, _) = result.content.first else {
+            Issue.record("Expected a diagnostic text block")
+            return
+        }
+        #expect(message.contains("notes/"))
+        #expect(message.contains("notes/changed.md"))
+        #expect(!message.contains("failed safely"))
+    }
+
     @Test
     func `Controller returns locators without content`() async throws {
         let result = try await SearchToolController(search: SearchSpy()).call(.init(

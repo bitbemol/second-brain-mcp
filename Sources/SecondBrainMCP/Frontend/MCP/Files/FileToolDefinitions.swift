@@ -90,7 +90,7 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read one supported atomic file element. Reads under notes/ return an exact-byte revision in structuredContent; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Stored text formats return their complete validated content; HAR JSON is sanitized before it is stored and returned. Logs use bounded line windows, images may be resized or decomposed into timed GIF frames, and PDFs return physical pages as text plus PNG images.",
+                description: "Read one supported atomic file element. Reads under notes/ return an exact-byte revision in structuredContent and a trailing JSON text block; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Stored text formats return their complete validated content; HAR JSON is sanitized before it is stored and returned. Logs use bounded line windows, images may be resized or decomposed into timed GIF frames, and PDFs return physical pages as text plus PNG images.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
