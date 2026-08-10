@@ -7,14 +7,12 @@ enum FileFormatCatalogFactory {
     /// Constructs the immutable catalog used by the service and MCP discovery.
     ///
     /// - Parameters:
-    ///   - store: Sole generic persistence actor.
     ///   - imageReader: Vault image read behavior.
     ///   - imageImporter: External-image preparation policy.
     ///   - videoImporter: External-video conversion policy.
     ///   - pdfReader: Read-only PDF behavior.
     /// - Returns: Fully wired format catalog.
     static func build(
-        store: VaultCRUDStore,
         imageReader: ImageReader,
         imageImporter: ImageImporter,
         videoImporter: VideoImporter,
@@ -38,7 +36,7 @@ enum FileFormatCatalogFactory {
             allowedAreas: [.notes],
             execute: { _, _ in }
         )
-        let storedFiles = StoredTextFileOperationFamily(store: store, delete: softDelete)
+        let storedFiles = StoredTextFileOperationFamily(delete: softDelete)
         let imageFiles = ImageFileOperationFamily(read: image.read, delete: softDelete)
 
         // This exhaustive switch declares only each format's differences. The text and

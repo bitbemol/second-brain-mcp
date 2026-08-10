@@ -67,9 +67,16 @@ struct `Vault file inspection` {
         )
         try Data("original".utf8).write(to: target.url)
 
-        let snapshot = try VaultFileInspector.temporarySnapshot(
+        let opened = try VaultFileInspector.snapshot(
             target,
             maximumBytes: 64
+        )
+        let snapshot = try VaultFileInspector.temporarySnapshot(
+            FileSnapshot(
+                data: opened.data,
+                modifiedDate: opened.metadata.modificationDate
+            ),
+            target: target
         )
         defer { snapshot.remove() }
         try Data("replacement".utf8).write(to: target.url, options: .atomic)

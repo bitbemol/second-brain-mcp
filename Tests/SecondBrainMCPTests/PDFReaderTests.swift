@@ -143,7 +143,11 @@ struct `PDFReader — physical page boundary` {
                 path: fixture.path,
                 options: .default
             ),
-            target: fixture.target
+            target: fixture.target,
+            snapshot: FileSnapshot(
+                data: try Data(contentsOf: fixture.target.url),
+                modifiedDate: nil
+            )
         )
 
         #expect(output.contents.count == 2)

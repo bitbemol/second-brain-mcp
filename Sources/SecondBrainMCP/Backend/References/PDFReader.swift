@@ -16,22 +16,54 @@ struct PDFReader: Sendable {
         options: ReadFileOptions = .default
     ) async throws -> [RenderedPDFPage] {
         let pageNumbers = try Self.pageNumbers(from: options)
-        return try await admission.withPermit {
-            try readAdmitted(target: target, pageNumbers: pageNumbers)
+        let opened = try VaultFileInspector.snapshot(
+            target,
+            maximumBytes: target.format.maximumFileBytes
+        )
+        return try await read(
+            target: target,
+            snapshot: FileSnapshot(
+                data: opened.data,
+                modifiedDate: opened.metadata.modificationDate
+            ),
+            pageNumbers: pageNumbers
+        )
+    }
+
+    /// Renders physical pages exclusively from the immutable service snapshot.
+    func read(
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot,
+        options: ReadFileOptions = .default
+    ) async throws -> [RenderedPDFPage] {
+        try await read(
+            target: target,
+            snapshot: snapshot,
+            pageNumbers: Self.pageNumbers(from: options)
+        )
+    }
+
+    private func read(
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot,
+        pageNumbers: [Int]
+    ) async throws -> [RenderedPDFPage] {
+        try await admission.withPermit {
+            try readAdmitted(
+                target: target,
+                snapshot: snapshot,
+                pageNumbers: pageNumbers
+            )
         }
     }
 
     private func readAdmitted(
         target: ReadableFileTarget,
+        snapshot: FileSnapshot,
         pageNumbers: [Int]
     ) throws -> [RenderedPDFPage] {
-        let snapshot = try VaultFileInspector.temporarySnapshot(
-            target,
-            maximumBytes: target.format.maximumFileBytes
-        )
-        defer { snapshot.remove() }
         try Task.checkCancellation()
-        guard let document = PDFDocument(url: snapshot.url) else {
+        guard let document = PDFDocument(data: snapshot.data) else {
             throw PDFReadError.cannotOpenPDF(target.relativePath)
         }
         for page in pageNumbers where page > document.pageCount {

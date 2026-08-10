@@ -11,8 +11,12 @@ typealias CreateFileFunction = @Sendable (CreateFileRequest, WritableFileTarget)
 /// external sources, required inline content, and enforced its resource limit.
 typealias StoredTextCreateResolver = @Sendable (TextFileCreateInput, WritableFileTarget) throws -> PreparedFileWrite
 
-/// A format-specific read function that interprets an already validated target.
-typealias ReadFileFunction = @Sendable (ReadFileRequest, ReadableFileTarget) async throws -> FileOperationOutput
+/// A format-specific read function that interprets the service's one immutable snapshot.
+typealias ReadFileFunction = @Sendable (
+    ReadFileRequest,
+    ReadableFileTarget,
+    FileSnapshot
+) async throws -> FileOperationOutput
 
 /// A persistence-free read resolver that interprets a generic file snapshot.
 typealias StoredReadResolver = @Sendable (ReadFileRequest, ReadableFileTarget, FileSnapshot) throws -> FileOperationOutput

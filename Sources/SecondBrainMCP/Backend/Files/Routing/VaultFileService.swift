@@ -38,6 +38,7 @@ actor VaultFileService: FileCRUDService {
                 for: request.format,
                 in: target.area
             )
+            try CreateFileContractValidator.validate(request, against: binding.contract)
             try await self.store.requireAbsent(target)
             let prepared = try await binding.execute(request, target)
             try SensitiveContentPolicy.validate(
@@ -79,26 +80,13 @@ actor VaultFileService: FileCRUDService {
                 for: request.format,
                 in: target.area
             )
-            if target.area == .notes {
-                let snapshot = try await self.store.snapshot(target)
-                let output = try await binding.execute(request, target)
-                let confirmed = try await self.store.snapshot(target)
-                guard confirmed.revision == snapshot.revision else {
-                    throw FileRoutingError.changedDuringRead(target.relativePath)
-                }
-                return output.withMetadata(FileOperationMetadata(
-                    path: target.relativePath,
-                    area: target.area,
-                    revision: snapshot.revision
-                ))
-            }
-            return try await binding.execute(request, target).withMetadata(
-                FileOperationMetadata(
-                    path: target.relativePath,
-                    area: target.area,
-                    revision: nil
-                )
-            )
+            let snapshot = try await self.store.snapshot(target)
+            let output = try await binding.execute(request, target, snapshot)
+            return output.withMetadata(FileOperationMetadata(
+                path: target.relativePath,
+                area: target.area,
+                revision: target.area == .notes ? snapshot.revision : nil
+            ))
         }
     }
 

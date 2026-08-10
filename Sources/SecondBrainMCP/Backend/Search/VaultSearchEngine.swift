@@ -18,11 +18,15 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
     func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
         let validated = try validate(request)
         let requestHash = try SearchCursorCodec.requestHash(validated)
-        let cursor = try validated.cursor.map {
-            try SearchCursorCodec.decode($0, requestHash: requestHash)
-        }
-
         let atoms = try await source.atoms(in: validated.location)
+        let corpusHash = try SearchCursorCodec.corpusHash(atoms)
+        let cursor = try validated.cursor.map {
+            try SearchCursorCodec.decode(
+                $0,
+                requestHash: requestHash,
+                corpusHash: corpusHash
+            )
+        }
         var matches: [RankedSearchLocator] = []
         matches.reserveCapacity(min(atoms.count, validated.limit + 1))
         for atom in atoms {
@@ -48,6 +52,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         if matches.count > returned.count, let last = returned.last {
             nextCursor = try SearchCursorCodec.encode(
                 requestHash: requestHash,
+                corpusHash: corpusHash,
                 ranked: last
             )
         } else {

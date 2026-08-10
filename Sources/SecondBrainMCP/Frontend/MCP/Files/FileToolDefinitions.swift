@@ -180,7 +180,7 @@ enum FileToolDefinitions {
                             ])
                         ])
                     ],
-                    additionalRequired: [.expectedRevision]
+                    additionalRequired: [.expectedRevision, .mode]
                 ),
                 annotations: .init(
                     readOnlyHint: false,

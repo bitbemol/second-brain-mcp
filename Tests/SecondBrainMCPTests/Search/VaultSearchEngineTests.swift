@@ -10,6 +10,22 @@ struct `Vault search engine` {
         }
     }
 
+    private actor MutableSource: VaultSearchAtomSource {
+        private var values: [VaultArea: [SearchAtom]]
+
+        init(values: [VaultArea: [SearchAtom]]) {
+            self.values = values
+        }
+
+        func atoms(in location: VaultArea) async throws -> [SearchAtom] {
+            values[location] ?? []
+        }
+
+        func replace(_ atoms: [SearchAtom], in location: VaultArea) {
+            values[location] = atoms
+        }
+    }
+
     private func note(
         _ path: String,
         text: String,
@@ -122,6 +138,44 @@ struct `Vault search engine` {
                 limit: 1,
                 cursor: cursor
             ))
+        }
+    }
+
+    @Test
+    func `Cursor is rejected when the searchable corpus changes`() async throws {
+        let original = [
+            note("notes/2.md", text: "shared phrase"),
+            note("notes/3.md", text: "shared phrase"),
+        ]
+        let source = MutableSource(values: [.notes: original])
+        let engine = VaultSearchEngine(source: source)
+        let first = try await engine.search(VaultSearchRequest(
+            location: .notes,
+            query: "shared",
+            limit: 1
+        ))
+        let cursor = try #require(first.nextCursor)
+
+        await source.replace(
+            [note("notes/1.md", text: "shared phrase")] + original,
+            in: .notes
+        )
+
+        do {
+            _ = try await engine.search(VaultSearchRequest(
+                location: .notes,
+                query: "shared",
+                limit: 1,
+                cursor: cursor
+            ))
+            Issue.record("Expected the cursor to be rejected after a corpus change")
+        } catch let error as VaultSearchRequestError {
+            #expect(
+                error.description
+                    == "Search cursor is stale because the vault changed; restart the search"
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 

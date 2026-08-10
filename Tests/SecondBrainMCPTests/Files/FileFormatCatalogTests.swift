@@ -49,7 +49,7 @@ struct `File format catalog` {
         )
         let read = ReadOperationBinding(
             allowedAreas: [.notes],
-            execute: { _, _ in .text("read") }
+            execute: { _, _, _ in .text("read") }
         )
         let update = UpdateOperationBinding(
             allowedAreas: [.notes],

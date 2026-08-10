@@ -212,7 +212,6 @@ struct `Generic files — structured format operations` {
         try Data("private".utf8).write(to: URL(fileURLWithPath: source))
         let operations = LogFileOperations()
         let family = StoredTextFileOperationFamily(
-            store: VaultCRUDStore(vaultPath: root),
             delete: DeleteOperationBinding(
                 allowedAreas: [.notes],
                 execute: { _, _ in }

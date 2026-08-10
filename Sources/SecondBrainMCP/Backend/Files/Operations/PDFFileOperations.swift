@@ -6,10 +6,12 @@ struct PDFFileOperations: Sendable {
     /// Returns exactly one text block and one PNG image for each selected page.
     func read(
         _ request: ReadFileRequest,
-        target: ReadableFileTarget
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
     ) async throws -> FileOperationOutput {
         let pages = try await reader.read(
             target: target,
+            snapshot: snapshot,
             options: request.options
         )
         var contents: [VaultFileContent] = []

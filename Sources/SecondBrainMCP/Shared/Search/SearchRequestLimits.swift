@@ -19,6 +19,7 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
     case metadataFiltersRequireNotes
     case invalidLimit(maximum: Int)
     case invalidCursor
+    case staleCursor
 
     var description: String {
         switch self {
@@ -38,6 +39,8 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
             "Search limit must be between 1 and \(maximum)"
         case .invalidCursor:
             "Search cursor is invalid or belongs to a different request"
+        case .staleCursor:
+            "Search cursor is stale because the vault changed; restart the search"
         }
     }
 }

@@ -6,12 +6,10 @@ import Foundation
 /// loading, notes-area policy, and soft deletion. Catalog entries provide only
 /// the format semantics that differ: validation, special reads, and update modes.
 struct StoredTextFileOperationFamily: Sendable {
-    private let store: VaultCRUDStore
     private let delete: DeleteOperationBinding
     private let ingress = TextFileIngress()
 
-    init(store: VaultCRUDStore, delete: DeleteOperationBinding) {
-        self.store = store
+    init(delete: DeleteOperationBinding) {
         self.delete = delete
     }
 
@@ -68,8 +66,7 @@ struct StoredTextFileOperationFamily: Sendable {
         validate: StoredTextValidator?,
         resolve: StoredReadResolver?
     ) -> ReadOperationBinding {
-        ReadOperationBinding(allowedAreas: [.notes]) { request, target in
-            let snapshot = try await store.snapshot(target)
+        ReadOperationBinding(allowedAreas: [.notes]) { request, target, snapshot in
             if let resolve {
                 return try resolve(request, target, snapshot)
             }

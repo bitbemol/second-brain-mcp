@@ -149,7 +149,7 @@ Only `notes/` and `references/` need to exist. Writable startup prepares Git met
 
 ## File API
 
-The public API has four generic file CRUD tools, one atomic directory-move tool, and one read-only search tool. File CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. Directory moves operate on the subtree path itself and therefore do not require or guess a file format.
+The public API has four generic file CRUD tools, one atomic directory-move tool, and one read-only search tool. File CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. CRUD schemas and decoders reject unknown arguments, and `update_file` requires an explicit `mode`. Directory moves operate on the subtree path itself and therefore do not require or guess a file format.
 
 Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions. A mutation call returns only after its filesystem change and required Git snapshot finish. If the transport loses that response, read the target state before deciding whether another mutation is needed.
 
@@ -178,7 +178,7 @@ Readable textual formats automatically participate without a search-specific for
 
 PDF references are represented as one atom per physical page. Page text is cached by exact file revision under the vault's private `~/Library/Application Support/SecondBrainMCP/` data directory, never inside the vault or Git. Embedded PDF text is preferred; pages without embedded text use Vision OCR. Search returns only the matching page number. `read_file(format: pdf)` retrieves physical pages with exactly one text block and one bounded PNG image per page, preserving diagrams and non-text content for the model. Select one page with `page`, an ordered set with `pages`, or an inclusive range such as `page_range: "7-10"`; the selectors are mutually exclusive, default to page 1, and are capped at 20 pages per call.
 
-`limit` defaults to 20 and is capped at 50. When `next_cursor` is present, repeat the identical criteria with that cursor; for an unchanged vault, every matching atom remains reachable until a response omits `next_cursor`. The cursor is bound to the location and criteria, so it cannot continue a different search. Start a fresh search after vault changes if snapshot-style pagination is required.
+`limit` defaults to 20 and is capped at 50. When `next_cursor` is present, repeat the identical criteria with that cursor; for an unchanged vault, every matching atom remains reachable until a response omits `next_cursor`. The cursor is bound to both the request and a deterministic fingerprint of the searchable corpus. If the vault changes between pages, the cursor is rejected as stale instead of silently skipping a result; restart the search from its first page.
 
 Search results contain no snippets, file content, scores, diagnostics, or mutation revisions. Search discovers where information lives; `read_file` retrieves it and supplies the revision required for a later note update or delete.
 
@@ -199,7 +199,7 @@ Search results contain no snippets, file content, scores, diagnostics, or mutati
 | `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
 | `pdf` | `.pdf` | — | references | — | — |
 
-The matrix and each format's create input and update modes come from one exhaustive backend catalog. MCP tool discovery projects that contract directly into the four CRUD schemas, so adding a format does not require a resource or a second frontend registry. Internal handler identities stay private. In `--read-only` mode, mutating tools disappear from discovery.
+The matrix and each format's create input and update modes come from one exhaustive backend catalog. MCP tool discovery projects that contract directly into the four CRUD schemas, and `VaultFileService` enforces the same create contract before dispatch, so advertised and accepted inputs cannot drift. Adding a format does not require a resource or a second frontend registry. Internal handler identities stay private. In `--read-only` mode, mutating tools disappear from discovery.
 
 Format-specific CRUD behavior stays behind the four endpoints:
 
@@ -406,8 +406,9 @@ does not belong there. Backend and Shared never depend on Frontend.
 
 `VaultRuntime` is the backend composition root. `FileFormatDefinition` is the wiring point: each
 concrete format registers only the operations it supports and binds those operations to reusable
-functions. `VaultFileService` validates and routes requests; `TextFileIngress` converts stored-text
-create requests into bounded inline bytes before their semantic handler; and
+functions. `VaultFileService` validates registered create contracts, routes requests, and supplies
+read handlers with one immutable byte snapshot used for both content and revision. `TextFileIngress`
+converts stored-text create requests into bounded inline bytes before their semantic handler; and
 `VaultMutationExecutor` performs the prepared persistence and awaits any required vault snapshot.
 Format handlers never load external text sources or write vault files; `VaultCRUDStore` is the sole
 persistence component for the generic API. Writable targets cannot represent `references/`.

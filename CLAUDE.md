@@ -100,18 +100,19 @@ The Shared boundary is intentionally small: `VaultSearchService`, `VaultSearchRe
 
 Readable textual formats automatically use the whole-file atom provider, so adding a globally registered textual format requires no search-specific enum or capability type. Markdown remains one note atom and reuses the shared frontmatter parser for tags and created dates. PDFs register the only custom production provider: one atom per physical page, with revision-keyed extracted text under the private application-support directory and Vision OCR when embedded text is absent.
 
-Matching and representation are separate protocols, but the public tool exposes no strategy switch. The default literal strategy requires every normalized query term in the same atom, then uses phrase and occurrence strength only for deterministic order. Cursor pagination is request-bound and keyset-based; for an unchanged vault it exposes every match by repeating the same request until `next_cursor` is absent. A changed vault requires a fresh search for snapshot-style discovery.
+Matching and representation are separate protocols, but the public tool exposes no strategy switch. The default literal strategy requires every normalized query term in the same atom, then uses phrase and occurrence strength only for deterministic order. Cursor pagination is request-bound and keyset-based; the cursor also carries a deterministic fingerprint of the searchable atoms. For an unchanged vault it exposes every match by repeating the same request until `next_cursor` is absent. If the corpus changes, continuation fails as stale and the caller restarts instead of risking a skipped atom.
 
 
 The generic file pipeline is:
 
 ```
 MCP request
-  → FileToolController decodes a Shared CRUD request
+  → FileToolController strictly decodes a Shared CRUD request
   → VaultFileService resolves an explicit FileFormat binding + safe target
+  → create: the registered payload contract is enforced before dispatch
   → stored-text ingress validates inline content before its format handler
   → format handler prepares/interprets bytes
-      ├─ read: VaultFileService returns the routed output
+      ├─ read: one immutable snapshot supplies both handler bytes and revision
       └─ mutation: VaultMutationExecutor persists → awaits VaultVersioning.recordSnapshot()
 ```
 
@@ -130,8 +131,9 @@ only one operation.
 `VaultAccessCoordinating` protocol. Shared leases allow reads to overlap. A mutation waits for every
 active read, then holds the exclusive lease through validation, preparation, persistence, and Git.
 Writer preference prevents later reads from bypassing a queued mutation. Independent processes use
-shared/exclusive modes on the same advisory lock file. `read_file` returns an exact-byte revision
-for notes; update/delete must compare that opaque value before changing bytes.
+shared/exclusive modes on the same advisory lock file. `read_file` captures each file once and gives
+that immutable snapshot to the routed handler; note content and its exact-byte revision therefore
+come from the same bytes. Update/delete must compare that opaque revision before changing bytes.
 
 Queued cancellation does no work. Cancellation is checked before prepared persistence begins; after
 that point `VaultMutationExecutor` finishes persistence and the required snapshot in a detached task
@@ -284,8 +286,8 @@ Server logs (stderr) are captured by Claude Desktop at
   by exact file revision under `VaultDataDirectory.searchIndexDirectoryURL`, prefers embedded
   PDFKit text, and uses Vision OCR only when a page has no embedded text.
 - PDF search extraction and direct reads share `PDFReadAdmission`; page work uses autorelease
-  scopes and cooperative cancellation. Direct reads use a private stable snapshot and bounded
-  raster dimensions; cached OCR text remains derived search data, never mutation authority.
+  scopes and cooperative cancellation. Direct reads render the immutable service snapshot and use
+  bounded raster dimensions; cached OCR text remains derived search data, never mutation authority.
 
 
 ## Gotchas

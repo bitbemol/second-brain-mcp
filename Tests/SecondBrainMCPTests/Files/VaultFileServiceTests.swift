@@ -166,6 +166,78 @@ struct `Generic files — routed service` {
     }
 
     @Test
+    func `Create rejects fields outside the registered format contract`() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let cases: [(CreateFileRequest, String)] = [
+            (
+                CreateFileRequest(
+                    format: .json,
+                    path: "notes/tagged.json",
+                    content: "{}",
+                    source: nil,
+                    tags: ["ignored"],
+                    transform: nil
+                ),
+                "Create contract for 'json' does not accept tags"
+            ),
+            (
+                CreateFileRequest(
+                    format: .markdown,
+                    path: "notes/transformed.md",
+                    content: "# Note",
+                    source: nil,
+                    tags: [],
+                    transform: .videoToGIF
+                ),
+                "Create contract for 'markdown' does not accept transform"
+            ),
+            (
+                CreateFileRequest(
+                    format: .markdown,
+                    path: "notes/conflicting.md",
+                    content: "# Note",
+                    source: "/tmp/also-a-source.md",
+                    tags: [],
+                    transform: nil
+                ),
+                "Create contract for 'markdown' does not accept source"
+            ),
+            (
+                CreateFileRequest(
+                    format: .png,
+                    path: "notes/not-a-source.png",
+                    content: "inline",
+                    source: nil,
+                    tags: [],
+                    transform: nil
+                ),
+                "Create contract for 'png' requires source"
+            ),
+            (
+                CreateFileRequest(
+                    format: .gif,
+                    path: "notes/untransformed.gif",
+                    content: nil,
+                    source: "/tmp/video.mov",
+                    tags: [],
+                    transform: nil
+                ),
+                "Create contract for 'gif' requires transform=video_to_gif"
+            ),
+        ]
+
+        for (request, expectedError) in cases {
+            do {
+                _ = try await runtime.files.create(request)
+                Issue.record("Expected create contract rejection for \(request.path)")
+            } catch {
+                #expect(String(describing: error) == expectedError)
+            }
+            #expect(!FileManager.default.fileExists(atPath: root + "/" + request.path))
+        }
+    }
+
+    @Test
     func `MCP discovery exposes only generic file CRUD`() async throws {
         let (_, runtime) = try await makeRuntime()
         let capabilities = runtime.capabilities
@@ -402,12 +474,20 @@ struct `Generic files — routed service` {
                     create: nil,
                     read: ReadOperationBinding(
                         allowedAreas: [.notes],
-                        execute: { _, target in
-                            try Data("after".utf8).write(
+                        execute: { _, target, snapshot in
+                            try Data("during".utf8).write(
                                 to: target.url,
                                 options: .atomic
                             )
-                            return .text("before")
+                            let returned = String(
+                                decoding: snapshot.data,
+                                as: UTF8.self
+                            )
+                            try Data("before".utf8).write(
+                                to: target.url,
+                                options: .atomic
+                            )
+                            return .text(returned)
                         }
                     ),
                     update: nil,
@@ -430,18 +510,22 @@ struct `Generic files — routed service` {
             )
         )
 
-        do {
-            _ = try await service.read(ReadFileRequest(
-                format: .markdown,
-                path: path,
-                options: .default
-            ))
-            Issue.record("Expected an unstable read to be rejected")
-        } catch FileRoutingError.changedDuringRead(let changedPath) {
-            #expect(changedPath == path)
-        } catch {
-            Issue.record("Unexpected error: \(error)")
+        let output = try await service.read(ReadFileRequest(
+            format: .markdown,
+            path: path,
+            options: .default
+        ))
+        guard case .text(let returned) = output.contents.first else {
+            Issue.record("Expected text output")
+            return
         }
+        #expect(
+            output.metadata?.revision
+                == FileSnapshot(data: Data(returned.utf8), modifiedDate: nil).revision
+        )
+        #expect(
+            try String(contentsOfFile: root + "/" + path, encoding: .utf8) == "before"
+        )
     }
 
     @Test

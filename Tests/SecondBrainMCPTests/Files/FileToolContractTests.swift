@@ -63,7 +63,7 @@ struct `MCP file consistency contract` {
             "format", "path",
         ])
         #expect(try requiredInputs(of: #require(tools["update_file"])) == [
-            "expected_revision", "format", "path",
+            "expected_revision", "format", "mode", "path",
         ])
         #expect(try requiredInputs(of: #require(tools["delete_file"])) == [
             "expected_revision", "format", "path",

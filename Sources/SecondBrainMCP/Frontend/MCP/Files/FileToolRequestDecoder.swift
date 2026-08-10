@@ -106,7 +106,7 @@ enum FileToolRequestDecoder {
             .format, .path, .expectedRevision, .mode, .content, .replacements,
         ])
         let (format, path) = try identity(from: arguments)
-        let modeString = try arguments.string(.mode) ?? "replace"
+        let modeString = try arguments.requiredString(.mode)
         guard let mode = FileUpdateMode(rawValue: modeString) else {
             throw DecodingError.invalid("Invalid update mode: \(modeString)")
         }

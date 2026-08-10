@@ -198,7 +198,6 @@ struct `Structured text routed CRUD` {
         let limits = ImageLimits.default
         let externalSources = ExternalFileSourceValidator(vaultPath: root.path)
         let catalog = FileFormatCatalogFactory.build(
-            store: store,
             imageReader: ImageReader(
                 encoder: CoreGraphicsImageEncoder(),
                 limits: limits

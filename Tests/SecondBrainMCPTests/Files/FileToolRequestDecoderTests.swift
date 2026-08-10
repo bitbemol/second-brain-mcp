@@ -141,6 +141,23 @@ struct `MCP file request decoder` {
     }
 
     @Test
+    func `Update mode is required instead of silently defaulting`() {
+        expectError(
+            "Missing required parameter: mode",
+            decoding: CallTool.Parameters(
+                name: FileToolName.update.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/page.md"),
+                    "expected_revision": .string(revision),
+                    "content": .string("replacement"),
+                ]
+            ),
+            for: .update
+        )
+    }
+
+    @Test
     func `Invalid update mode retains its boundary error`() {
         let params = CallTool.Parameters(
             name: "update_file",
@@ -262,6 +279,7 @@ struct `MCP file request decoder` {
                 arguments: [
                     "format": .string("markdown"),
                     "path": .string("notes/page.md"),
+                    "mode": .string("patch"),
                     "replacements": .string("not-an-array"),
                 ]
             ),
