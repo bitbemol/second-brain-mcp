@@ -11,13 +11,17 @@ struct MCPServerSetup {
     ///   - directories: Atomic recursive directory-move boundary.
     ///   - search: Shared read-only vault search boundary.
     ///   - capabilities: Immutable format capability manifest.
-    /// - Throws: Transport or handler-registration errors.
+    ///   - startupRecovery: Writable-startup snapshot recovery.
+    ///   - transport: MCP transport, injectable for lifecycle tests.
+    /// - Throws: Transport, recovery, or handler-registration errors.
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
         directories: any DirectoryMoveService,
         search: any VaultSearchService,
-        capabilities: FileCapabilities
+        capabilities: FileCapabilities,
+        startupRecovery: @escaping @Sendable () async throws -> Void = {},
+        transport: any Transport = StdioTransport()
     ) async throws {
         let fileTools = FileToolController(
             readOnly: config.readOnly,
@@ -31,6 +35,7 @@ struct MCPServerSetup {
         let customInstructions = CustomInstructionsLoader.load(
             vaultPath: config.vaultPath
         )
+        let startupRecoveryGate = MCPStartupRecoveryGate()
         let server = Server(
             name: "SecondBrainMCP",
             version: "2.1.0",
@@ -69,6 +74,10 @@ struct MCPServerSetup {
         }
 
         await server.withMethodHandler(CallTool.self) { params in
+            if params.name == DirectoryMoveToolDefinition.name
+                || FileToolName(rawValue: params.name)?.operation.isMutation == true {
+                try await startupRecoveryGate.wait()
+            }
             if params.name == SearchToolDefinition.name {
                 return try await searchTool.call(params)
             }
@@ -78,10 +87,45 @@ struct MCPServerSetup {
             return try await fileTools.call(params)
         }
 
-        let transport = StdioTransport()
         try await server.start(transport: transport)
         log("MCP server started, accepting connections")
 
-        await server.waitUntilCompleted()
+        let startupRecoveryTask = await startupRecoveryGate.install(startupRecovery)
+        do {
+            try await startupRecoveryTask.value
+            await server.waitUntilCompleted()
+        } catch {
+            await server.stop()
+            throw error
+        }
+    }
+}
+
+/// Lets discovery and reads use a connected transport while mutations await recovery.
+private actor MCPStartupRecoveryGate {
+    private var task: Task<Void, Error>?
+    private var taskWaiters: [CheckedContinuation<Task<Void, Error>, Never>] = []
+
+    func install(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) -> Task<Void, Error> {
+        precondition(task == nil, "Startup recovery may only be installed once")
+        let installed = Task { try await operation() }
+        task = installed
+        taskWaiters.forEach { $0.resume(returning: installed) }
+        taskWaiters.removeAll()
+        return installed
+    }
+
+    func wait() async throws {
+        let installed: Task<Void, Error>
+        if let task {
+            installed = task
+        } else {
+            installed = await withCheckedContinuation { continuation in
+                taskWaiters.append(continuation)
+            }
+        }
+        try await installed.value
     }
 }

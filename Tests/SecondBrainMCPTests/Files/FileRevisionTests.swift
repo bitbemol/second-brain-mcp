@@ -16,6 +16,27 @@ struct `Generic files — exact-byte revisions` {
     }
 
     @Test
+    func `Snapshot hashing is deferred and memoized until a revision is requested`() {
+        let probe = RevisionProviderProbe()
+        let expected = FileRevision(
+            validatedSHA256Hex: String(repeating: "a", count: 64)
+        )
+        let snapshot = FileSnapshot(
+            data: Data(repeating: 0xAA, count: 1_024),
+            modifiedDate: nil,
+            revisionProvider: { _ in
+                probe.record()
+                return expected
+            }
+        )
+
+        #expect(probe.count == 0)
+        #expect(snapshot.revision == expected)
+        #expect(snapshot.revision == expected)
+        #expect(probe.count == 1)
+    }
+
+    @Test
     func `Snapshots derive revisions from exact stored bytes`() {
         let first = FileSnapshot(data: Data("hello".utf8), modifiedDate: nil)
         let sameBytes = FileSnapshot(data: Data("hello".utf8), modifiedDate: .now)
@@ -28,5 +49,18 @@ struct `Generic files — exact-byte revisions` {
         )
         #expect(first.revision == sameBytes.revision)
         #expect(first.revision != changed.revision)
+    }
+}
+
+private final class RevisionProviderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int {
+        lock.withLock { value }
+    }
+
+    func record() {
+        lock.withLock { value += 1 }
     }
 }

@@ -114,6 +114,54 @@ struct `Async exclusive gate` {
         await hold.release()
         try await holder.value
     }
+
+    @Test
+    func `Reverse cancellation cost stays near linear at high queue depth`() async throws {
+        let small = try await reverseCancellationDuration(count: 3_000)
+        let large = try await reverseCancellationDuration(count: 12_000)
+
+        // Quadrupling queue depth should not approach the 16x work of an
+        // array-backed reverse scan. The absolute floor absorbs suite-level
+        // scheduler contention while the former multi-second behavior still fails.
+        let budget = max(small * 8, .milliseconds(300))
+        #expect(large < budget)
+    }
+
+    private func reverseCancellationDuration(
+        count: Int
+    ) async throws -> Duration {
+        let gate = AsyncExclusiveGate()
+        let hold = GateHold()
+        let holder = Task {
+            try await gate.withPermit { await hold.enterAndWait() }
+        }
+        await hold.waitUntilEntered()
+
+        var queued: [Task<Void, Error>] = []
+        queued.reserveCapacity(count)
+        for _ in 0..<count {
+            queued.append(Task {
+                try await gate.withPermit {}
+            })
+        }
+        while await gate.waitingCount != count {
+            await Task.yield()
+        }
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        for task in queued.reversed() {
+            task.cancel()
+        }
+        for task in queued {
+            _ = try? await task.value
+        }
+        let elapsed = start.duration(to: clock.now)
+
+        await hold.release()
+        try await holder.value
+        return elapsed
+    }
 }
 
 private actor CriticalSectionProbe {

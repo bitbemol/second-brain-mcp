@@ -10,6 +10,8 @@ struct VaultRuntime: Sendable {
     let search: any VaultSearchService
     /// Immutable capability projection shared with MCP discovery.
     let capabilities: FileCapabilities
+    /// Deferred writable-startup recovery, kept separate from graph construction.
+    private let startupRecovery: @Sendable () async throws -> Void
 
     /// Prepares permitted process state and constructs the backend graph.
     static func bootstrap(
@@ -25,9 +27,14 @@ struct VaultRuntime: Sendable {
         let versioning = try GitRepository(
             repositoryURL: URL(fileURLWithPath: vaultPath, isDirectory: true)
         )
-        if !readOnly {
-            try await access.withMutation {
-                try await versioning.recordSnapshot()
+        let startupRecovery: @Sendable () async throws -> Void
+        if readOnly {
+            startupRecovery = { @Sendable in }
+        } else {
+            startupRecovery = { @Sendable in
+                try await access.withMutation {
+                    try await versioning.recordSnapshot()
+                }
             }
         }
 
@@ -91,7 +98,13 @@ struct VaultRuntime: Sendable {
             files: files,
             directories: directories,
             search: search,
-            capabilities: capabilities
+            capabilities: capabilities,
+            startupRecovery: startupRecovery
         )
+    }
+
+    /// Snapshots note changes left pending before this process started.
+    func recoverPendingChanges() async throws {
+        try await startupRecovery()
     }
 }

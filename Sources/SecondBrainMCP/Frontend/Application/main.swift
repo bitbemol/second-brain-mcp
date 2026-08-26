@@ -28,7 +28,8 @@ do {
         files: runtime.files,
         directories: runtime.directories,
         search: runtime.search,
-        capabilities: runtime.capabilities
+        capabilities: runtime.capabilities,
+        startupRecovery: { try await runtime.recoverPendingChanges() }
     )
 
 } catch {

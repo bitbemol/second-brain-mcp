@@ -12,12 +12,12 @@ actor AsyncExclusiveGate {
     }
 
     private var locked = false
-    private var waiters: [Waiter] = []
+    private var waiters = IdentifiedFIFOQueue<UUID, Waiter>()
     private let maximumWaiters: Int?
 
     /// Creates a gate with an optional bound on suspended callers.
     ///
-    /// A bounded queue also keeps the array-backed FIFO's removal work bounded.
+    /// A bounded queue caps retained suspended work for resource-heavy callers.
     init(maximumWaiters: Int? = nil) {
         self.maximumWaiters = maximumWaiters.map { max($0, 0) }
     }
@@ -61,7 +61,10 @@ actor AsyncExclusiveGate {
                     continuation.resume(returning: false)
                     return
                 }
-                waiters.append(Waiter(id: id, continuation: continuation))
+                waiters.append(
+                    Waiter(id: id, continuation: continuation),
+                    id: id
+                )
             }
         } onCancel: {
             Task { await self.cancelWaiter(id: id) }
@@ -70,10 +73,7 @@ actor AsyncExclusiveGate {
     }
 
     private func cancelWaiter(id: UUID) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        let waiter = waiters.remove(at: index)
+        guard let waiter = waiters.remove(id: id) else { return }
         waiter.continuation.resume(returning: false)
     }
 
@@ -81,7 +81,7 @@ actor AsyncExclusiveGate {
         if waiters.isEmpty {
             locked = false
         } else {
-            waiters.removeFirst().continuation.resume(returning: true)
+            waiters.popFirst()?.continuation.resume(returning: true)
         }
     }
 }

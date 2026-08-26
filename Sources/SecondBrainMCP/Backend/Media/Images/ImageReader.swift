@@ -110,18 +110,35 @@ struct ImageReader: Sendable {
                 )
             }
         case .png(let maximumLongEdge):
-            frames = try plan.selections.map { selection in
-                ImageReadFrame(
-                    data: try encoder.encodeFramePNG(
-                        url: url,
-                        frameIndex: selection.sourceIndex,
-                        maxLongEdge: maximumLongEdge
-                    ),
+            var encodedFrames: [ImageReadFrame] = []
+            encodedFrames.reserveCapacity(plan.selections.count)
+            var encodedBytes = 0
+            for selection in plan.selections {
+                try Task.checkCancellation()
+                let data = try encoder.encodeFramePNG(
+                    url: url,
+                    frameIndex: selection.sourceIndex,
+                    maxLongEdge: maximumLongEdge
+                )
+                try Task.checkCancellation()
+                let (aggregateBytes, overflow) = encodedBytes
+                    .addingReportingOverflow(data.count)
+                guard !overflow, aggregateBytes <= limits.maxFileBytes else {
+                    throw FileResourcePolicy.Violation(
+                        path: "\(target.relativePath) rendered image output",
+                        bytes: overflow ? Int.max : aggregateBytes,
+                        limit: limits.maxFileBytes
+                    )
+                }
+                encodedBytes = aggregateBytes
+                encodedFrames.append(ImageReadFrame(
+                    data: data,
                     mimeType: "image/png",
                     sourceIndex: selection.sourceIndex,
                     timeOffsetSeconds: selection.timeOffsetSeconds
-                )
+                ))
             }
+            frames = encodedFrames
         }
 
         return ImageReadResult(

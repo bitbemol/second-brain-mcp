@@ -29,20 +29,26 @@ struct LogFileOperations: Sendable {
         target: ReadableFileTarget,
         snapshot: FileSnapshot
     ) throws -> FileOperationOutput {
+        try Task.checkCancellation()
         let text = try TextFileSupport.string(from: snapshot.data)
 
         let window: TextLineScanner.Window
         let description: String
         if let tail = request.options.tailLines {
             let count = min(max(tail, 1), 5_000)
-            window = TextLineScanner.tail(in: text, maximumLines: count)
+            window = try TextLineScanner.tail(
+                in: text,
+                maximumLines: count,
+                cancellationCheck: { try Task.checkCancellation() }
+            )
             description = "last \(window.lines.count) of \(window.totalLineCount) lines"
         } else if let start = request.options.startLine {
             let count = min(max(request.options.maxLines ?? 500, 1), 5_000)
-            window = TextLineScanner.window(
+            window = try TextLineScanner.window(
                 in: text,
                 startingAt: start,
-                maximumLines: count
+                maximumLines: count,
+                cancellationCheck: { try Task.checkCancellation() }
             )
             description = if let first = window.firstLine,
                              let last = window.lastLine {
@@ -51,7 +57,11 @@ struct LogFileOperations: Sendable {
                 "no lines from line \(start) of \(window.totalLineCount)"
             }
         } else {
-            window = TextLineScanner.tail(in: text, maximumLines: 500)
+            window = try TextLineScanner.tail(
+                in: text,
+                maximumLines: 500,
+                cancellationCheck: { try Task.checkCancellation() }
+            )
             description = "last \(window.lines.count) of \(window.totalLineCount) lines"
         }
         return .text(

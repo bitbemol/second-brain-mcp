@@ -38,7 +38,7 @@ actor VaultAccessCoordinator: VaultAccessCoordinating {
 
     private var activeReaders = 0
     private var mutationActive = false
-    private var waiters: [Waiter] = []
+    private var waiters = IdentifiedFIFOQueue<UUID, Waiter>()
     private let maximumWaiters: Int
     private let processLock: POSIXAdvisoryFileLock
 
@@ -116,11 +116,14 @@ actor VaultAccessCoordinator: VaultAccessCoordinating {
                     continuation.resume(returning: false)
                     return
                 }
-                waiters.append(Waiter(
-                    id: id,
-                    access: access,
-                    continuation: continuation
-                ))
+                waiters.append(
+                    Waiter(
+                        id: id,
+                        access: access,
+                        continuation: continuation
+                    ),
+                    id: id
+                )
             }
         } onCancel: {
             Task { await self.cancelWaiter(id: id) }
@@ -164,29 +167,28 @@ actor VaultAccessCoordinator: VaultAccessCoordinating {
     }
 
     private func cancelWaiter(id: UUID) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        let waiter = waiters.remove(at: index)
+        guard let waiter = waiters.remove(id: id) else { return }
         waiter.continuation.resume(returning: false)
         drain()
     }
 
     private func drain() {
-        guard !mutationActive, let first = waiters.first else { return }
+        guard !mutationActive, let first = waiters.first() else { return }
 
         if first.access == .mutation {
             guard activeReaders == 0 else { return }
-            waiters.removeFirst()
+            _ = waiters.popFirst()
             mutationActive = true
             first.continuation.resume(returning: true)
             return
         }
 
         var readers: [Waiter] = []
-        while waiters.first?.access == .read {
-            readers.append(waiters.removeFirst())
-            activeReaders += 1
+        while waiters.first()?.access == .read {
+            if let reader = waiters.popFirst() {
+                readers.append(reader)
+                activeReaders += 1
+            }
         }
         readers.forEach { $0.continuation.resume(returning: true) }
     }

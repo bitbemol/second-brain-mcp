@@ -25,6 +25,34 @@ private struct FakeImageEncoder: ImageEncoding {
     func encodeFramePNG(url: URL, frameIndex: Int, maxLongEdge: Int) throws -> Data { framePNG }
 }
 
+private struct SelfCancellingImageEncoder: ImageEncoding {
+    func inspect(
+        url: URL,
+        maximumAnimationFrames: Int
+    ) throws -> ImageInspection {
+        ImageInspection(
+            pixelWidth: 400,
+            pixelHeight: 300,
+            format: "gif",
+            frameCount: 20,
+            frameDelays: nil
+        )
+    }
+
+    func encodeFramePNG(
+        url: URL,
+        frameIndex: Int,
+        maxLongEdge: Int
+    ) throws -> Data {
+        if frameIndex == 0 {
+            withUnsafeCurrentTask { task in
+                task?.cancel()
+            }
+        }
+        return Data([0xAA])
+    }
+}
+
 private func makeVault() throws -> String {
     let root = NSTemporaryDirectory() + "ImageReaderTests-\(UUID().uuidString)"
     let fm = FileManager.default
@@ -177,6 +205,58 @@ struct `ImageReader — policy` {
         #expect(r.frames.allSatisfy { $0.mimeType == "image/png" })
         #expect(r.frames.first?.sourceIndex == 0)          // first frame
         #expect(r.frames.last?.sourceIndex == 19)          // last frame
+    }
+
+    @Test
+    func `Animated GIF rejects an aggregate encoded frame bundle beyond the output ceiling`() throws {
+        let root = try makeVault()
+        try write(Data([0]), to: "notes/attachments/oversized-bundle.gif", in: root)
+        let limits = ImageLimits(
+            maxLongEdge: 2_576,
+            maxFileBytes: 10,
+            maxMegapixels: 50,
+            gifMaxFrames: 8,
+            gifMaxSourceFrames: 10_000,
+            gifFrameMaxLongEdge: 1_280
+        )
+        let reader = ImageReader(
+            encoder: FakeImageEncoder(
+                width: 400,
+                height: 300,
+                format: "gif",
+                frameCount: 20,
+                framePNG: Data(repeating: 0xAA, count: 4)
+            ),
+            limits: limits
+        )
+
+        #expect(throws: FileResourcePolicy.Violation.self) {
+            _ = try reader.read(
+                target: imageTarget(
+                    "notes/attachments/oversized-bundle.gif",
+                    in: root
+                )
+            )
+        }
+    }
+
+    @Test
+    func `Animated GIF cancellation stops before encoding later frames`() async throws {
+        let root = try makeVault()
+        try write(Data([0]), to: "notes/attachments/cancel.gif", in: root)
+        let reader = ImageReader(encoder: SelfCancellingImageEncoder())
+        let target = try imageTarget(
+            "notes/attachments/cancel.gif",
+            in: root
+        )
+
+        let task = Task {
+            try reader.read(target: target)
+        }
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
     }
 
     @Test

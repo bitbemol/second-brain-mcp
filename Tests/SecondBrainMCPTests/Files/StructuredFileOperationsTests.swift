@@ -292,7 +292,41 @@ struct `Generic files — structured format operations` {
         }
         #expect(!text.contains("\none\n"))
         #expect(text.contains("two\nthree"))
+    }
 
+    @Test
+    func `A canceled log read stops before scanning its snapshot`() async throws {
+        let root = try makeVault()
+        let operations = LogFileOperations()
+        let target = try WritableFileTarget.resolve(
+            path: "notes/app.log",
+            format: .log,
+            vaultPath: root
+        ).readable
+        let snapshot = FileSnapshot(
+            data: Data(String(repeating: "line\n", count: 100).utf8),
+            modifiedDate: nil
+        )
+
+        let task = Task {
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            return try operations.read(
+                ReadFileRequest(
+                    format: .log,
+                    path: target.relativePath,
+                    options: .default
+                ),
+                target: target,
+                snapshot: snapshot
+            )
+        }
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
     }
 
     @Test

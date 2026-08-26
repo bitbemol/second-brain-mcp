@@ -156,6 +156,48 @@ struct `Generic files — CRUD store` {
     }
 
     @Test
+    func `Independent snapshot loads overlap instead of queueing on the store actor`() async throws {
+        let root = try makeVault()
+        let firstTarget = try WritableFileTarget.resolve(
+            path: "notes/deep/first.log",
+            format: .log,
+            vaultPath: root
+        )
+        let secondTarget = try WritableFileTarget.resolve(
+            path: "notes/deep/second.log",
+            format: .log,
+            vaultPath: root
+        )
+        try Data("first".utf8).write(to: firstTarget.url)
+        try Data("second".utf8).write(to: secondTarget.url)
+
+        let probe = SnapshotOverlapProbe()
+        let store = VaultCRUDStore(
+            vaultPath: root,
+            snapshotLoader: { target, maximumBytes, protectedRoot in
+                probe.enterAndWait()
+                return try VaultFileInspector.snapshot(
+                    target,
+                    maximumBytes: maximumBytes,
+                    rejectHiddenDescendantsOf: protectedRoot
+                )
+            }
+        )
+        let first = Task.detached(priority: .background) {
+            try await store.snapshot(firstTarget.readable)
+        }
+        let second = Task.detached(priority: .background) {
+            try await store.snapshot(secondTarget.readable)
+        }
+
+        let overlapped = await probe.waitForSecondEntry()
+        probe.releaseBoth()
+        _ = try await (first.value, second.value)
+
+        #expect(overlapped)
+    }
+
+    @Test
     func `Soft-delete paths cannot collide for equal basenames`() async throws {
         let root = try makeVault()
         let store = VaultCRUDStore(vaultPath: root)
@@ -280,5 +322,33 @@ struct `Generic files — CRUD store` {
 
     private func revision(_ text: String) -> FileRevision {
         FileSnapshot(data: Data(text.utf8), modifiedDate: nil).revision
+    }
+}
+
+private final class SnapshotOverlapProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let release = DispatchSemaphore(value: 0)
+    private var entryCount = 0
+
+    func enterAndWait() {
+        lock.withLock { entryCount += 1 }
+        _ = release.wait(timeout: .now() + 5)
+    }
+
+    func waitForSecondEntry() async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while clock.now < deadline {
+            if lock.withLock({ entryCount >= 2 }) {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    func releaseBoth() {
+        release.signal()
+        release.signal()
     }
 }

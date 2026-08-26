@@ -42,6 +42,12 @@ struct `Vault directory move service` {
         return root
     }
 
+    private func makeRecoveredRuntime(vaultPath: String) async throws -> VaultRuntime {
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: vaultPath)
+        try await runtime.recoverPendingChanges()
+        return runtime
+    }
+
     private func git(_ arguments: [String], root: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -94,7 +100,7 @@ struct `Vault directory move service` {
     func `One move preserves a nested subtree, commits once, and search sees its new prefix`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         let request = MoveDirectoryRequest(
 
             sourcePath: "notes//in-progress/ticket-123/",
@@ -135,7 +141,7 @@ struct `Vault directory move service` {
             atPath: root + "/notes/in-progress/empty",
             withIntermediateDirectories: true
         )
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         let before = try git(["rev-list", "--count", "HEAD"], root: root)
 
         _ = try await runtime.directories.move(MoveDirectoryRequest(
@@ -157,7 +163,7 @@ struct `Vault directory move service` {
     func `Case-only directory renames are rejected as the same canonical path`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
 
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
@@ -179,7 +185,7 @@ struct `Vault directory move service` {
             atPath: root + "/notes/completed/ticket-123",
             withIntermediateDirectories: true
         )
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
 
         await #expect(throws: DirectoryMoveError.self) {
             _ = try await runtime.directories.move(MoveDirectoryRequest(
@@ -243,7 +249,7 @@ struct `Vault directory move service` {
     func `An untracked credential inside the subtree is never moved or committed`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         try "api_key=abcdefghijklmnop1234567890".write(
             toFile: root + "/notes/in-progress/ticket-123/private.txt",
             atomically: true,
@@ -271,7 +277,7 @@ struct `Vault directory move service` {
     func `An existing HAR with structured credentials is never moved or committed`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         let har = #"{"log":{"entries":[{"request":{"headers":[{"name":"Authorization","value":"short-secret"}]}}]}}"#
         try Data(har.utf8).write(
             to: URL(fileURLWithPath:
@@ -299,7 +305,7 @@ struct `Vault directory move service` {
     func `An obvious unknown text file cannot become binary through invalid UTF-8`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         var bytes = Data(
             ("Bearer " + String(repeating: "v", count: 32)).utf8
         )
@@ -328,7 +334,7 @@ struct `Vault directory move service` {
     func `Git mode validation follows Git's owner-execute convention`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         let modes: [(name: String, mode: mode_t)] = [
             ("group-executable.sh", 0o610),
             ("other-executable.sh", 0o601),
@@ -361,7 +367,7 @@ struct `Vault directory move service` {
     func `A move snapshot coalesces unrelated pending note work`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         try "unrelated".write(
             toFile: root + "/notes/unrelated.md",
             atomically: true,
@@ -388,7 +394,7 @@ struct `Vault directory move service` {
     func `Hidden and package descendants are refused before rename`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let runtime = try await makeRecoveredRuntime(vaultPath: root)
         let hidden = root + "/notes/in-progress/ticket-123/.gitignore"
         try "*.md".write(toFile: hidden, atomically: true, encoding: .utf8)
         await #expect(throws: DirectoryMoveError.self) {

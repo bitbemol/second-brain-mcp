@@ -8,6 +8,11 @@ import Foundation
 /// leases and can still write during the final compare-to-rename filesystem
 /// window; no pathname API supplies a universal cross-application CAS.
 actor VaultCRUDStore {
+    typealias SnapshotLoader = @Sendable (
+        ReadableFileTarget,
+        Int,
+        URL?
+    ) throws -> BoundedFileReader.Snapshot
 
     /// Persistence failures independent of concrete file-format semantics.
     enum StoreError: Error, CustomStringConvertible {
@@ -27,13 +32,26 @@ actor VaultCRUDStore {
         }
     }
 
-    private let vaultPath: String
+    private nonisolated let vaultPath: String
+    private nonisolated let snapshotLoader: SnapshotLoader
 
     /// Creates a store rooted at one vault.
     ///
-    /// - Parameter vaultPath: Canonical vault root.
-    init(vaultPath: String) {
+    /// - Parameters:
+    ///   - vaultPath: Canonical vault root.
+    ///   - snapshotLoader: Stable descriptor reader, injectable for concurrency tests.
+    init(
+        vaultPath: String,
+        snapshotLoader: @escaping SnapshotLoader = {
+            try VaultFileInspector.snapshot(
+                $0,
+                maximumBytes: $1,
+                rejectHiddenDescendantsOf: $2
+            )
+        }
+    ) {
         self.vaultPath = vaultPath
+        self.snapshotLoader = snapshotLoader
     }
 
     /// Reads immutable bytes and modification metadata for optimistic updates.
@@ -43,8 +61,13 @@ actor VaultCRUDStore {
     /// - Returns: A snapshot used for reads or compare-before-replace updates.
     /// - Throws: ``VaultFileInspector/InspectionError``,
     ///   ``FileResourcePolicy/Violation``, or a filesystem read error.
-    func snapshot(_ target: ReadableFileTarget) throws -> FileSnapshot {
-        try snapshot(target, maximumBytes: target.format.maximumFileBytes)
+    nonisolated func snapshot(
+        _ target: ReadableFileTarget
+    ) async throws -> FileSnapshot {
+        try loadSnapshot(
+            target,
+            maximumBytes: target.format.maximumFileBytes
+        )
     }
 
     /// Reads a snapshot through a caller-supplied stricter byte ceiling.
@@ -59,17 +82,28 @@ actor VaultCRUDStore {
     /// - Returns: Complete bytes and modification metadata within both limits.
     /// - Throws: ``VaultFileInspector/InspectionError``,
     ///   ``FileResourcePolicy/Violation``, or a filesystem read error.
-    func snapshot(
+    nonisolated func snapshot(
+        _ target: ReadableFileTarget,
+        maximumBytes: Int,
+        rejectHiddenComponents: Bool = false
+    ) async throws -> FileSnapshot {
+        try loadSnapshot(
+            target,
+            maximumBytes: maximumBytes,
+            rejectHiddenComponents: rejectHiddenComponents
+        )
+    }
+
+    private nonisolated func loadSnapshot(
         _ target: ReadableFileTarget,
         maximumBytes: Int,
         rejectHiddenComponents: Bool = false
     ) throws -> FileSnapshot {
         let effectiveLimit = min(target.format.maximumFileBytes, maximumBytes)
-        let opened = try VaultFileInspector.snapshot(
+        let opened = try snapshotLoader(
             target,
-            maximumBytes: effectiveLimit,
-            rejectHiddenDescendantsOf: rejectHiddenComponents
-                ? URL(fileURLWithPath: vaultPath) : nil
+            effectiveLimit,
+            rejectHiddenComponents ? URL(fileURLWithPath: vaultPath) : nil
         )
         return FileSnapshot(
             data: opened.data,
@@ -151,7 +185,10 @@ actor VaultCRUDStore {
             format: target.format,
             path: target.relativePath
         )
-        let current = try snapshot(target.readable)
+        let current = try loadSnapshot(
+            target.readable,
+            maximumBytes: target.format.maximumFileBytes
+        )
         guard current.revision == expectedRevision else {
             throw StoreError.changedSinceRead(target.relativePath)
         }
@@ -174,7 +211,10 @@ actor VaultCRUDStore {
         // Capture and compare the bytes immediately before the move. This makes
         // deletion use the same compare-and-swap contract as replacement rather
         // than deleting whichever version happens to occupy the path now.
-        let current = try snapshot(target.readable)
+        let current = try loadSnapshot(
+            target.readable,
+            maximumBytes: target.format.maximumFileBytes
+        )
         guard current.revision == expectedRevision else {
             throw StoreError.changedSinceRead(target.relativePath)
         }

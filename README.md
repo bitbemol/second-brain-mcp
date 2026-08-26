@@ -167,7 +167,7 @@ If new tools still don't appear, confirm the client's `command` points at `.buil
 └── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Writable startup prepares Git metadata as needed; read-only startup leaves the vault untouched.
+Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes into Git, so initialization and tool discovery do not wait behind a large or contended snapshot. Mutating tool calls remain gated until that recovery finishes; reads are accepted immediately but may wait on the vault's shared/exclusive access lease while recovery holds it. Read-only startup leaves the vault untouched.
 
 ## CLI Flags
 
@@ -239,8 +239,10 @@ Format-specific CRUD behavior stays behind the four endpoints:
 - JSON accepts any valid top-level JSON value, preserves its original representation, and validates replacements or exact text patches before persistence.
 - CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
-- Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames.
+- Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames, and their aggregate encoded frame bytes must remain within the image file-size limit before base64 transport expansion.
 - PDF reads return exactly bounded text plus a PNG image for each selected physical page. `page`, `pages`, and `page_range` provide single-page, ordered-set, and inclusive-range retrieval; content queries belong to `search_vault`.
+
+Complete Markdown, Canvas, patch, JSON, and CSV reads are atomic and may approach 10 MiB; sanitized HAR reads may approach 25 MiB. Responses near those limits can exceed an MCP client's or model's practical context and appear stalled even when server I/O has completed. Keep model-facing files smaller until an explicit chunked text-read contract is available; PDF and log reads already provide bounded selectors.
 
 ## Custom Instructions
 

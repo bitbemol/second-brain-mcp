@@ -616,7 +616,7 @@ struct `Generic files — routed service` {
         }
         try FileManager.default.removeItem(atPath: root + "/" + path)
 
-        let output = try await runtime.files.create(retryable)
+        _ = try await runtime.files.create(retryable)
         #expect(try String(
             contentsOfFile: root + "/" + path,
             encoding: .utf8
