@@ -167,7 +167,7 @@ If new tools still don't appear, confirm the client's `command` points at `.buil
 └── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes into Git, so initialization and tool discovery do not wait behind a large or contended snapshot. Mutating tool calls remain gated until that recovery finishes; reads are accepted immediately but may wait on the vault's shared/exclusive access lease while recovery holds it. Read-only startup leaves the vault untouched.
+Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes into Git, so initialization and tool discovery do not wait behind a large or contended snapshot. Mutating tool calls remain gated until that recovery finishes; reads are accepted immediately but may wait on the vault's shared/exclusive access lease while recovery holds it. If recovery fails after connection, the server stays connected for discovery and reads while every mutation reports the recovery error instead of terminating the process; restart after correcting the Git or storage failure. Recovery and transport completion are logged to stderr. Read-only startup leaves the vault untouched.
 
 ## CLI Flags
 

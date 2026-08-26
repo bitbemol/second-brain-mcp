@@ -13,7 +13,8 @@ struct MCPServerSetup {
     ///   - capabilities: Immutable format capability manifest.
     ///   - startupRecovery: Writable-startup snapshot recovery.
     ///   - transport: MCP transport, injectable for lifecycle tests.
-    /// - Throws: Transport, recovery, or handler-registration errors.
+    /// - Throws: Transport or handler-registration errors. Recovery failures stay attached
+    ///   to the mutation gate so reads and discovery remain available.
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
@@ -90,14 +91,18 @@ struct MCPServerSetup {
         try await server.start(transport: transport)
         log("MCP server started, accepting connections")
 
-        let startupRecoveryTask = await startupRecoveryGate.install(startupRecovery)
-        do {
-            try await startupRecoveryTask.value
-            await server.waitUntilCompleted()
-        } catch {
-            await server.stop()
-            throw error
+        let startupRecoveryTask = await startupRecoveryGate.install {
+            do {
+                try await startupRecovery()
+                log("startup recovery completed")
+            } catch {
+                log("startup recovery failed; mutations remain unavailable: \(error)")
+                throw error
+            }
         }
+        await server.waitUntilCompleted()
+        log("MCP transport completed; server shutting down")
+        _ = await startupRecoveryTask.result
     }
 }
 

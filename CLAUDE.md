@@ -141,7 +141,10 @@ Update/delete must compare that opaque revision before changing bytes.
 Writable startup composes the runtime, connects the MCP transport, then begins pending-change
 recovery. Initialization and tool discovery therefore remain responsive during a slow or contended
 Git snapshot. Mutating calls await the same recovery task before entering the backend; reads are
-accepted but still obey the shared/exclusive coordinator lease.
+accepted but still obey the shared/exclusive coordinator lease. A recovery failure remains stored in
+that gate and is returned to every mutation, but it must not stop an already connected server:
+discovery and reads stay available. Recovery success/failure and transport completion are logged to
+stderr so a field report can distinguish Git failure from the client closing its transport.
 
 Queued cancellation does no work. Cancellation is checked before prepared persistence begins; after
 that point `VaultMutationExecutor` finishes persistence and the required snapshot in a detached task
