@@ -49,10 +49,12 @@ struct `Vault runtime recovery` {
         let instructions = try #require(initialization.instructions)
         #expect(instructions.contains("list_files for inventory"))
         #expect(instructions.contains("search_vault for content"))
-        #expect(instructions.contains("query_links for wiki-link relationships"))
+        #expect(instructions.contains("query_links for local wiki/Markdown relationships"))
         #expect(instructions.contains("read_file with view=metadata"))
-        #expect(instructions.contains("identical arguments"))
-        #expect(instructions.contains("restart without a stale cursor"))
+        #expect(instructions.contains("Keep cursor criteria unchanged"))
+        #expect(instructions.contains("limit may change"))
+        #expect(instructions.contains("coverage.complete=false cannot establish absence"))
+        #expect(instructions.contains("restart stale"))
         #expect(instructions.contains("text_window.next_byte_offset"))
         #expect(instructions.contains("expected_revision"))
         let toolNames = Set(try await client.listTools().tools.map(\.name))
@@ -261,7 +263,7 @@ struct `Vault runtime recovery` {
 
         var mutationReportedRecoveryFailure = false
         do {
-            let _: (content: [Tool.Content], isError: Bool?) =
+            let response: (content: [Tool.Content], isError: Bool?) =
                 try await client.callTool(
                     name: "create_file",
                     arguments: [
@@ -270,8 +272,9 @@ struct `Vault runtime recovery` {
                         "content": "must not persist",
                     ]
                 )
+            mutationReportedRecoveryFailure = response.isError == true
         } catch {
-            mutationReportedRecoveryFailure = true
+            Issue.record("Recovery failure escaped the tool result: \(error)")
         }
         #expect(mutationReportedRecoveryFailure)
         #expect(try await client.listTools().tools.count == toolsBeforeFailure.count)
@@ -334,6 +337,59 @@ struct `Vault runtime recovery` {
                 at: root
             ).isEmpty
         )
+    }
+
+    @Test
+    func recoveryFailureDoesNotLeakPrivateDetails() async throws {
+        let root = try makeVault()
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
+        let transports = await InMemoryTransport.createConnectedPair()
+        let marker = "PRIVATE_RECOVERY_MARKER"
+        let serverTask = Task {
+            try await MCPServerSetup.start(
+                config: ServerConfig(vaultPath: root, readOnly: false),
+                files: runtime.files, paths: runtime.paths, search: runtime.search,
+                links: runtime.links, listing: runtime.listing,
+                capabilities: runtime.capabilities,
+                startupRecovery: {
+                    throw NSError(
+                        domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "/private/recovery/" + marker +
+                                String(repeating: "x", count: 1_024),
+                        ]
+                    )
+                },
+                transport: transports.server
+            )
+        }
+        let client = Client(name: "RecoveryFailureBoundary", version: "1.0")
+        _ = try await client.connect(transport: transports.client)
+        var returnedToolFailure = false
+        let message: String
+        do {
+            let response = try await client.callTool(name: "create_file", arguments: [
+                "format": .string("markdown"), "path": .string("notes/blocked.md"),
+                "content": .string("must not persist"),
+            ])
+            returnedToolFailure = response.isError == true
+            message = response.content.compactMap { content -> String? in
+                if case .text(let text, _, _) = content { return text }
+                return nil
+            }.joined()
+        } catch {
+            message = String(describing: error)
+        }
+        #expect(returnedToolFailure)
+        #expect(message.utf8.count <= 512)
+        #expect(!message.contains(marker))
+        #expect(!message.contains("/private/recovery/"))
+        #expect(try await client.listTools().tools.count == 8)
+        #expect(!FileManager.default.fileExists(atPath: root + "/notes/blocked.md"))
+        await client.disconnect()
+        try await serverTask.value
     }
 
     private func makeVault() throws -> String {
