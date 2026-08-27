@@ -198,10 +198,36 @@ Reads under `notes/` return an opaque exact-byte `revision`; `update_file`, `del
 | `search_vault` | Locate matching file, PDF-page, or Canvas-node atoms without returning their content |
 | `query_links` | Resolve wiki targets or traverse local wiki/inline Markdown links and grouped backlinks without snippets |
 | `create_file` | Validate/transform input, atomically create under `notes/`, and request a vault snapshot |
-| `read_file` | Read bounded content or a content-free Markdown/PDF metadata view |
+| `read_file` | Read bounded content, inspect images (`render: true` opts into visuals), or request Markdown/PDF metadata |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
 | `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then request a vault snapshot |
 | `move_path` | Atomically rename one revision-guarded supported file or one complete `notes/` subtree |
+
+### Multi-file workflows
+
+Each mutation call is durable independently; there is no multi-file transaction or
+batch-delete API. Concurrent calls are coordinated but do not promise one shared
+commit or all-or-nothing completion as a group. Use one multi-replacement `patch`
+for edits to one file and `move_path(kind: directory)` for an atomic subtree move.
+Do not infer transaction semantics from parallel tool calls or retry an entire
+workflow after losing one response. A future batch API needs explicit partial-failure
+and crash-recovery semantics; automatic delayed snapshots would weaken the current
+successful-response durability contract.
+
+### Failure handling
+
+File CRUD, `move_path`, and `list_files` failures return actionable text and
+`structuredContent.error` with `code`, `state`, and `retry`.
+Routine codes include `ALREADY_EXISTS`, `NOT_FOUND`, `DIRECTORY_NOT_FOUND`,
+`INVALID_PATH`, `MISSING_TRANSFORM`, and `REVISION_CONFLICT`; unclassified failures
+remain opaque `INTERNAL_ERROR` responses without host paths or framework details.
+
+`state: not_applied` means rejection before backend dispatch; `read_only` means the
+operation did not mutate. A dispatched mutation failure conservatively reports
+`state: unknown` and `retry: inspect_state`, even for a recognizable error, because
+persistence may have occurred before a later failure. Inspect current state before
+deciding to retry. `retry: correct_request` means fix the request before repeating it;
+neither hint authorizes blind replay or supplies a replacement revision.
 
 ### Creation inputs
 
@@ -218,6 +244,27 @@ Example `create_file` arguments (replace the external paths with your own genera
 ```json
 {"format":"gif","path":"notes/QA/clip.gif","source":"/absolute/path/to/external/clip.mov","transform":"video_to_gif"}
 ```
+
+### Deletion and recovery
+
+A successful `delete_file` returns `path`, `area`, `trash_path`, and `deleted_revision`.
+The trash locator identifies the exact retained bytes; it is not an undo token or
+authority for an MCP read/move. Keep the receipt if recovery may be needed.
+
+Recovery is currently a user-controlled filesystem operation, not an MCP tool:
+
+1. Stop MCP clients and avoid other vault edits while recovering.
+2. In Finder, show hidden files and locate the receipt's path beneath the vault's
+   `.trash/` directory. Copy that file to an unused, supported path under `notes/`,
+   retaining its format extension. Do not overwrite an existing note; keep the trash copy.
+3. Restart a writable MCP client so startup records the recovered note in Git.
+   Read the restored path and compare its revision with `deleted_revision`.
+
+The server never automatically expires or purges trash. Retention is indefinite
+until the local user removes it; there is no MCP purge operation. The trash copy
+is local recovery storage, not an independent backup. If a deletion response was
+lost, inspect current state before retrying; no receipt should be inferred from a
+failed or missing response.
 
 ### Path moves
 
@@ -245,7 +292,7 @@ Results contain no snippets or bodies. Every page includes `coverage`: `complete
 
 Every request selects exactly one `location`: `notes` or `references`. Optional area-relative `directory` and concrete `formats` narrow eligibility before content is opened. It must also supply at least one search criterion: a text `query`, one or more `tags`, `created_from`, or `created_through`. Tags and created-date filters apply only to Markdown notes. Literal text matching is case-, diacritic-, and width-insensitive; every whitespace-separated query term must occur in the same atom. Exact phrases and repeated occurrences only determine stable result order.
 
-Readable textual formats automatically participate without a search-specific format registry. Markdown notes are one atom each and expose their shared frontmatter `created` date and tags to metadata filters. JSON, CSV, HAR, patch/diff, and log files are each searched as one raw UTF-8 whole-file atom; search does not validate their format-specific syntax. `coverage.complete` describes examination of the search representation, not certification that a later strict `read_file` will accept every stored document. Canvas is searched as bounded node-field atoms so a result identifies the exact node ID and field instead of returning the entire JSON document as one match. A format that needs a different representation can register a search atom provider without changing the public search contract. An individual file that cannot be decoded into its search representation, exceeds its limits, is unreadable, or changes during capture contributes no partial matches and makes `coverage.complete` false. Coverage includes an exact `failed_files` count and at most three whole-path/category samples within 2 KiB; `samples_truncated` reports omitted samples. Empty incomplete results cannot establish absence. Unknown traversal failures, path-policy failures, cancellation and request-level resource exhaustion fail the entire request.
+Tool discovery advertises only formats with an effective search representation in at least one area. Selecting an unavailable format returns a search-capability error, with `list_files`/`read_file` as alternatives; readable images do not implicitly have OCR search. Readable textual formats automatically participate without a search-specific format registry. Markdown notes are one atom each and expose their shared frontmatter `created` date and tags to metadata filters. JSON, CSV, HAR, patch/diff, and log files are each searched as one raw UTF-8 whole-file atom; search does not validate their format-specific syntax. `coverage.complete` describes examination of the search representation, not certification that a later strict `read_file` will accept every stored document. Canvas is searched as bounded node-field atoms so a result identifies the exact node ID and field instead of returning the entire JSON document as one match. A format that needs a different representation can register a search atom provider without changing the public search contract. An individual file that cannot be decoded into its search representation, exceeds its limits, is unreadable, or changes during capture contributes no partial matches and makes `coverage.complete` false. Incomplete search coverage includes exact `failed_files` and `failed_by_format` counts, including failures omitted from the at-most-three whole-path/category samples. The format counts sum to `failed_files`; the entire coverage object remains within 2 KiB, and `samples_truncated` reports omitted samples. Narrow `directory` or `formats` when that scope matches the question—for example `formats: ["markdown", "json"]`—but complete results for a narrowed scope cannot establish global absence. Empty incomplete results cannot establish absence. Unknown traversal failures, path-policy failures, cancellation and request-level resource exhaustion fail the entire request.
 
 Search permits up to 10,000 eligible files, 100,000 scanned entries, 256 MiB of attempted source bytes and 100,000 atoms. Per-format file and extraction limits still apply. Separate 8 MiB budgets bound traversal path strings and each retained candidate/capture manifest. It captures immutable inputs under the cooperating-vault read lease, then releases that lease before extraction and ranking; it does not retain the entire corpus in memory. Capture storage is private, outside the vault/Git, bounded and cleaned after use. Lowering result `limit` does not reduce scan work: narrow `directory`, `formats` or the searched area instead. A warm query still reconciles exact source bytes; caching is not permission to serve stale results.
 
@@ -272,18 +319,18 @@ Search locators contain no snippets, file content, scores or mutation revisions;
 | `jpeg`, `webp`, `heic`, `tiff`, `bmp` | native aliases | — | notes, references | — | notes |
 | `pdf` | `.pdf` | — | references | — | — |
 
-The matrix and each format's create input and update modes come from one exhaustive backend catalog. MCP tool discovery projects that contract directly into the four CRUD schemas, and `VaultFileService` enforces the same create contract before dispatch, so advertised and accepted inputs cannot drift. Adding a format does not require a resource or a second frontend registry. Internal handler identities stay private. In `--read-only` mode, mutating tools disappear from discovery.
+The matrix and each format's create input and update modes come from one exhaustive backend catalog. Update schemas keep callable fields at the top level and use catalog-derived conditional rules to reject unsupported format/mode combinations: `replace` and `append` require `content`; `patch` requires 1–20 `replacements` objects containing `old_text` and `new_text`, and forbids `content`. MCP tool discovery projects that contract directly into the four CRUD schemas, and `VaultFileService` enforces the same create contract before dispatch, so advertised and accepted inputs cannot drift. Adding a format does not require a resource or a second frontend registry. Internal handler identities stay private. In `--read-only` mode, mutating tools disappear from discovery.
 
 Format-specific CRUD behavior stays behind the four endpoints:
 
 - HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads validate the complete sanitized archive before returning a bounded text chunk.
 - Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
 - Patch input must be a unified diff; reads validate the complete diff before returning a bounded text chunk.
-- Logs default to the last 500 lines, support bounded line ranges or revision-guarded byte pagination, reject a selected line window above the response ceiling, and can only be appended.
+- Logs default to the last 500 records, support bounded line ranges or revision-guarded byte pagination, reject a selected line window above the response ceiling, and can only be appended. A final newline terminates a record rather than adding an empty one; empty logs have zero records, consecutive delimiters preserve intentional blank records, and CRLF counts as one delimiter. Byte-window reads preserve the original bytes and exact revisions.
 - JSON accepts any valid top-level JSON value, preserves its original representation, validates the complete document, and supports revision-guarded chunk reads plus replacement or exact text patches.
 - CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; reads and updates validate the complete table before returning or persisting bounded content.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive. Pass both `canvas_node_id` and `canvas_field` from a search hit to `read_file` for just that decoded field. Repeat both selectors and the same raw-file revision for continuation; `text_window` then describes the selected field, not the raw JSON. Empty existing fields remain valid.
-- Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames, and their aggregate encoded frame bytes must remain within the image file-size limit before base64 transport expansion.
+- Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Image reads return inspected dimensions, byte size, and animation frame count/duration by default, without pixel encoding or image blocks. Add `render: true` to view a still image or up to eight sampled timed GIF frames. Rendering is opt-in per call, not a session setting; aggregate encoded frame bytes remain bounded before base64 expansion. The server cannot control how a client redisplays images already in its conversation history. PDF page reads retain their explicit text-plus-image contract; omit `render` for PDFs and other non-image formats.
 - PDF reads return exactly bounded text plus a PNG image for each selected physical page. `page`, `pages`, and `page_range` provide single-page, ordered-set, and inclusive-range retrieval; content queries belong to `search_vault`.
 
 ### Metadata view

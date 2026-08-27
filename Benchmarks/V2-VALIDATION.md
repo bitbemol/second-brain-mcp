@@ -4,7 +4,101 @@ Status: release-candidate verification in progress; not a publication approval.
 Measurements use generated temporary vaults, never user content. This record is
 separate from the public API contract in the root README.
 
-## Work-client feedback follow-up (2026-08-27)
+## Acceptance-report fixes (2026-08-27)
+
+Source baseline: `0f61818737a65c41d58c77a342f555d32f54e701` on `main`.
+Runtime and regression changes are recorded in focused commits `8e91b94` through
+`35a5384` on `main`. No branch, dependency update, push, or release is part of this round.
+Baseline release SHA-256: `9e4ef65778cb6944449eee1d22b94aad9249e40980a09a07200896dc5515072b`.
+Candidate release SHA-256: `7b5737c67134fb2458dbc1c072c875ed5afc70521fc4115e774e3375b0c41790`.
+
+Confirmed and fixed: automatic image/GIF payloads (explicit `render: true` now
+required); generic routine file/list failures; trailing-newline log counts;
+unsupported search formats advertised as available; missing per-format failure
+counts; update schema format/mode constraints and empty patches; and missing
+machine-readable deletion recovery receipts. Recovery remains manual, without
+new `.trash/` authority. Multi-file transactions remain absent and are now explicit
+in the public contract; implementing rollback/journaling without measured need was
+not justified by the report's feature suggestion.
+
+Strict test-first receipts under Xcode `ActionArtifacts/default`:
+
+- Image/log RED: `RunSomeTests/B0C3D6EF-37C7-4AEA-9792-99F7FE511CAC.txt`.
+  The initial image-size control used a below-limit fixture; after correcting that
+  fixture, the unchanged image safety guards passed before implementation in
+  `RunSomeTests/3FF44ED4-67DC-40E7-B645-567FC3188931.txt`. This fixture mistake
+  and an initial test compile error are not counted as behavioral RED.
+- Image/log GREEN and routine-error 10-case RED:
+  `RunSomeTests/4F0FDDA1-E4DF-47EB-A014-835E8A0D99A0.txt`.
+- Routine-error GREEN; search six-case, update-schema two-case and receipt one-case RED:
+  `RunSomeTests/4F65AAC2-AB82-4402-9BA6-9026ACFB9319.txt`.
+- All 52 focused/adjacent cases GREEN:
+  `RunSomeTests/DE8971EE-9504-47C6-9B8C-246994F6D7FD.txt`.
+- Raw SDK/transport isolation control passed without a replay-specific production fix:
+  `RunSomeTests/A4E8AF45-0CBE-480C-9FB1-4288710F6BFB.txt`.
+  Eight following responses contained their own text only. Client redisplay of
+  already-returned images was not reproduced or certified fixed.
+
+Final full plan: **672/672 passed, zero skips**,
+`RunAllTests/4C0BBFC5-E668-4488-8F49-B221A0D621B7.txt`.
+The preceding full run had five stale expected-contract failures (updated to the
+deliberate new contract) and one existing timing-sensitive search failure.
+The unchanged timing test measured ratios 1.356 (full), 1.027 (isolated), and 1.104
+(next full run), against the unchanged 1.15 bound. Its fixed-order single pair is
+a noisy oracle, not proof that every match was sorted. Both full-suite all-match
+times were about 920 ms; denominator variation mostly changed the verdict. No
+production performance regression was demonstrated and no threshold was relaxed.
+Initial full receipt: `RunAllTests/5EA87AFA-FC3C-42CC-A07D-45458D317871.txt`;
+isolated receipt: `RunSomeTests/FE65EAC1-8B06-442D-A0F0-B6FCB4175993.txt`.
+
+Xcode test-target build passed and the issue navigator is empty. Release build
+`swift build -c release --force-resolved-versions` passed in 19.90 seconds with
+no warnings emitted. All existing dependency pins are unchanged.
+
+### Measured image read deltas
+
+Thirty alternating pairs per group, generated 512×384 PNG and 20-frame/2-second GIF,
+480 successful calls (240 media, 240 following text). Two long-lived read-only
+processes exited cleanly without signals; all exact owned fixture/support folders
+were removed. Inspection versus legacy default intentionally changes behavior;
+equivalent visual rendering is measured separately.
+
+| Read mode | p50 before → after (ms) | p95 before → after (ms) | Response bytes before → after |
+|---|---:|---:|---:|
+| PNG legacy default → inspection | 4.777 → 1.852 | 5.215 → 2.426 | 377660–377662 → 494–496 |
+| GIF legacy default → inspection | 57.357 → 1.531 | 59.003 → 1.938 | 37885–37887 → 510–512 |
+| PNG equivalent rendering | 4.366 → 4.175 | 4.693 → 4.541 | unchanged |
+| GIF equivalent rendering | 58.125 → 57.175 | 59.436 → 58.411 | unchanged |
+
+The predeclared equivalent-render gate is p95 ≤ max(1.2×baseline p95, baseline
+p95+5 ms), with candidate p95 ≤500 ms and each media call ≤1000 ms. All pass.
+Inspection returns zero images and a smaller payload on every sample. Rendered
+PNG pixels and ordered GIF sample colors were fully decoded and checked; retained
+image SHA/size signatures match across binaries on every rendering sample.
+No image blocks appeared in any of the 240 subsequent text responses.
+
+Artifact: `/private/tmp/second-brain-acceptance.eaClR8/media-paired/media-read.json`.
+Report SHA-256: `763f3b43d427646e897ae398c1a957d582fd46c10ab1a4a56f8c28ecd7529f27`.
+An independent audit recomputed row completeness, hashes, timing, gates, exits and
+cleanup. The harness itself has ten passing regression methods after intended
+RED cases for broken image decoding, wrong/repeated frames, missing/duplicate
+rows, failed cleanup, invalid timings and false performance passes.
+
+Builds/tests were not run during the campaign. Pre-run load was 4.35/4.60/4.02;
+OS activity, filesystem caches and thermals were not controlled. These are wire
+and server timings, not measured model-token or billing savings.
+
+### Remaining qualification
+
+The expanded real JSON Schema matrix and refreshed all-tool/native harness runs
+have not run for this candidate: the documented `jsonschema==4.23.0` validator
+is absent, and installing it in a disposable environment awaits explicit user
+approval. The Swift schema/contract tests pass but do not replace full draft
+validation. Prior campaigns below describe earlier binaries, not this candidate.
+Actual work-client and second-client reruns remain required, especially image
+redisplay and how each client presents conditional update schemas.
+
+## Earlier work-client feedback follow-up (2026-08-27)
 
 The work-client report describes fast parallel calls without crashes. This is
 encouraging field feedback, not a controlled latency/token comparison or completion

@@ -42,6 +42,12 @@ the changes. No client configuration or personal vault file needs deletion.
 
 | Check | Required observation |
 |---|---|
+| Image consent and replay | Default PNG/GIF reads return facts and no images. Explicit `render: true` returns one still or at most eight GIF frames; later unrelated results have no new image blocks. Record any client-history redisplay separately from the raw response. |
+| Routine failures | Duplicate create, old/deleted paths, missing list directory, traversal and missing GIF transform return stable error codes and corrective text. Honor `state`/`retry`; never treat an uncertain mutation error as proof nothing changed. |
+| Search capability and coverage | PNG is absent from searchable formats unless a provider exists; a forced unsupported request explains capability. Oversized HAR failures include exact `failed_by_format`; scoped completeness is not global absence. |
+| Update discovery | Mode/payload fields are visible without trial-and-error. Invalid format/mode pairs and empty patches are rejected. Record whether the host presents conditional schemas understandably. |
+| Log records | `one\ntwo\nthree\n` has three records; `tail_lines: 2` returns two and three. Byte continuation still preserves exact terminators and revisions. |
+| Recovery receipt | Successful deletion returns `trash_path` and `deleted_revision`. Follow documented manual recovery only with local-user permission; no MCP restore/purge capability is implied. |
 | Literal text | Create a log containing exactly `data:text/plain,Hello%20World` (no newline), then read it. It remains exactly 29 UTF-8 bytes, with matching text-window metadata and revision; no binary-type rejection or base64 rewriting. |
 | Path recovery | A destination without `notes/` is rejected with an explicit example. Correct it once and confirm success; do not retry the unchanged invalid request. |
 | Canvas recovery | A root array is rejected with an object-shape example. A valid object such as `{"nodes":[],"edges":[]}` succeeds. |

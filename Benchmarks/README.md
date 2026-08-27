@@ -29,7 +29,7 @@ python -B -m unittest discover -s Benchmarks -p test_reliability.py -v
 python Benchmarks/tool_workflow.py --binary /absolute/path/to/second-brain-mcp \
   --sha BINARY_SHA256 --label candidate --samples 30 --candidate-contracts
 python Benchmarks/schema_contract.py --binary /absolute/path/to/second-brain-mcp \
-  --sha BINARY_SHA256 --label schema
+  --sha BINARY_SHA256 --label schema --include-mutations
 ```
 
 Use that environment's Python. Obtain the binary hash with `shasum -a 256`.
@@ -41,7 +41,7 @@ The workflow covers all eight tools using an exact 1 MiB JSON mutation fixture,
 Markdown graph/search fixtures, readonly discovery, and refusal of readonly writes.
 Its optional candidate checks exercise grouped backlinks, continuation with a changed
 page size, and incomplete coverage. The schema harness additionally checks that
-contradictory coverage and incomplete locator pairs are rejected by the schema.
+contradictory coverage and incomplete locator pairs are rejected by the schema. `--include-mutations` also validates the complete update format/mode/payload matrix and flat field visibility; it discovers writable tools but sends no mutation calls.
 
 Each request has one 45-second deadline covering queued writes, pipe writes, and the
 response wait. A failed write makes that client connection unusable. Nonzero or forced
@@ -74,3 +74,18 @@ or actual work-client/model behavior. Those require their dedicated Swift
 regressions and workload measurements. See
 [Client-level release check](CLIENT-EVALUATION.md) for the separate work-client and
 second-client evaluation; do not infer that result from server benchmarks.
+
+## Image inspection/rendering comparison
+
+`media_read_workflow.py` requires Pillow in the external validation environment.
+It uses generated 512×384 PNG/GIF fixtures, alternating baseline/candidate requests,
+and following text reads to check response isolation. Default inspection and
+equivalent explicit rendering are separate comparisons. Frozen gates and full
+pixel/frame, revision, exit and cleanup checks are recorded with all raw rows.
+
+```sh
+python -B -m unittest discover -s Benchmarks -p test_media_read_workflow.py -v
+python Benchmarks/media_read_workflow.py --baseline /absolute/path/to/baseline \
+  --baseline-sha BASELINE_SHA --candidate /absolute/path/to/candidate \
+  --candidate-sha CANDIDATE_SHA --samples 30 --output /absolute/path/to/fresh-evidence
+```
