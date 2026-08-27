@@ -2,8 +2,8 @@ import Foundation
 
 /// Validates and sanitizes HTTP Archive files.
 ///
-/// Credential-bearing fields are redacted before persistence. Reads return the
-/// complete sanitized JSON document as one atomic file element.
+/// Credential-bearing fields are redacted before persistence. Reads validate the
+/// complete sanitized document before returning a bounded UTF-8 byte window.
 struct HARFileOperations: Sendable {
     /// Validates a centrally loaded HAR payload before generic persistence.
     ///
@@ -41,7 +41,7 @@ struct HARFileOperations: Sendable {
         )
     }
 
-    /// Returns the complete sanitized HAR JSON as one atomic document.
+    /// Validates the complete sanitized HAR JSON and returns one bounded text window.
     func read(
         _ request: ReadFileRequest,
         target: ReadableFileTarget,
@@ -59,7 +59,13 @@ struct HARFileOperations: Sendable {
             format: .har,
             path: target.relativePath
         )
-        return .text(try TextFileSupport.string(from: sanitized.data))
+        let chunk = try TextFileSupport.readChunk(
+            from: sanitized.data,
+            byteOffset: request.options.byteOffset ?? 0,
+            maximumBytes: request.options.maxBytes
+                ?? FileReadRequestLimits.defaultTextChunkBytes
+        )
+        return .text(chunk.text, textWindow: chunk.window)
     }
 
     /// Describes validated HAR requests, responses, and timing.

@@ -14,7 +14,7 @@ struct NotesDirectoryTarget: Equatable, Sendable {
     /// consulting the filesystem.
     static func canonicalize(path: String) throws -> String {
         guard !path.isEmpty else { throw PathValidationError.emptyPath }
-        guard path.utf8.count <= DirectoryMoveRequestLimits.maximumPathBytes else {
+        guard path.utf8.count <= PathMoveRequestLimits.maximumPathBytes else {
             throw DirectoryMoveError.pathTooLong
         }
         guard !path.hasPrefix("/"), !path.contains("\0") else {
@@ -46,7 +46,7 @@ struct NotesDirectoryTarget: Equatable, Sendable {
             throw DirectoryMoveError.invalidDirectoryPath(path)
         }
         let canonicalPath = components.joined(separator: "/")
-        guard canonicalPath.utf8.count <= DirectoryMoveRequestLimits.maximumPathBytes else {
+        guard canonicalPath.utf8.count <= PathMoveRequestLimits.maximumPathBytes else {
             throw DirectoryMoveError.pathTooLong
         }
         return canonicalPath
@@ -93,7 +93,7 @@ struct NotesDirectoryTarget: Equatable, Sendable {
 }
 
 /// Safe, caller-facing directory-move failures.
-enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
+enum DirectoryMoveError: Error, CustomStringConvertible, CallerSafeError, Sendable {
     case pathTooLong
     case invalidDirectoryPath(String)
     case sourceNotFound(String)
@@ -104,6 +104,10 @@ enum DirectoryMoveError: Error, CustomStringConvertible, Sendable {
     case hiddenDirectory(String)
     case resourceLimit(String)
     case unsafeFilesystemOperation(String)
+
+    var callerSafeDescription: String {
+        description
+    }
 
     var description: String {
         switch self {

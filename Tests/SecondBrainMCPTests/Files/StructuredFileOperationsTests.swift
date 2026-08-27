@@ -295,6 +295,47 @@ struct `Generic files — structured format operations` {
     }
 
     @Test
+    func `Oversized log line windows reject while byte mode stays paginatable`() throws {
+        let root = try makeVault()
+        let operations = LogFileOperations()
+        let target = try WritableFileTarget.resolve(
+            path: "notes/large.log",
+            format: .log,
+            vaultPath: root
+        ).readable
+        let data = Data(String(repeating: "x", count: 80 * 1_024).utf8)
+        let snapshot = FileSnapshot(data: data, modifiedDate: nil)
+
+        #expect(throws: FileRoutingError.self) {
+            try operations.read(
+                ReadFileRequest(
+                    format: .log,
+                    path: target.relativePath,
+                    options: .default
+                ),
+                target: target,
+                snapshot: snapshot
+            )
+        }
+
+        let output = try operations.read(
+            ReadFileRequest(
+                format: .log,
+                path: target.relativePath,
+                options: ReadFileOptions(maxBytes: 4_096)
+            ),
+            target: target,
+            snapshot: snapshot
+        )
+        guard case .text(let text) = output.contents.first else {
+            Issue.record("Expected log byte chunk")
+            return
+        }
+        #expect(text.utf8.count == 4_096)
+        #expect(output.textWindow?.nextByteOffset == 4_096)
+    }
+
+    @Test
     func `A canceled log read stops before scanning its snapshot`() async throws {
         let root = try makeVault()
         let operations = LogFileOperations()

@@ -4,10 +4,14 @@ import Foundation
 struct VaultRuntime: Sendable {
     /// Routed generic file service.
     let files: any FileCRUDService
-    /// Atomic recursive notes-directory moves.
-    let directories: any DirectoryMoveService
+    /// Atomic supported-file and recursive notes-directory moves.
+    let paths: any PathMoveService
     /// Bounded read-only search service.
     let search: any VaultSearchService
+    /// Bounded Obsidian link-resolution and traversal service.
+    let links: any VaultLinkQueryService
+    /// Bounded descriptor-only file browsing service.
+    let listing: any FileListingService
     /// Immutable capability projection shared with MCP discovery.
     let capabilities: FileCapabilities
     /// Deferred writable-startup recovery, kept separate from graph construction.
@@ -57,6 +61,7 @@ struct VaultRuntime: Sendable {
                     .appendingPathComponent("pdf-reference-reads.lock")
             )
         )
+        let pdfReader = PDFReader(admission: pdfAdmission)
         let catalog = FileFormatCatalogFactory.build(
             imageReader: imageReader,
             imageImporter: imageImporter,
@@ -64,23 +69,27 @@ struct VaultRuntime: Sendable {
                 sourceValidator: externalSources,
                 encoder: AVFoundationVideoEncoder()
             ),
-            pdfReader: PDFReader(admission: pdfAdmission)
+            pdfReader: pdfReader
         )
+        let capabilities = catalog.capabilities()
         let files = VaultFileService(
             vaultPath: vaultPath,
             catalog: catalog,
             store: store,
             mutations: mutations,
             access: access,
+            metadataReader: FileMetadataReader(pdfReader: pdfReader),
             readOnly: readOnly
         )
-        let directories = VaultDirectoryMoveService(
+        let paths = VaultPathMoveService(
             vaultPath: vaultPath,
+            supportedFileFormats: Set(
+                capabilities.supportedFormats(for: .delete, in: .notes)
+            ),
             versioning: versioning,
             access: access,
             readOnly: readOnly
         )
-        let capabilities = catalog.capabilities()
         let searchSource = SearchCorpusBuilder(
             vaultPath: vaultPath,
             capabilities: capabilities,
@@ -94,10 +103,23 @@ struct VaultRuntime: Sendable {
             ]
         )
         let search = VaultSearchEngine(source: searchSource)
+        let links = VaultLinkQueryEngine(
+            vaultPath: vaultPath,
+            capabilities: capabilities,
+            store: store,
+            access: access
+        )
+        let listing = VaultFileListingService(
+            vaultPath: vaultPath,
+            capabilities: capabilities,
+            access: access
+        )
         return VaultRuntime(
             files: files,
-            directories: directories,
+            paths: paths,
             search: search,
+            links: links,
+            listing: listing,
             capabilities: capabilities,
             startupRecovery: startupRecovery
         )

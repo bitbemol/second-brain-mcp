@@ -28,6 +28,7 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             )
         }
         let retainedCapacity = validated.limit + 1
+        var observedCursorAnchor = cursor == nil
         var matches: [RankedSearchLocator] = []
         matches.reserveCapacity(min(atoms.count, retainedCapacity))
         for atom in atoms {
@@ -43,12 +44,25 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 rank = SearchRank(exactPhrase: false, occurrenceCount: 0)
             }
             let ranked = RankedSearchLocator(locator: atom.locator, rank: rank)
-            if let cursor, order(ranked, cursor) != .after { continue }
+            if let cursor {
+                switch order(ranked, cursor) {
+                case .before:
+                    continue
+                case .same:
+                    observedCursorAnchor = true
+                    continue
+                case .after:
+                    break
+                }
+            }
             retain(
                 ranked,
                 in: &matches,
                 capacity: retainedCapacity
             )
+        }
+        guard observedCursorAnchor else {
+            throw VaultSearchRequestError.invalidCursor
         }
         matches.sort { order($0, $1) == .before }
 
@@ -247,7 +261,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             occurrenceCount: rhs.rank.occurrenceCount,
             path: rhs.locator.path,
             format: rhs.locator.format,
-            page: rhs.locator.page
+            page: rhs.locator.page,
+            canvasNodeID: rhs.locator.canvasNodeID,
+            canvasField: rhs.locator.canvasField
         )
     }
 
@@ -261,7 +277,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             occurrenceCount: rhs.occurrenceCount,
             path: rhs.path,
             format: rhs.format,
-            page: rhs.page
+            page: rhs.page,
+            canvasNodeID: rhs.canvasNodeID,
+            canvasField: rhs.canvasField
         )
     }
 
@@ -271,7 +289,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         occurrenceCount: Int,
         path: String,
         format: FileFormat,
-        page: Int?
+        page: Int?,
+        canvasNodeID: String?,
+        canvasField: String?
     ) -> Order {
         if lhs.rank.exactPhrase != exactPhrase {
             return lhs.rank.exactPhrase ? .before : .after
@@ -288,6 +308,12 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         let lhsPage = lhs.locator.page ?? 0
         let rhsPage = page ?? 0
         if lhsPage != rhsPage { return lhsPage < rhsPage ? .before : .after }
+        let lhsNodeID = lhs.locator.canvasNodeID ?? ""
+        let rhsNodeID = canvasNodeID ?? ""
+        if lhsNodeID != rhsNodeID { return lhsNodeID < rhsNodeID ? .before : .after }
+        let lhsField = lhs.locator.canvasField ?? ""
+        let rhsField = canvasField ?? ""
+        if lhsField != rhsField { return lhsField < rhsField ? .before : .after }
         return .same
     }
 }

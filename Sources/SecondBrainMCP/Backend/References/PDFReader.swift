@@ -43,6 +43,124 @@ struct PDFReader: Sendable {
         )
     }
 
+    /// Returns bounded document metadata without rendering or extracting page content.
+    func metadata(
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) async throws -> FileReadMetadata {
+        try await admission.withPermit {
+            try Task.checkCancellation()
+            guard let document = PDFDocument(data: snapshot.data) else {
+                throw PDFReadError.cannotOpenPDF(target.relativePath)
+            }
+            let attributes = document.documentAttributes
+            let title = Self.bounded(
+                attributes?[PDFDocumentAttribute.titleAttribute] as? String
+            )
+            let author = Self.bounded(
+                attributes?[PDFDocumentAttribute.authorAttribute] as? String
+            )
+            let labelLimit = min(
+                document.pageCount,
+                FileMetadataLimits.maximumPDFPageLabels
+            )
+            var labels: [String] = []
+            labels.reserveCapacity(labelLimit)
+            for index in 0..<labelLimit {
+                try Task.checkCancellation()
+                labels.append(Self.bounded(document.page(at: index)?.label) ?? "")
+            }
+
+            var outline: [PDFOutlineMetadataEntry] = []
+            var outlineTruncated = false
+            if let root = document.outlineRoot {
+                try Self.collectOutline(
+                    root,
+                    document: document,
+                    depth: 0,
+                    result: &outline,
+                    truncated: &outlineTruncated
+                )
+            }
+            return FileReadMetadata(
+                format: .pdf,
+                byteCount: snapshot.data.count,
+                modifiedAt: snapshot.modifiedDate.map(Self.timestamp),
+                title: title,
+                tags: nil,
+                wordCount: nil,
+                outgoingLinkTargets: nil,
+                author: author,
+                pageCount: document.pageCount,
+                pageLabels: labels,
+                pageLabelsTruncated: document.pageCount > labelLimit,
+                outline: outline,
+                outlineTruncated: outlineTruncated
+            )
+        }
+    }
+
+    private static func collectOutline(
+        _ parent: PDFOutline,
+        document: PDFDocument,
+        depth: Int,
+        result: inout [PDFOutlineMetadataEntry],
+        truncated: inout Bool
+    ) throws {
+        guard depth < FileMetadataLimits.maximumPDFOutlineDepth else {
+            if parent.numberOfChildren > 0 { truncated = true }
+            return
+        }
+        for index in 0..<parent.numberOfChildren {
+            try Task.checkCancellation()
+            guard result.count < FileMetadataLimits.maximumPDFOutlineEntries else {
+                truncated = true
+                return
+            }
+            guard let child = parent.child(at: index) else { continue }
+            let page = child.destination?.page.map { document.index(for: $0) + 1 }
+            result.append(PDFOutlineMetadataEntry(
+                label: bounded(child.label) ?? "",
+                page: page,
+                depth: depth
+            ))
+            try collectOutline(
+                child,
+                document: document,
+                depth: depth + 1,
+                result: &result,
+                truncated: &truncated
+            )
+            if truncated && result.count >= FileMetadataLimits.maximumPDFOutlineEntries {
+                return
+            }
+        }
+    }
+
+    private static func bounded(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let data = Data(value.utf8)
+        guard data.count > FileMetadataLimits.maximumStringBytes else {
+            return value
+        }
+        var end = FileMetadataLimits.maximumStringBytes
+        while end > 0 {
+            if let result = String(data: data.prefix(end), encoding: .utf8) {
+                return result
+            }
+            end -= 1
+        }
+        return ""
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime, .withFractionalSeconds,
+        ]
+        return formatter.string(from: date)
+    }
+
     private func read(
         target: ReadableFileTarget,
         snapshot: FileSnapshot,

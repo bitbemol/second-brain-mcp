@@ -8,6 +8,7 @@ actor VaultFileService: FileCRUDService {
     private let store: VaultCRUDStore
     private let mutations: VaultMutationExecutor
     private let access: any VaultAccessCoordinating
+    private let metadataReader: FileMetadataReader
     private let readOnly: Bool
 
     init(
@@ -16,6 +17,7 @@ actor VaultFileService: FileCRUDService {
         store: VaultCRUDStore,
         mutations: VaultMutationExecutor,
         access: any VaultAccessCoordinating,
+        metadataReader: FileMetadataReader = FileMetadataReader(pdfReader: PDFReader()),
         readOnly: Bool = false
     ) {
         self.vaultPath = vaultPath
@@ -23,6 +25,7 @@ actor VaultFileService: FileCRUDService {
         self.store = store
         self.mutations = mutations
         self.access = access
+        self.metadataReader = metadataReader
         self.readOnly = readOnly
     }
 
@@ -71,6 +74,7 @@ actor VaultFileService: FileCRUDService {
 
     func read(_ request: ReadFileRequest) async throws -> FileOperationOutput {
         try await access.withRead {
+            try ReadFileOptionsValidator.validate(request)
             let target = try ReadableFileTarget.resolve(
                 path: request.path,
                 format: request.format,
@@ -81,7 +85,20 @@ actor VaultFileService: FileCRUDService {
                 in: target.area
             )
             let snapshot = try await self.store.snapshot(target)
-            let output = try await binding.execute(request, target, snapshot)
+            if let expectedRevision = request.options.expectedRevision,
+               snapshot.revision != expectedRevision {
+                throw FileRoutingError.revisionConflict(target.relativePath)
+            }
+            let output: FileOperationOutput
+            if request.options.view == .metadata {
+                output = try await self.metadataReader.read(
+                    request,
+                    target: target,
+                    snapshot: snapshot
+                )
+            } else {
+                output = try await binding.execute(request, target, snapshot)
+            }
             return output.withMetadata(FileOperationMetadata(
                 path: target.relativePath,
                 area: target.area,
@@ -196,5 +213,143 @@ actor VaultFileService: FileCRUDService {
 
     private func requireMutationPermission() throws {
         guard !readOnly else { throw FileRoutingError.readOnly }
+    }
+}
+
+/// Validates format-specific read selectors before any snapshot is interpreted.
+private enum ReadFileOptionsValidator {
+    static func validate(_ request: ReadFileRequest) throws {
+        let options = request.options
+        if options.view == .metadata {
+            try validateMetadataSelectors(request)
+            return
+        }
+        switch request.format {
+        case .markdown, .canvas, .har, .patch, .json, .csv:
+            try rejectLogSelectors(options)
+            try rejectPDFSelectors(options)
+            try validateTextSelectors(options)
+        case .log:
+            try rejectPDFSelectors(options)
+            if options.byteOffset != nil || options.maxBytes != nil {
+                try rejectLogSelectors(options)
+                try validateTextSelectors(options)
+            } else {
+                try validateLogSelectors(options)
+            }
+        case .pdf:
+            try rejectTextSelectors(options)
+            try rejectLogSelectors(options)
+            guard options.expectedRevision == nil else {
+                throw invalid("expected_revision is available only for note text reads")
+            }
+        case .png, .gif, .jpeg, .webp, .heic, .tiff, .bmp:
+            try rejectTextSelectors(options)
+            try rejectLogSelectors(options)
+            try rejectPDFSelectors(options)
+            guard options.expectedRevision == nil else {
+                throw invalid("expected_revision is available only for note text reads")
+            }
+        }
+    }
+
+    private static func validateMetadataSelectors(
+        _ request: ReadFileRequest
+    ) throws {
+        guard request.format == .markdown || request.format == .pdf else {
+            throw invalid("metadata view is supported only for markdown and pdf")
+        }
+        let options = request.options
+        guard options.tailLines == nil,
+              options.startLine == nil,
+              options.maxLines == nil,
+              options.page == nil,
+              options.pages == nil,
+              options.pageRange == nil,
+              options.byteOffset == nil,
+              options.maxBytes == nil,
+              options.expectedRevision == nil else {
+            throw invalid("metadata view cannot be combined with content selectors or expected_revision")
+        }
+    }
+
+    private static func validateTextSelectors(
+        _ options: ReadFileOptions
+    ) throws {
+        let offset = options.byteOffset ?? 0
+        guard offset >= 0 else {
+            throw invalid("byte_offset must be zero or greater")
+        }
+        if offset > 0, options.expectedRevision == nil {
+            throw invalid(
+                "byte_offset greater than zero requires expected_revision from the preceding chunk"
+            )
+        }
+        let maximum = options.maxBytes
+            ?? FileReadRequestLimits.defaultTextChunkBytes
+        guard maximum >= FileReadRequestLimits.minimumTextChunkBytes,
+              maximum <= FileReadRequestLimits.maximumTextChunkBytes else {
+            throw invalid(
+                "max_bytes must be between "
+                    + "\(FileReadRequestLimits.minimumTextChunkBytes) and "
+                    + "\(FileReadRequestLimits.maximumTextChunkBytes)"
+            )
+        }
+    }
+
+    private static func validateLogSelectors(
+        _ options: ReadFileOptions
+    ) throws {
+        guard !(options.tailLines != nil && options.startLine != nil) else {
+            throw invalid("tail_lines and start_line are mutually exclusive")
+        }
+        guard options.maxLines == nil || options.startLine != nil else {
+            throw invalid("max_lines requires start_line")
+        }
+        for (name, value) in [
+            ("tail_lines", options.tailLines),
+            ("start_line", options.startLine),
+            ("max_lines", options.maxLines),
+        ] {
+            guard let value else { continue }
+            guard value > 0 else {
+                throw invalid("\(name) must be greater than zero")
+            }
+            if name != "start_line", value > 5_000 {
+                throw invalid("\(name) must not exceed 5000")
+            }
+        }
+    }
+
+    private static func rejectTextSelectors(
+        _ options: ReadFileOptions
+    ) throws {
+        guard options.byteOffset == nil, options.maxBytes == nil else {
+            throw invalid("byte_offset and max_bytes are available only for UTF-8 text reads")
+        }
+    }
+
+    private static func rejectLogSelectors(
+        _ options: ReadFileOptions
+    ) throws {
+        guard options.tailLines == nil,
+              options.startLine == nil,
+              options.maxLines == nil else {
+            throw invalid("log line selectors cannot be combined with this read mode")
+        }
+    }
+
+    private static func rejectPDFSelectors(
+        _ options: ReadFileOptions
+    ) throws {
+        guard options.page == nil,
+              options.pages == nil,
+              options.pageRange == nil else {
+            throw invalid("PDF page selectors cannot be combined with this read mode")
+        }
+    }
+
+    private static func invalid(_ message: String) -> FileRoutingError {
+        .invalidReadOptions(message)
     }
 }

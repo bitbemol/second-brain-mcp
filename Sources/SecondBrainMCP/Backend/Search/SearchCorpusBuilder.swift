@@ -11,6 +11,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
     private let store: VaultCRUDStore
     private let access: any VaultAccessCoordinating
     private let textProvider: any SearchAtomProvider
+    private let canvasProvider: any SearchAtomProvider
     private let customProviders: [FileFormat: any SearchAtomProvider]
 
     init(
@@ -19,6 +20,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         store: VaultCRUDStore,
         access: any VaultAccessCoordinating,
         textProvider: any SearchAtomProvider = TextSearchAtomProvider(),
+        canvasProvider: any SearchAtomProvider = CanvasSearchAtomProvider(),
         customProviders: [FileFormat: any SearchAtomProvider] = [:]
     ) {
         self.vaultPath = vaultPath
@@ -26,6 +28,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         self.store = store
         self.access = access
         self.textProvider = textProvider
+        self.canvasProvider = canvasProvider
         self.customProviders = customProviders
     }
 
@@ -46,6 +49,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
 
         let candidates = try candidateFiles(in: location, formats: formats)
         var result: [SearchAtom] = []
+        var totalBytes = 0
         for candidate in candidates {
             try Task.checkCancellation()
             let target = try ReadableFileTarget.resolve(
@@ -54,22 +58,48 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
                 vaultPath: vaultPath
             )
             guard let provider = provider(for: target.format) else { continue }
+            let remainingBytes = SearchRequestLimits.maximumCorpusBytes - totalBytes
+            guard remainingBytes > 0 else {
+                throw VaultSearchRequestError.corpusTooLarge(
+                    files: candidates.count,
+                    bytes: totalBytes,
+                    atoms: result.count
+                )
+            }
             do {
                 let snapshot = try await store.snapshot(
                     target,
-                    maximumBytes: target.format.maximumFileBytes,
+                    maximumBytes: min(target.format.maximumFileBytes, remainingBytes),
                     rejectHiddenComponents: true
                 )
-                result.append(contentsOf: try await provider.atoms(
+                totalBytes += snapshot.data.count
+                let atoms = try await provider.atoms(
                     for: target,
                     snapshot: snapshot
-                ))
+                )
+                guard atoms.count <= SearchRequestLimits.maximumAtoms - result.count else {
+                    throw VaultSearchRequestError.corpusTooLarge(
+                        files: candidates.count,
+                        bytes: totalBytes,
+                        atoms: result.count + atoms.count
+                    )
+                }
+                result.append(contentsOf: atoms)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as VaultSearchRequestError {
+                throw error
             } catch let error as PathValidationError {
                 throw error
             } catch let error as FileRoutingError {
                 throw error
+            } catch is FileResourcePolicy.Violation
+                where remainingBytes < target.format.maximumFileBytes {
+                throw VaultSearchRequestError.corpusTooLarge(
+                    files: candidates.count,
+                    bytes: SearchRequestLimits.maximumCorpusBytes + 1,
+                    atoms: result.count
+                )
             } catch {
                 // One malformed, oversized, unreadable, or raced file must not
                 // make every healthy file in the selected area undiscoverable.
@@ -80,7 +110,9 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
     }
 
     private func provider(for format: FileFormat) -> (any SearchAtomProvider)? {
-        customProviders[format] ?? (format.isTextual ? textProvider : nil)
+        if let custom = customProviders[format] { return custom }
+        if format == .canvas { return canvasProvider }
+        return format.isTextual ? textProvider : nil
     }
 
     private func candidateFiles(
@@ -91,11 +123,13 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
             .appendingPathComponent(location.rawValue, isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         var result: [(String, FileFormat)] = []
+        var scannedEntries = 0
         try collectFiles(
             below: root,
             areaRoot: root,
             location: location,
             formats: formats,
+            scannedEntries: &scannedEntries,
             result: &result
         )
         return result.sorted {
@@ -108,17 +142,24 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         areaRoot: URL,
         location: VaultArea,
         formats: Set<FileFormat>,
+        scannedEntries: inout Int,
         result: inout [(String, FileFormat)]
     ) throws {
         let keys: Set<URLResourceKey> = [
             .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
         ]
-        let children = try FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
+        let children = try BoundedDirectoryChildren.urls(
+            below: directory,
+            resourceKeys: keys,
+            maximumEntries: SearchRequestLimits.maximumScannedEntries,
+            scannedEntries: &scannedEntries,
+            limitError: VaultSearchRequestError.corpusTooLarge(
+                files: result.count,
+                bytes: 0,
+                atoms: 0
+            )
         )
-        for child in children.sorted(by: { $0.path < $1.path }) {
+        for child in children {
             try Task.checkCancellation()
             let values = try child.resourceValues(forKeys: keys)
             if values.isSymbolicLink == true { continue }
@@ -128,6 +169,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
                     areaRoot: areaRoot,
                     location: location,
                     formats: formats,
+                    scannedEntries: &scannedEntries,
                     result: &result
                 )
                 continue
@@ -142,6 +184,13 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
             guard filePath.hasPrefix(rootPath + "/") else { continue }
             let suffix = filePath.dropFirst(rootPath.count + 1)
             result.append(("\(location.rawValue)/\(suffix)", format))
+            guard result.count <= SearchRequestLimits.maximumIndexedFiles else {
+                throw VaultSearchRequestError.corpusTooLarge(
+                    files: result.count,
+                    bytes: 0,
+                    atoms: 0
+                )
+            }
         }
     }
 }

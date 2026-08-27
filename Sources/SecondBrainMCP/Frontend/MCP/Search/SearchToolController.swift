@@ -65,3 +65,226 @@ struct SearchToolController: Sendable {
         return "Search failed while reading \(location.rawValue)/: \(detail)"
     }
 }
+
+struct LinkQueryToolController: Sendable {
+    private let links: any VaultLinkQueryService
+
+    init(links: any VaultLinkQueryService) {
+        self.links = links
+    }
+
+    func call(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        try Task.checkCancellation()
+        guard params.name == LinkQueryToolDefinition.name else {
+            return SearchToolResultMapper.failure("Unknown tool: \(params.name)")
+        }
+        let request: LinkQueryRequest
+        do {
+            request = try LinkQueryToolRequestDecoder.decode(params)
+        } catch let error as LinkQueryToolRequestDecoder.DecodingError {
+            return SearchToolResultMapper.failure(error.description)
+        } catch {
+            return SearchToolResultMapper.failure("Invalid link query")
+        }
+
+        do {
+            let response = try await links.query(request)
+            try Task.checkCancellation()
+            return try SearchToolResultMapper.success(response)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as LinkQueryError {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch let error as PathValidationError {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch let error as FileRoutingError {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch let error as FileResourcePolicy.Violation {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch let error as VaultAccessCoordinator.CapacityExceeded {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(
+                "Link query failed while reading the vault"
+            )
+        }
+    }
+}
+
+/// Strict MCP adapter for bounded criteria-free vault browsing.
+struct ListFilesToolController: Sendable {
+    private let listing: any FileListingService
+
+    init(listing: any FileListingService) {
+        self.listing = listing
+    }
+
+    func call(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        try Task.checkCancellation()
+        guard params.name == ListFilesToolDefinition.name else {
+            return SearchToolResultMapper.failure("Unknown tool: \(params.name)")
+        }
+        let request: ListFilesRequest
+        do {
+            request = try decode(params)
+        } catch let error as DecodingError {
+            return SearchToolResultMapper.failure(error.description)
+        } catch {
+            return SearchToolResultMapper.failure("Invalid list request")
+        }
+        do {
+            let response = try await listing.list(request)
+            try Task.checkCancellation()
+            return success(response)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as FileListingError {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch let error as PathValidationError {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.description)
+        } catch {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure("List failed while reading \(request.area.rawValue)/")
+        }
+    }
+
+    private enum DecodingError: Error, CustomStringConvertible {
+        case invalid(String)
+
+        var description: String {
+            switch self {
+            case .invalid(let message): message
+            }
+        }
+    }
+
+    private func decode(_ params: CallTool.Parameters) throws -> ListFilesRequest {
+        let values = params.arguments ?? [:]
+        let allowed = Set([
+            "area", "directory", "recursive", "formats", "limit", "cursor",
+        ])
+        if let unknown = values.keys.filter({ !allowed.contains($0) }).sorted().first {
+            throw DecodingError.invalid("Unknown parameter: \(unknown)")
+        }
+        guard let areaValue = values["area"] else {
+            throw DecodingError.invalid("Missing required parameter: area")
+        }
+        guard let areaString = areaValue.stringValue,
+              let area = VaultArea(rawValue: areaString) else {
+            throw DecodingError.invalid("Invalid area: expected notes or references")
+        }
+        let directory = try optionalString("directory", values: values)
+        let cursor = try optionalString("cursor", values: values)
+        let recursive: Bool
+        if let value = values["recursive"] {
+            guard let parsed = value.boolValue else {
+                throw DecodingError.invalid("Invalid parameter 'recursive': expected boolean")
+            }
+            recursive = parsed
+        } else {
+            recursive = true
+        }
+        let limit: Int
+        if let value = values["limit"] {
+            guard let parsed = value.intValue else {
+                throw DecodingError.invalid("Invalid parameter 'limit': expected integer")
+            }
+            limit = parsed
+        } else {
+            limit = FileListingRequestLimits.defaultResults
+        }
+        var formats: [FileFormat] = []
+        if let value = values["formats"] {
+            guard let items = value.arrayValue else {
+                throw DecodingError.invalid("Invalid parameter 'formats': expected array of strings")
+            }
+            for (index, item) in items.enumerated() {
+                guard let raw = item.stringValue,
+                      let format = FileFormat(rawValue: raw) else {
+                    throw DecodingError.invalid(
+                        "Invalid format at index \(index): expected a registered concrete format"
+                    )
+                }
+                formats.append(format)
+            }
+            guard Set(formats).count == formats.count else {
+                throw DecodingError.invalid("formats must contain unique values")
+            }
+        }
+        return ListFilesRequest(
+            area: area,
+            directory: directory,
+            recursive: recursive,
+            formats: formats,
+            limit: limit,
+            cursor: cursor
+        )
+    }
+
+    private func optionalString(
+        _ name: String,
+        values: [String: Value]
+    ) throws -> String? {
+        guard let value = values[name] else { return nil }
+        guard let parsed = value.stringValue else {
+            throw DecodingError.invalid("Invalid parameter '\(name)': expected string")
+        }
+        return parsed
+    }
+
+    private func success(_ response: ListFilesResult) -> CallTool.Result {
+        let fileValues: [Value] = response.files.map { file in
+            var values: [String: Value] = [
+                "path": .string(file.path),
+                "format": .string(file.format.rawValue),
+                "byte_count": .int(file.byteCount),
+            ]
+            if let modified = file.modifiedAt {
+                values["modified_at"] = .string(modified)
+            }
+            return .object(values)
+        }
+        var structured: [String: Value] = ["files": .array(fileValues)]
+        if let cursor = response.nextCursor {
+            structured["next_cursor"] = .string(cursor)
+        }
+        var textObject: [String: Any] = [
+            "files": response.files.map { file -> [String: Any] in
+                var values: [String: Any] = [
+                    "path": file.path,
+                    "format": file.format.rawValue,
+                    "byte_count": file.byteCount,
+                ]
+                if let modified = file.modifiedAt {
+                    values["modified_at"] = modified
+                }
+                return values
+            },
+        ]
+        if let cursor = response.nextCursor {
+            textObject["next_cursor"] = cursor
+        }
+        let text: String
+        if JSONSerialization.isValidJSONObject(textObject),
+           let data = try? JSONSerialization.data(
+               withJSONObject: textObject,
+               options: [.sortedKeys]
+           ) {
+            text = String(decoding: data, as: UTF8.self)
+        } else {
+            text = "{\"files\":[]}"
+        }
+        return CallTool.Result(
+            content: [.text(text: text, annotations: nil, _meta: nil)],
+            structuredContent: .object(structured)
+        )
+    }
+}

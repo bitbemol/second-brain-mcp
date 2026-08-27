@@ -2,6 +2,8 @@
 struct CanvasNode: Decodable {
     /// Stable node identifier used by canvas edges.
     let id: String
+    /// Searchable semantic node fields in deterministic format order.
+    let searchableFields: [(name: String, value: String)]
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -41,21 +43,28 @@ struct CanvasNode: Decodable {
         }
 
         let type = try container.decode(String.self, forKey: .type)
+        var fields: [(name: String, value: String)] = []
         switch type {
         case "text":
-            _ = try container.decode(String.self, forKey: .text)
+            fields.append(("text", try container.decode(String.self, forKey: .text)))
         case "file":
-            _ = try container.decode(String.self, forKey: .file)
+            fields.append(("file", try container.decode(String.self, forKey: .file)))
+            let subpath = try container.decodeIfPresent(String.self, forKey: .subpath)
             try CanvasFieldValidator.validateSubpath(
-                try container.decodeIfPresent(String.self, forKey: .subpath),
+                subpath,
                 container: container,
                 key: .subpath
             )
+            if let subpath { fields.append(("subpath", subpath)) }
         case "link":
-            _ = try container.decode(String.self, forKey: .url)
+            fields.append(("url", try container.decode(String.self, forKey: .url)))
         case "group":
-            _ = try container.decodeIfPresent(String.self, forKey: .label)
-            _ = try container.decodeIfPresent(String.self, forKey: .background)
+            if let label = try container.decodeIfPresent(String.self, forKey: .label) {
+                fields.append(("label", label))
+            }
+            if let background = try container.decodeIfPresent(String.self, forKey: .background) {
+                fields.append(("background", background))
+            }
             try CanvasFieldValidator.validateBackgroundStyle(
                 try container.decodeIfPresent(String.self, forKey: .backgroundStyle),
                 container: container,
@@ -68,5 +77,6 @@ struct CanvasNode: Decodable {
                 debugDescription: "unknown node type '\(type)'"
             )
         }
+        searchableFields = fields.filter { !$0.value.isEmpty }
     }
 }

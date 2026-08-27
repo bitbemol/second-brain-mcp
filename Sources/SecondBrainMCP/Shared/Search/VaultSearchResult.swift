@@ -6,11 +6,59 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
     let format: FileFormat
     /// One-based physical PDF page; absent for whole-file atoms.
     let page: Int?
+    /// Stable JSON Canvas node identifier; absent outside Canvas node atoms.
+    let canvasNodeID: String?
+    /// Exact JSON Canvas field containing the match; absent outside Canvas node atoms.
+    let canvasField: String?
 
-    init(path: String, format: FileFormat, page: Int? = nil) {
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case format
+        case page
+        case canvasNodeID = "canvas_node_id"
+        case canvasField = "canvas_field"
+    }
+
+    init(
+        path: String,
+        format: FileFormat,
+        page: Int? = nil,
+        canvasNodeID: String? = nil,
+        canvasField: String? = nil
+    ) {
         self.path = path
         self.format = format
         self.page = page
+        self.canvasNodeID = canvasNodeID
+        self.canvasField = canvasField
+    }
+}
+
+/// One structured link-resolution result without note content or snippets.
+struct LinkQueryResult: Codable, Equatable, Sendable {
+    let sourcePath: String?
+    let target: String
+    let resolvedPath: String?
+    let kind: VaultWikiLinkKind
+    let alias: String?
+    let occurrence: Int?
+    let ambiguous: Bool
+}
+
+/// Bounded response for one link-query page.
+struct LinkQueryResponse: Codable, Equatable, Sendable {
+    let direction: LinkQueryDirection
+    let results: [LinkQueryResult]
+    let nextCursor: String?
+
+    init(
+        direction: LinkQueryDirection,
+        results: [LinkQueryResult],
+        nextCursor: String? = nil
+    ) {
+        self.direction = direction
+        self.results = results
+        self.nextCursor = nextCursor
     }
 }
 

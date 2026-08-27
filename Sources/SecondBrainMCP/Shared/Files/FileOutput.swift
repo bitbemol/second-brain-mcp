@@ -14,22 +14,54 @@ struct FileOperationOutput: Sendable, Codable {
     let contents: [VaultFileContent]
     /// Stable identity and path facts associated with the completed operation.
     let metadata: FileOperationMetadata?
+    /// Explicit byte window for a paginated UTF-8 text response.
+    let textWindow: TextReadWindow?
+    /// Content-free format metadata for an explicit metadata read.
+    let readMetadata: FileReadMetadata?
 
     init(
         contents: [VaultFileContent],
-        metadata: FileOperationMetadata? = nil
+        metadata: FileOperationMetadata? = nil,
+        textWindow: TextReadWindow? = nil,
+        readMetadata: FileReadMetadata? = nil
     ) {
         self.contents = contents
         self.metadata = metadata
+        self.textWindow = textWindow
+        self.readMetadata = readMetadata
     }
 
-    static func text(_ text: String) -> FileOperationOutput {
-        FileOperationOutput(contents: [.text(text)])
+    static func text(
+        _ text: String,
+        textWindow: TextReadWindow? = nil
+    ) -> FileOperationOutput {
+        FileOperationOutput(contents: [.text(text)], textWindow: textWindow)
+    }
+
+    static func metadata(_ metadata: FileReadMetadata) -> FileOperationOutput {
+        FileOperationOutput(contents: [], readMetadata: metadata)
     }
 
     func withMetadata(_ metadata: FileOperationMetadata) -> FileOperationOutput {
-        FileOperationOutput(contents: contents, metadata: metadata)
+        FileOperationOutput(
+            contents: contents,
+            metadata: metadata,
+            textWindow: textWindow,
+            readMetadata: readMetadata
+        )
     }
+}
+
+/// Externally observable UTF-8 byte window returned by a paginated text read.
+struct TextReadWindow: Sendable, Codable, Equatable {
+    /// Zero-based offset of the returned bytes.
+    let byteOffset: Int
+    /// Number of UTF-8 bytes returned.
+    let byteCount: Int
+    /// Complete validated document size in UTF-8 bytes.
+    let totalBytes: Int
+    /// Offset for the next chunk, or nil when this chunk completes the document.
+    let nextByteOffset: Int?
 }
 
 /// Structured facts returned alongside human-readable operation content.

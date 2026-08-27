@@ -12,6 +12,18 @@ enum FileToolOutputField: String, Sendable {
     case area
     /// Exact stored-byte revision when a file survives the operation.
     case revision
+    /// Content-free format metadata for an explicit metadata read.
+    case readMetadata = "metadata"
+    /// Explicit byte-window metadata for a paginated text read.
+    case textWindow = "text_window"
+    /// First UTF-8 byte returned by a text window.
+    case byteOffset = "byte_offset"
+    /// Number of UTF-8 bytes returned by a text window.
+    case byteCount = "byte_count"
+    /// Complete validated document size in UTF-8 bytes.
+    case totalBytes = "total_bytes"
+    /// Offset accepted by the next continuation request.
+    case nextByteOffset = "next_byte_offset"
 }
 
 extension Dictionary where Key == String, Value == MCP.Value {

@@ -1,5 +1,10 @@
+/// An error whose deliberately bounded description is safe to return to an untrusted caller.
+protocol CallerSafeError: Error {
+    var callerSafeDescription: String { get }
+}
+
 /// Domain errors raised before a file operation reaches persistence.
-enum FileRoutingError: Error, CustomStringConvertible {
+enum FileRoutingError: Error, CustomStringConvertible, CallerSafeError {
     /// A raw transport value does not identify a supported concrete format.
     case unknownFormat(String)
     /// A path is outside every recognized vault area.
@@ -18,8 +23,14 @@ enum FileRoutingError: Error, CustomStringConvertible {
         operation: FileCRUDOperation,
         area: VaultArea
     )
+    /// Read selectors are invalid or conflict for the declared format.
+    case invalidReadOptions(String)
     /// Mutable note bytes no longer match the revision supplied by the caller.
     case revisionConflict(String)
+
+    var callerSafeDescription: String {
+        description
+    }
 
     /// Human-readable routing failure suitable for an MCP error response.
     var description: String {
@@ -42,6 +53,8 @@ enum FileRoutingError: Error, CustomStringConvertible {
         case .operationNotSupported(let format, let operation, let area):
             return "Operation '\(operation.rawValue)' is not supported for "
                 + "'\(format.rawValue)' files in \(area.rawValue)/"
+        case .invalidReadOptions(let message):
+            return "Invalid read options: \(message)"
         case .revisionConflict(let path):
             return "File changed since it was read: \(path). Read it again "
                 + "before updating or deleting it."

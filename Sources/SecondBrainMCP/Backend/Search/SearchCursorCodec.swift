@@ -10,6 +10,8 @@ enum SearchCursorCodec {
         let path: String
         let format: FileFormat
         let page: Int?
+        let canvasNodeID: String?
+        let canvasField: String?
     }
 
     private struct Criteria: Codable {
@@ -24,6 +26,8 @@ enum SearchCursorCodec {
         let path: String
         let format: String
         let page: Int?
+        let canvasNodeID: String?
+        let canvasField: String?
         let text: String
         let tags: [String]
         let created: String?
@@ -50,6 +54,8 @@ enum SearchCursorCodec {
                 path: atom.locator.path,
                 format: atom.locator.format.rawValue,
                 page: atom.locator.page,
+                canvasNodeID: atom.locator.canvasNodeID,
+                canvasField: atom.locator.canvasField,
                 text: atom.text,
                 tags: atom.metadata?.tags.sorted() ?? [],
                 created: atom.metadata?.created
@@ -58,6 +64,12 @@ enum SearchCursorCodec {
             if lhs.path != rhs.path { return lhs.path < rhs.path }
             if lhs.format != rhs.format { return lhs.format < rhs.format }
             if lhs.page != rhs.page { return (lhs.page ?? 0) < (rhs.page ?? 0) }
+            if lhs.canvasNodeID != rhs.canvasNodeID {
+                return (lhs.canvasNodeID ?? "") < (rhs.canvasNodeID ?? "")
+            }
+            if lhs.canvasField != rhs.canvasField {
+                return (lhs.canvasField ?? "") < (rhs.canvasField ?? "")
+            }
             if lhs.text != rhs.text { return lhs.text < rhs.text }
             if lhs.tags != rhs.tags { return lhs.tags.lexicographicallyPrecedes(rhs.tags) }
             return (lhs.created ?? "") < (rhs.created ?? "")
@@ -81,7 +93,9 @@ enum SearchCursorCodec {
             occurrenceCount: ranked.rank.occurrenceCount,
             path: ranked.locator.path,
             format: ranked.locator.format,
-            page: ranked.locator.page
+            page: ranked.locator.page,
+            canvasNodeID: ranked.locator.canvasNodeID,
+            canvasField: ranked.locator.canvasField
         )
         return try JSONEncoder().encode(payload)
             .base64EncodedString()

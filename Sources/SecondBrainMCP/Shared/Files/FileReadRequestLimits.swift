@@ -1,5 +1,11 @@
 /// Public caller-input and work ceilings for specialized read operations.
 enum FileReadRequestLimits {
+    /// Default UTF-8 payload returned by a stored-text read.
+    static let defaultTextChunkBytes = 64 * 1_024
+    /// Smallest caller-selected text chunk, large enough for one UTF-8 scalar.
+    static let minimumTextChunkBytes = 4
+    /// Largest UTF-8 payload returned by one stored-text read.
+    static let maximumTextChunkBytes = 256 * 1_024
     /// Maximum physical PDF pages returned by one read.
     static let maximumPDFPagesPerRead = 20
     /// Maximum UTF-8 bytes accepted for an inclusive PDF physical-page range.

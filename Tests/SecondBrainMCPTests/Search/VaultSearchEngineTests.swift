@@ -151,6 +151,36 @@ struct `Vault search engine` {
     }
 
     @Test
+    func `Cursor rejects a forged anchor that is not a matching atom`() async throws {
+        let atoms = [
+            note("notes/one.md", text: "anything"),
+            note("notes/two.md", text: "anything"),
+        ]
+        let request = VaultSearchRequest(location: .notes, query: "all", limit: 1)
+        let forged = try SearchCursorCodec.encode(
+            requestHash: SearchCursorCodec.requestHash(request),
+            corpusHash: SearchCursorCodec.corpusHash(atoms),
+            ranked: RankedSearchLocator(
+                locator: VaultSearchResult(path: "notes/zero.md", format: .markdown),
+                rank: SearchRank(exactPhrase: false, occurrenceCount: 1)
+            )
+        )
+        let engine = VaultSearchEngine(
+            source: StubSource(values: [.notes: atoms]),
+            strategy: ControlledMatchingStrategy()
+        )
+
+        await #expect(throws: VaultSearchRequestError.self) {
+            _ = try await engine.search(VaultSearchRequest(
+                location: .notes,
+                query: "all",
+                limit: 1,
+                cursor: forged
+            ))
+        }
+    }
+
+    @Test
     func `Cursor is rejected when the searchable corpus changes`() async throws {
         let original = [
             note("notes/2.md", text: "shared phrase"),
@@ -244,6 +274,51 @@ struct `Vault search engine` {
         )
     }
 
+    @Test
+    func `Canvas node locators remain distinct across cursor pages`() async throws {
+        let atoms = [
+            SearchAtom(
+                locator: VaultSearchResult(
+                    path: "notes/board.canvas",
+                    format: .canvas,
+                    canvasNodeID: "group-node",
+                    canvasField: "label"
+                ),
+                text: "shared phrase",
+                metadata: nil
+            ),
+            SearchAtom(
+                locator: VaultSearchResult(
+                    path: "notes/board.canvas",
+                    format: .canvas,
+                    canvasNodeID: "text-node",
+                    canvasField: "text"
+                ),
+                text: "shared phrase",
+                metadata: nil
+            ),
+        ]
+        let engine = VaultSearchEngine(source: StubSource(values: [.notes: atoms]))
+        let first = try await engine.search(VaultSearchRequest(
+            location: .notes,
+            query: "shared",
+            limit: 1
+        ))
+        let cursor = try #require(first.nextCursor)
+        let second = try await engine.search(VaultSearchRequest(
+            location: .notes,
+            query: "shared",
+            limit: 1,
+            cursor: cursor
+        ))
+
+        #expect((first.results + second.results).map(\.canvasNodeID)
+            == ["group-node", "text-node"])
+        #expect((first.results + second.results).map(\.canvasField)
+            == ["label", "text"])
+        #expect(second.nextCursor == nil)
+    }
+
     private func milliseconds(_ duration: Duration) -> Double {
         let components = duration.components
         return Double(components.seconds) * 1_000
@@ -252,5 +327,141 @@ struct `Vault search engine` {
 
     private func formatted(_ duration: Duration) -> String {
         String(format: "%.3f", milliseconds(duration))
+    }
+}
+
+@Suite
+struct `Vault link query traversal and pagination` {
+    @Test
+    func `Backlinks resolve ambiguous basenames from each source directory`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write("# Local", to: "notes/project/Target.md", under: root)
+        try write("# Remote", to: "notes/archive/Target.md", under: root)
+        try write("[[Target]]", to: "notes/project/Source.md", under: root)
+        try write("[[Target]]", to: "notes/archive/Source.md", under: root)
+
+        let response = try await makeEngine(root: root).query(LinkQueryRequest(
+            direction: .backlinks,
+            target: "Target"
+        ))
+
+        #expect(response.results.map(\.sourcePath) == [
+            "notes/archive/Source.md",
+            "notes/project/Source.md",
+        ])
+        #expect(response.results.map(\.resolvedPath) == [
+            "notes/archive/Target.md",
+            "notes/project/Target.md",
+        ])
+        #expect(response.results.map(\.ambiguous) == [false, false])
+    }
+
+    @Test
+    func `Outgoing returns aliases embeds explicit paths and unresolved links without content`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write("# Target", to: "notes/project/Target.md", under: root)
+        try write("# Other", to: "notes/elsewhere/Other.md", under: root)
+        try write("image", to: "notes/assets/diagram.png", under: root)
+        try write(
+            "[[Target|display]] ![[assets/diagram.png|diagram]] "
+                + "[[notes/elsewhere/Other.md]] [[Missing]]",
+            to: "notes/project/Source.md",
+            under: root
+        )
+
+        let response = try await makeEngine(root: root).query(LinkQueryRequest(
+            direction: .outgoing,
+            target: "notes/project/Source.md"
+        ))
+
+        #expect(response.results.map(\.target) == [
+            "Target", "assets/diagram.png", "notes/elsewhere/Other.md", "Missing",
+        ])
+        #expect(response.results.map(\.resolvedPath) == [
+            "notes/project/Target.md",
+            "notes/assets/diagram.png",
+            "notes/elsewhere/Other.md",
+            nil,
+        ])
+        #expect(response.results.map(\.kind) == [.link, .embed, .link, .link])
+        #expect(response.results.map(\.alias) == ["display", "diagram", nil, nil])
+        #expect(response.results.map(\.occurrence) == [1, 2, 3, 4])
+    }
+
+    @Test
+    func `Shrinking backlink results makes a continuation stale not malformed`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write("# Target", to: "notes/Target.md", under: root)
+        try write("[[Target]]", to: "notes/A.md", under: root)
+        try write("[[Target]]", to: "notes/B.md", under: root)
+        let engine = makeEngine(root: root)
+        let first = try await engine.query(LinkQueryRequest(
+            direction: .backlinks,
+            target: "Target",
+            limit: 1
+        ))
+        let cursor = try #require(first.nextCursor)
+
+        try write("No links remain", to: "notes/B.md", under: root)
+
+        do {
+            _ = try await engine.query(LinkQueryRequest(
+                direction: .backlinks,
+                target: "Target",
+                limit: 1,
+                cursor: cursor
+            ))
+            Issue.record("Expected a stale cursor")
+        } catch let error as LinkQueryError {
+            guard case .staleCursor = error else {
+                Issue.record("Expected staleCursor, received \(error)")
+                return
+            }
+        }
+    }
+
+    private func makeEngine(root: URL) -> VaultLinkQueryEngine {
+        let capabilities = FileCapabilities(formats: [
+            .init(format: .markdown, operations: [.read: [.notes]]),
+            .init(format: .png, operations: [.read: [.notes, .references]]),
+            .init(format: .pdf, operations: [.read: [.references]]),
+        ])
+        return VaultLinkQueryEngine(
+            vaultPath: root.path,
+            capabilities: capabilities,
+            store: VaultCRUDStore(vaultPath: root.path),
+            access: VaultAccessCoordinator(
+                lockURL: root.appendingPathComponent(".vault-access.lock")
+            )
+        )
+    }
+
+    private func makeVault() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VaultLinkQueryEngineTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("notes", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("references", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        return root
+    }
+
+    private func write(_ content: String, to path: String, under root: URL) throws {
+        let destination = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(content.utf8).write(to: destination)
     }
 }

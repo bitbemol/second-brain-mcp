@@ -31,3 +31,31 @@ struct TextSearchAtomProvider: SearchAtomProvider {
         )]
     }
 }
+
+struct CanvasSearchAtomProvider: SearchAtomProvider {
+    func atoms(
+        for target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) async throws -> [SearchAtom] {
+        try Task.checkCancellation()
+        try CanvasDocumentValidator.validate(jsonData: snapshot.data)
+        let document = try JSONDecoder().decode(CanvasDocument.self, from: snapshot.data)
+        var atoms: [SearchAtom] = []
+        for node in document.nodes {
+            try Task.checkCancellation()
+            for field in node.searchableFields {
+                atoms.append(SearchAtom(
+                    locator: VaultSearchResult(
+                        path: target.relativePath,
+                        format: target.format,
+                        canvasNodeID: node.id,
+                        canvasField: field.name
+                    ),
+                    text: field.value,
+                    metadata: nil
+                ))
+            }
+        }
+        return atoms
+    }
+}

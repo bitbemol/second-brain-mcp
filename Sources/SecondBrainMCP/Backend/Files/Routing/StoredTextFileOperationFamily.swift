@@ -71,9 +71,13 @@ struct StoredTextFileOperationFamily: Sendable {
                 return try resolve(request, target, snapshot)
             }
             try validate?(snapshot.data, target.relativePath)
-            return .text(
-                try TextFileSupport.stringPreservingByteOrderMark(from: snapshot.data)
+            let chunk = try TextFileSupport.readChunk(
+                from: snapshot.data,
+                byteOffset: request.options.byteOffset ?? 0,
+                maximumBytes: request.options.maxBytes
+                    ?? FileReadRequestLimits.defaultTextChunkBytes
             )
+            return .text(chunk.text, textWindow: chunk.window)
         }
     }
 

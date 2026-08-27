@@ -17,6 +17,8 @@ enum FileToolArgument: String, Sendable {
     case tags
     /// Explicit create-time media transformation.
     case transform
+    /// Agent-facing content or metadata representation.
+    case view
     /// Number of trailing log lines to return.
     case tailLines = "tail_lines"
     /// First log line in a bounded range.
@@ -29,6 +31,10 @@ enum FileToolArgument: String, Sendable {
     case pages
     /// Inclusive physical PDF page range.
     case pageRange = "page_range"
+    /// Zero-based UTF-8 byte offset for text pagination.
+    case byteOffset = "byte_offset"
+    /// Maximum UTF-8 bytes returned for one text chunk.
+    case maxBytes = "max_bytes"
     /// Format-specific update strategy.
     case mode
     /// Exact text substitutions for patch updates.

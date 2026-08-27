@@ -81,20 +81,29 @@ enum FileToolRequestDecoder {
         _ arguments: FileToolArguments
     ) throws -> ReadFileRequest {
         try arguments.requireOnly([
-            .format, .path, .tailLines, .startLine, .maxLines,
-            .page, .pages, .pageRange,
+            .format, .path, .view, .tailLines, .startLine, .maxLines,
+            .page, .pages, .pageRange, .byteOffset, .maxBytes,
+            .expectedRevision,
         ])
         let (format, path) = try identity(from: arguments)
+        let rawView = try arguments.string(.view) ?? ReadFileView.content.rawValue
+        guard let view = ReadFileView(rawValue: rawView) else {
+            throw DecodingError.invalid("Invalid read view: \(rawView)")
+        }
         return ReadFileRequest(
             format: format,
             path: path,
             options: ReadFileOptions(
+                view: view,
                 tailLines: try arguments.integer(.tailLines),
                 startLine: try arguments.integer(.startLine),
                 maxLines: try arguments.integer(.maxLines),
                 page: try arguments.integer(.page),
                 pages: try integerArray(.pages, from: arguments),
-                pageRange: try arguments.string(.pageRange)
+                pageRange: try arguments.string(.pageRange),
+                byteOffset: try arguments.integer(.byteOffset),
+                maxBytes: try arguments.integer(.maxBytes),
+                expectedRevision: try optionalExpectedRevision(from: arguments)
             )
         )
     }
@@ -164,6 +173,21 @@ enum FileToolRequestDecoder {
             }
             return integer
         }
+    }
+
+    /// Decodes an optional exact-byte revision for stable read continuation.
+    private static func optionalExpectedRevision(
+        from arguments: FileToolArguments
+    ) throws -> FileRevision? {
+        guard let value = try arguments.string(.expectedRevision) else {
+            return nil
+        }
+        guard let revision = FileRevision(rawValue: value) else {
+            throw DecodingError.invalid(
+                "Invalid expected_revision: expected sha256: followed by 64 lowercase hexadecimal digits"
+            )
+        }
+        return revision
     }
 
     /// Decodes the exact-byte revision required by update and delete.

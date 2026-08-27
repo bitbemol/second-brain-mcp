@@ -116,7 +116,12 @@ struct `Architecture boundaries` {
     func `Shared file requests remain grouped by CRUD operation`() throws {
         let expectedDeclarations = [
             "CreateFileRequest.swift": ["struct CreateFileRequest"],
-            "ReadFileRequest.swift": ["struct ReadFileOptions", "struct ReadFileRequest"],
+            "ReadFileRequest.swift": [
+                "struct ReadFileOptions",
+                "struct ReadFileRequest",
+                "struct PDFOutlineMetadataEntry",
+                "struct FileReadMetadata",
+            ],
             "UpdateFileRequest.swift": ["struct TextReplacement", "struct UpdateFileRequest"],
             "DeleteFileRequest.swift": ["struct DeleteFileRequest"],
         ]
@@ -211,6 +216,10 @@ struct `Architecture boundaries` {
             "VaultSearchEngine",
             "PDFSearchAtomProvider",
             "LiteralSearchMatchingStrategy",
+            "VaultFileListingService",
+            "VaultLinkCorpusBuilder",
+            "VaultLinkQueryEngine",
+            "ObsidianWikiLinkParser",
         ]
         var occurrences: [String] = []
         for fileURL in try swiftFiles(under: frontend) {

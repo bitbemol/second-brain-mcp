@@ -19,6 +19,84 @@ struct `Vault runtime recovery` {
     }
 
     @Test
+    func `Initialization reports first public v2 version`() async throws {
+        let root = try makeVault()
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let runtime = try await VaultRuntime.bootstrap(
+            vaultPath: root,
+            readOnly: true
+        )
+        let transports = await InMemoryTransport.createConnectedPair()
+        let serverTask = Task {
+            try await MCPServerSetup.start(
+                config: ServerConfig(vaultPath: root, readOnly: true),
+                files: runtime.files,
+                paths: runtime.paths,
+                search: runtime.search,
+                links: runtime.links,
+                listing: runtime.listing,
+                capabilities: runtime.capabilities,
+                transport: transports.server
+            )
+        }
+        let client = Client(name: "VersionContractTest", version: "1.0")
+
+        let initialization = try await client.connect(transport: transports.client)
+
+        #expect(initialization.serverInfo.name == "SecondBrainMCP")
+        #expect(initialization.serverInfo.version == "2.0.0")
+        let instructions = try #require(initialization.instructions)
+        #expect(instructions.contains("list_files for inventory"))
+        #expect(instructions.contains("search_vault for content"))
+        #expect(instructions.contains("query_links for wiki-link relationships"))
+        #expect(instructions.contains("read_file with view=metadata"))
+        #expect(instructions.contains("identical arguments"))
+        #expect(instructions.contains("restart without a stale cursor"))
+        #expect(instructions.contains("text_window.next_byte_offset"))
+        #expect(instructions.contains("expected_revision"))
+        let toolNames = Set(try await client.listTools().tools.map(\.name))
+        #expect(toolNames == [
+            "list_files", "query_links", "read_file", "search_vault",
+        ])
+
+        await client.disconnect()
+        try await serverTask.value
+    }
+
+    @Test
+    func `Writable initialization registers exact composable v2 tool surface`() async throws {
+        let root = try makeVault()
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        let transports = await InMemoryTransport.createConnectedPair()
+        let serverTask = Task {
+            try await MCPServerSetup.start(
+                config: ServerConfig(vaultPath: root, readOnly: false),
+                files: runtime.files,
+                paths: runtime.paths,
+                search: runtime.search,
+                links: runtime.links,
+                listing: runtime.listing,
+                capabilities: runtime.capabilities,
+                transport: transports.server
+            )
+        }
+        let client = Client(name: "WritableSurfaceTest", version: "1.0")
+
+        _ = try await client.connect(transport: transports.client)
+        let toolNames = Set(try await client.listTools().tools.map(\.name))
+        #expect(toolNames == [
+            "create_file", "delete_file", "list_files", "move_path",
+            "query_links", "read_file", "search_vault", "update_file",
+        ])
+
+        await client.disconnect()
+        try await serverTask.value
+    }
+
+    @Test
     func `Transport connects before startup recovery finishes`() async throws {
         let root = try makeVault()
         let dataDirectory = try productionDataDirectory(for: root)
@@ -38,8 +116,10 @@ struct `Vault runtime recovery` {
             try await MCPServerSetup.start(
                 config: ServerConfig(vaultPath: root, readOnly: true),
                 files: runtime.files,
-                directories: runtime.directories,
+                paths: runtime.paths,
                 search: runtime.search,
+                links: runtime.links,
+                listing: runtime.listing,
                 capabilities: runtime.capabilities,
                 startupRecovery: { await recovery.run() },
                 transport: probedTransport
@@ -76,8 +156,10 @@ struct `Vault runtime recovery` {
                 try await MCPServerSetup.start(
                     config: ServerConfig(vaultPath: root, readOnly: false),
                     files: runtime.files,
-                    directories: runtime.directories,
+                    paths: runtime.paths,
                     search: runtime.search,
+                    links: runtime.links,
+                    listing: runtime.listing,
                     capabilities: runtime.capabilities,
                     startupRecovery: { await recovery.run() },
                     transport: transports.server
@@ -144,8 +226,10 @@ struct `Vault runtime recovery` {
                 try await MCPServerSetup.start(
                     config: ServerConfig(vaultPath: root, readOnly: false),
                     files: runtime.files,
-                    directories: runtime.directories,
+                    paths: runtime.paths,
                     search: runtime.search,
+                    links: runtime.links,
+                    listing: runtime.listing,
                     capabilities: runtime.capabilities,
                     startupRecovery: { try await recovery.run() },
                     transport: transports.server

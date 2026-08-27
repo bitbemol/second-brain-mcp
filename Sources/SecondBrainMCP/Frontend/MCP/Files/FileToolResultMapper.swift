@@ -6,22 +6,27 @@ enum FileToolResultMapper {
     /// Converts ordered text and image blocks into a successful file-tool result.
     static func success(_ output: FileOperationOutput) -> CallTool.Result {
         var content = content(from: output)
-        if let metadata = output.metadata,
-           metadata.revision != nil,
-           let text = metadataText(metadata) {
+        if let readMetadata = output.readMetadata,
+           let text = readMetadataText(readMetadata) {
+            content.append(.text(text: text, annotations: nil, _meta: nil))
+        }
+        if output.metadata?.revision != nil,
+           let text = metadataText(output) {
             content.append(.text(text: text, annotations: nil, _meta: nil))
         }
         return CallTool.Result(
             content: content,
-            structuredContent: output.metadata.map(fileStructuredContent)
+            structuredContent: output.metadata.map { _ in
+                fileStructuredContent(output)
+            }
         )
     }
 
-    /// Converts a directory move into its compact structural result.
-    static func directoryMoveSuccess(_ output: FileOperationOutput) -> CallTool.Result {
+    /// Converts a file or directory move into its compact structural result.
+    static func pathMoveSuccess(_ output: FileOperationOutput) -> CallTool.Result {
         guard let metadata = output.metadata,
               let sourcePath = metadata.sourcePath else {
-            return failure("Directory move completed without required result metadata")
+            return failure("Path move completed without required result metadata")
         }
         return CallTool.Result(
             content: content(from: output),
@@ -59,13 +64,17 @@ enum FileToolResultMapper {
     }
 
     /// Mirrors revision-bearing metadata for clients that expose only content blocks.
-    private static func metadataText(_ metadata: FileOperationMetadata) -> String? {
-        guard let revision = metadata.revision else { return nil }
-        let values = [
+    private static func metadataText(_ output: FileOperationOutput) -> String? {
+        guard let metadata = output.metadata,
+              let revision = metadata.revision else { return nil }
+        var values: [String: Any] = [
             FileToolOutputField.path.rawValue: metadata.path,
             FileToolOutputField.area.rawValue: metadata.area.rawValue,
             FileToolOutputField.revision.rawValue: revision.rawValue,
         ]
+        if let window = output.textWindow {
+            values[FileToolOutputField.textWindow.rawValue] = textWindowJSON(window)
+        }
         guard JSONSerialization.isValidJSONObject(values),
               let data = try? JSONSerialization.data(
                   withJSONObject: values,
@@ -78,8 +87,9 @@ enum FileToolResultMapper {
 
     /// Converts transport-neutral file metadata to its stable MCP shape.
     private static func fileStructuredContent(
-        _ metadata: FileOperationMetadata
+        _ output: FileOperationOutput
     ) -> Value {
+        guard let metadata = output.metadata else { return .object([:]) }
         var values: [String: Value] = [
             FileToolOutputField.path.rawValue: .string(metadata.path),
             FileToolOutputField.area.rawValue: .string(metadata.area.rawValue),
@@ -87,6 +97,78 @@ enum FileToolResultMapper {
         if let revision = metadata.revision {
             values[FileToolOutputField.revision] = .string(revision.rawValue)
         }
+        if let readMetadata = output.readMetadata {
+            values[FileToolOutputField.readMetadata] = readMetadataValue(readMetadata)
+        }
+        if let window = output.textWindow {
+            var windowValues: [String: Value] = [
+                FileToolOutputField.byteOffset.rawValue: .int(window.byteOffset),
+                FileToolOutputField.byteCount.rawValue: .int(window.byteCount),
+                FileToolOutputField.totalBytes.rawValue: .int(window.totalBytes),
+            ]
+            if let next = window.nextByteOffset {
+                windowValues[FileToolOutputField.nextByteOffset.rawValue] = .int(next)
+            }
+            values[FileToolOutputField.textWindow] = .object(windowValues)
+        }
         return .object(values)
+    }
+
+    private static func readMetadataText(_ metadata: FileReadMetadata) -> String? {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(metadata) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func readMetadataValue(_ metadata: FileReadMetadata) -> Value {
+        var values: [String: Value] = [
+            "format": .string(metadata.format.rawValue),
+            "byte_count": .int(metadata.byteCount),
+        ]
+        if let value = metadata.modifiedAt { values["modified_at"] = .string(value) }
+        if let value = metadata.title { values["title"] = .string(value) }
+        if let value = metadata.tags { values["tags"] = .array(value.map(Value.string)) }
+        if let value = metadata.wordCount { values["word_count"] = .int(value) }
+        if let value = metadata.outgoingLinkTargets {
+            values["outgoing_link_targets"] = .array(value.map(Value.string))
+        }
+        if let value = metadata.author { values["author"] = .string(value) }
+        if let value = metadata.pageCount { values["page_count"] = .int(value) }
+        if let value = metadata.pageLabels {
+            values["page_labels"] = .array(value.map(Value.string))
+        }
+        if let value = metadata.pageLabelsTruncated {
+            values["page_labels_truncated"] = .bool(value)
+        }
+        if let outline = metadata.outline {
+            values["outline"] = .array(outline.map { entry in
+                var item: [String: Value] = [
+                    "label": .string(entry.label),
+                    "depth": .int(entry.depth),
+                ]
+                if let page = entry.page { item["page"] = .int(page) }
+                return .object(item)
+            })
+        }
+        if let value = metadata.outlineTruncated {
+            values["outline_truncated"] = .bool(value)
+        }
+        return .object(values)
+    }
+
+    private static func textWindowJSON(
+        _ window: TextReadWindow
+    ) -> [String: Int] {
+        var values = [
+            FileToolOutputField.byteOffset.rawValue: window.byteOffset,
+            FileToolOutputField.byteCount.rawValue: window.byteCount,
+            FileToolOutputField.totalBytes.rawValue: window.totalBytes,
+        ]
+        if let next = window.nextByteOffset {
+            values[FileToolOutputField.nextByteOffset.rawValue] = next
+        }
+        return values
     }
 }

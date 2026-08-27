@@ -90,12 +90,18 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read one supported atomic file element. Reads under notes/ return an exact-byte revision in structuredContent and a trailing JSON text block; return that opaque value as expected_revision before updating or deleting the note. References are read-only and do not return revisions. Stored text formats return their complete validated content; HAR JSON is sanitized before it is stored and returned. Logs use bounded line windows, images may be resized or decomposed into timed GIF frames, and PDFs return physical pages as text plus PNG images.",
+                description: "Read one known file after list_files, search_vault, or query_links. Use view=metadata for content-free Markdown title/tags/word count/links or bounded PDF title/author/page labels/outline; do not combine metadata with content selectors. The default content view returns bounded UTF-8 chunks, log lines, images, or physical PDF pages. Continue text with text_window.next_byte_offset and the same revision as expected_revision. Reads under notes/ return the exact revision required before update_file, delete_file, or file-form move_path.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
                     pathDescription: "Vault-relative path under notes/ or references/",
                     additionalProperties: [
+                        .view: .object([
+                            "type": .string("string"),
+                            "enum": .array(ReadFileView.allCases.map { .string($0.rawValue) }),
+                            "default": .string(ReadFileView.content.rawValue),
+                            "description": .string("content returns file data; metadata returns no file content and is supported for markdown and pdf"),
+                        ]),
                         .tailLines: .object([
                             "type": .string("integer"), "minimum": .int(1), "maximum": .int(5_000),
                             "description": .string("For logs, return the last N lines")
@@ -129,7 +135,20 @@ enum FileToolDefinitions {
                             "maxLength": .int(FileReadRequestLimits.maximumPDFPageRangeBytes),
                             "pattern": .string("^\\d+-\\d+$"),
                             "description": .string("For PDFs, an inclusive physical range such as 7-10; mutually exclusive with page and pages"),
-                        ])
+                        ]),
+                        .byteOffset: .object([
+                            "type": .string("integer"),
+                            "minimum": .int(0),
+                            "description": .string("For UTF-8 text, zero-based byte offset. Values above zero require expected_revision from the preceding chunk."),
+                        ]),
+                        .maxBytes: .object([
+                            "type": .string("integer"),
+                            "minimum": .int(FileReadRequestLimits.minimumTextChunkBytes),
+                            "maximum": .int(FileReadRequestLimits.maximumTextChunkBytes),
+                            "default": .int(FileReadRequestLimits.defaultTextChunkBytes),
+                            "description": .string("Maximum UTF-8 bytes in one text chunk; chunk boundaries never split a scalar."),
+                        ]),
+                        .expectedRevision: expectedRevisionSchema,
                     ]
                 ),
                 annotations: .init(
@@ -139,7 +158,9 @@ enum FileToolDefinitions {
                     openWorldHint: false
                 ),
                 outputSchema: outputSchema(
-                    required: [.path, .area]
+                    required: [.path, .area],
+                    includesRevision: true,
+                    includesReadFields: true
                 )
             )
         case .update:
@@ -327,26 +348,168 @@ enum FileToolDefinitions {
             "type": .string("string"),
             "pattern": .string("^sha256:[0-9a-f]{64}$"),
             "description": .string(
-                "Required opaque revision returned by read_file for this note. Never guess or substitute a revision from a conflict response."
+                "Opaque revision returned by read_file. Required for updates, deletes, and any text continuation whose byte_offset is greater than zero. Never guess it."
             ),
         ])
     }
 
-    /// Builds the structured metadata schema returned alongside content blocks.
-    private static func outputSchema(required: [FileToolOutputField]) -> Value {
+    private static var metadataOutputSchema: Value {
         .object([
             "type": .string("object"),
+            "description": .string("Content-free metadata returned by read_file with view=metadata"),
             "properties": .object([
-                FileToolOutputField.path.rawValue: .object(["type": .string("string")]),
+                "format": .object([
+                    "type": .string("string"),
+                    "enum": .array([.string("markdown"), .string("pdf")]),
+                    "description": .string("Metadata representation: markdown or pdf"),
+                ]),
+                "byte_count": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(0),
+                    "description": .string("Exact current file size in bytes"),
+                ]),
+                "modified_at": .object([
+                    "type": .string("string"),
+                    "description": .string("Filesystem modification time"),
+                ]),
+                "title": .object([
+                    "type": .string("string"),
+                    "description": .string("Markdown or PDF document title when available"),
+                ]),
+                "tags": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string")]),
+                    "description": .string("Markdown tags normalized without the leading hash"),
+                ]),
+                "word_count": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(0),
+                    "description": .string("Markdown body word count"),
+                ]),
+                "outgoing_link_targets": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string")]),
+                    "description": .string("Raw Obsidian wiki-link targets from Markdown without file content"),
+                ]),
+                "author": .object([
+                    "type": .string("string"),
+                    "description": .string("PDF document author when available"),
+                ]),
+                "page_count": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(0),
+                    "description": .string("Total physical PDF page count"),
+                ]),
+                "page_labels": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string")]),
+                    "description": .string("Bounded PDF page labels in physical order"),
+                ]),
+                "page_labels_truncated": .object([
+                    "type": .string("boolean"),
+                    "description": .string("True when additional PDF page labels were omitted"),
+                ]),
+                "outline": .object([
+                    "type": .string("array"),
+                    "description": .string("Bounded flattened PDF outline entries"),
+                    "items": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "label": .object([
+                                "type": .string("string"),
+                                "description": .string("Outline entry label"),
+                            ]),
+                            "page": .object([
+                                "type": .string("integer"),
+                                "minimum": .int(1),
+                                "description": .string("One-based physical PDF page when the destination resolves"),
+                            ]),
+                            "depth": .object([
+                                "type": .string("integer"),
+                                "minimum": .int(0),
+                                "description": .string("Zero-based outline nesting depth"),
+                            ]),
+                        ]),
+                        "required": .array([.string("label"), .string("depth")]),
+                        "additionalProperties": .bool(false),
+                    ]),
+                ]),
+                "outline_truncated": .object([
+                    "type": .string("boolean"),
+                    "description": .string("True when additional PDF outline entries were omitted"),
+                ]),
+            ]),
+            "required": .array([.string("format"), .string("byte_count")]),
+            "additionalProperties": .bool(false),
+        ])
+    }
+
+    /// Builds the structured metadata schema returned alongside content blocks.
+    private static func outputSchema(
+        required: [FileToolOutputField],
+        includesRevision: Bool = false,
+        includesReadFields: Bool = false
+    ) -> Value {
+        var properties: [String: Value] = [
+                FileToolOutputField.path.rawValue: .object([
+                    "type": .string("string"),
+                    "description": .string("Vault-relative result path"),
+                ]),
                 FileToolOutputField.area.rawValue: .object([
                     "type": .string("string"),
                     "enum": .array(VaultArea.allCases.map { .string($0.rawValue) }),
+                    "description": .string("Structural vault area containing the result"),
                 ]),
                 FileToolOutputField.revision.rawValue: .object([
                     "type": .string("string"),
                     "pattern": .string("^sha256:[0-9a-f]{64}$"),
+                    "description": .string("Exact-byte revision for the current notes content; use it for the next mutation or text continuation"),
                 ]),
-            ]),
+                FileToolOutputField.readMetadata.rawValue: metadataOutputSchema,
+                FileToolOutputField.textWindow.rawValue: .object([
+                    "type": .string("object"),
+                    "description": .string("UTF-8 byte window returned for a bounded text content read"),
+                    "properties": .object([
+                        FileToolOutputField.byteOffset.rawValue: .object([
+                            "type": .string("integer"),
+                            "minimum": .int(0),
+                            "description": .string("Zero-based UTF-8 byte offset of this chunk"),
+                        ]),
+                        FileToolOutputField.byteCount.rawValue: .object([
+                            "type": .string("integer"),
+                            "minimum": .int(0),
+                            "maximum": .int(FileReadRequestLimits.maximumTextChunkBytes),
+                            "description": .string("UTF-8 bytes returned in this chunk"),
+                        ]),
+                        FileToolOutputField.totalBytes.rawValue: .object([
+                            "type": .string("integer"),
+                            "minimum": .int(0),
+                            "description": .string("Exact total UTF-8 byte count of the current file"),
+                        ]),
+                        FileToolOutputField.nextByteOffset.rawValue: .object([
+                            "type": .string("integer"),
+                            "minimum": .int(0),
+                            "description": .string("Offset for the next chunk; continue with the same revision as expected_revision"),
+                        ]),
+                    ]),
+                    "required": .array([
+                        .string(FileToolOutputField.byteOffset.rawValue),
+                        .string(FileToolOutputField.byteCount.rawValue),
+                        .string(FileToolOutputField.totalBytes.rawValue),
+                    ]),
+                    "additionalProperties": .bool(false),
+                ]),
+        ]
+        if !required.contains(.revision) && !includesRevision {
+            properties.removeValue(forKey: FileToolOutputField.revision.rawValue)
+        }
+        if !includesReadFields {
+            properties.removeValue(forKey: FileToolOutputField.readMetadata.rawValue)
+            properties.removeValue(forKey: FileToolOutputField.textWindow.rawValue)
+        }
+        return .object([
+            "type": .string("object"),
+            "properties": .object(properties),
             "required": .array(required.map { .string($0.rawValue) }),
             "additionalProperties": .bool(false),
         ])

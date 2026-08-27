@@ -31,6 +31,15 @@ struct LogFileOperations: Sendable {
     ) throws -> FileOperationOutput {
         try Task.checkCancellation()
         let text = try TextFileSupport.string(from: snapshot.data)
+        if request.options.byteOffset != nil || request.options.maxBytes != nil {
+            let chunk = try TextFileSupport.readChunk(
+                from: snapshot.data,
+                byteOffset: request.options.byteOffset ?? 0,
+                maximumBytes: request.options.maxBytes
+                    ?? FileReadRequestLimits.defaultTextChunkBytes
+            )
+            return .text(chunk.text, textWindow: chunk.window)
+        }
 
         let window: TextLineScanner.Window
         let description: String
@@ -64,10 +73,14 @@ struct LogFileOperations: Sendable {
             )
             description = "last \(window.lines.count) of \(window.totalLineCount) lines"
         }
-        return .text(
-            "Log: \(target.relativePath) (\(description))\n\n"
-                + window.lines.joined(separator: "\n")
-        )
+        let rendered = "Log: \(target.relativePath) (\(description))\n\n"
+            + window.lines.joined(separator: "\n")
+        guard rendered.utf8.count <= FileReadRequestLimits.defaultTextChunkBytes else {
+            throw FileRoutingError.invalidReadOptions(
+                "selected log lines exceed the bounded response size; use byte_offset and max_bytes"
+            )
+        }
+        return .text(rendered)
     }
 
 }

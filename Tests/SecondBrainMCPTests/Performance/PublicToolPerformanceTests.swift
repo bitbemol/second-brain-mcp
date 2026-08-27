@@ -46,6 +46,13 @@ struct `Public tool performance baselines` {
                 options: ReadFileOptions()
             ))
         }
+        let (_, metadataReadTime) = try await measure {
+            try await runtime.files.read(ReadFileRequest(
+                format: .markdown,
+                path: "notes/performance.md",
+                options: ReadFileOptions(view: .metadata)
+            ))
+        }
 
         let (updated, updateTime) = try await measure {
             try await runtime.files.update(UpdateFileRequest(
@@ -97,7 +104,7 @@ struct `Public tool performance baselines` {
             options: .atomic
         )
         let (_, moveTime) = try await measure {
-            try await runtime.directories.move(MoveDirectoryRequest(
+            try await runtime.paths.move(.directory(
                 sourcePath: "notes/move-source",
                 destinationPath: "notes/move-destination"
             ))
@@ -114,6 +121,7 @@ struct `Public tool performance baselines` {
         let values = [
             "create_ms=\(milliseconds(createTime))",
             "read_ms=\(milliseconds(readTime))",
+            "metadata_read_ms=\(milliseconds(metadataReadTime))",
             "update_ms=\(milliseconds(updateTime))",
             "search_ms=\(milliseconds(searchTime))",
             "git_snapshot_ms=\(milliseconds(gitSnapshotTime))",
@@ -123,10 +131,104 @@ struct `Public tool performance baselines` {
         print("PUBLIC_TOOL_BASELINE " + values.joined(separator: " "))
 
         for duration in [
-            createTime, readTime, updateTime, searchTime, moveTime, deleteTime,
+            createTime, readTime, metadataReadTime, updateTime, searchTime, moveTime,
+            deleteTime,
         ] {
             #expect(duration < .seconds(5))
         }
+    }
+
+    @Test
+    func `list files one item page avoids corpus-wide presentation formatting`() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ListFilesPerformanceTests-\(UUID().uuidString)")
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let payload = Data("metadata-only".utf8)
+        for index in 0..<2_000 {
+            try payload.write(
+                to: notes.appendingPathComponent(String(format: "%04d.md", index))
+            )
+        }
+        let capabilities = FileCapabilities(formats: [
+            .init(format: .markdown, operations: [.read: [.notes]]),
+        ])
+        let access = VaultAccessCoordinator(
+            lockURL: root.appendingPathComponent(".vault-access.lock")
+        )
+        let lowLimitListing = VaultFileListingService(
+            vaultPath: root.path,
+            capabilities: capabilities,
+            access: access,
+            maximumScannedEntries: 1
+        )
+        await #expect(throws: FileListingError.self) {
+            _ = try await lowLimitListing.list(ListFilesRequest(area: .notes, limit: 1))
+        }
+
+        let listing = VaultFileListingService(
+            vaultPath: root.path,
+            capabilities: capabilities,
+            access: access
+        )
+
+        var samples: [Duration] = []
+        for _ in 0..<5 {
+            let (_, elapsed) = try await measure {
+                try await listing.list(ListFilesRequest(area: .notes, limit: 1))
+            }
+            samples.append(elapsed)
+        }
+        let median = samples.sorted()[samples.count / 2]
+        print("LIST_FILES_ONE_ITEM_MEDIAN_MS \(milliseconds(median))")
+        #expect(median < .milliseconds(700))
+    }
+
+    @Test
+    func `repeated outgoing links do not repeat ambiguous target resolution`() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LinkQueryPerformanceTests-\(UUID().uuidString)")
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for index in 0..<20 {
+            let directory = notes.appendingPathComponent("folder-\(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("# Target".utf8).write(to: directory.appendingPathComponent("Target.md"))
+        }
+        let repeatedLinks = Array(repeating: "[[Target]]", count: 500)
+            .joined(separator: "\n")
+        try Data(repeatedLinks.utf8).write(to: notes.appendingPathComponent("source.md"))
+
+        let capabilities = FileCapabilities(formats: [
+            .init(format: .markdown, operations: [.read: [.notes]]),
+        ])
+        let engine = VaultLinkQueryEngine(
+            vaultPath: root.path,
+            capabilities: capabilities,
+            store: VaultCRUDStore(vaultPath: root.path),
+            access: VaultAccessCoordinator(
+                lockURL: root.appendingPathComponent(".vault-access.lock")
+            )
+        )
+        var samples: [Duration] = []
+        for _ in 0..<5 {
+            let (response, elapsed) = try await measure {
+                try await engine.query(LinkQueryRequest(
+                    direction: .outgoing,
+                    target: "notes/source.md",
+                    limit: 50
+                ))
+            }
+            #expect(response.results.count == 50)
+            samples.append(elapsed)
+        }
+        let median = samples.sorted()[samples.count / 2]
+        print("QUERY_LINKS_REPEATED_TARGET_MEDIAN_MS \(milliseconds(median))")
+        #expect(median < .milliseconds(75))
     }
 
     private func measure<Value>(

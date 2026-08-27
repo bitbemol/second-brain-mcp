@@ -41,6 +41,7 @@ struct `MCP file request decoder` {
             arguments: [
                 "format": .string("pdf"),
                 "path": .string("references/manual.pdf"),
+                "view": .string("metadata"),
                 "pages": .array([.int(7), .int(9)]),
             ]
         )
@@ -54,8 +55,69 @@ struct `MCP file request decoder` {
         }
 
         #expect(request.format == .pdf)
+        #expect(request.options.view == .metadata)
         #expect(request.options.page == nil)
         #expect(request.options.pages == [7, 9])
+    }
+
+    @Test
+    func `Read metadata view is accepted as an explicit content-free mode`() throws {
+        let params = CallTool.Parameters(
+            name: "read_file",
+            arguments: [
+                "format": .string("markdown"),
+                "path": .string("notes/demo.md"),
+                "view": .string("metadata"),
+            ]
+        )
+
+        guard case .read = try FileToolRequestDecoder.decode(params, for: .read) else {
+            Issue.record("Expected a read request")
+            return
+        }
+    }
+
+    @Test
+    func `Text read pagination decodes an exact revision-bound continuation`() throws {
+        let params = CallTool.Parameters(
+            name: "read_file",
+            arguments: [
+                "format": .string("markdown"),
+                "path": .string("notes/large.md"),
+                "byte_offset": .int(65_536),
+                "max_bytes": .int(32_768),
+                "expected_revision": .string(revision),
+            ]
+        )
+
+        guard case .read(let request) = try FileToolRequestDecoder.decode(
+            params,
+            for: .read
+        ) else {
+            Issue.record("Expected a read request")
+            return
+        }
+
+        #expect(request.options.byteOffset == 65_536)
+        #expect(request.options.maxBytes == 32_768)
+        #expect(request.options.expectedRevision?.rawValue == revision)
+    }
+
+    @Test
+    func `Invalid read continuation revisions are rejected at ingress`() {
+        expectError(
+            "Invalid expected_revision: expected sha256: followed by 64 lowercase hexadecimal digits",
+            decoding: CallTool.Parameters(
+                name: FileToolName.read.rawValue,
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/large.md"),
+                    "byte_offset": .int(64),
+                    "expected_revision": .string("sha256:ABC"),
+                ]
+            ),
+            for: .read
+        )
     }
 
     @Test

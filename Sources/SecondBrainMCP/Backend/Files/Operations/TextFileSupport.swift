@@ -6,6 +6,10 @@ enum TextFileSupport {
     enum TextError: Error, CustomStringConvertible {
         /// Input bytes are not valid UTF-8.
         case invalidUTF8
+        /// A requested text byte offset is outside the document.
+        case byteOffsetOutOfBounds(offset: Int, totalBytes: Int)
+        /// A requested text byte offset falls inside a UTF-8 scalar.
+        case byteOffsetNotScalarBoundary(Int)
         /// An operation requiring replacement or append content received none.
         case missingContent
         /// Patch mode received no replacement entries.
@@ -23,6 +27,10 @@ enum TextFileSupport {
         var description: String {
             switch self {
             case .invalidUTF8: return "File is not valid UTF-8 text"
+            case .byteOffsetOutOfBounds(let offset, let totalBytes):
+                return "Text byte_offset \(offset) exceeds document size \(totalBytes)"
+            case .byteOffsetNotScalarBoundary(let offset):
+                return "Text byte_offset \(offset) falls inside a UTF-8 scalar"
             case .missingContent: return "Missing required content"
             case .emptyPatch: return "No replacements provided"
             case .tooManyPatches(let count): return "Too many replacements: \(count). Maximum is 20."
@@ -57,6 +65,63 @@ enum TextFileSupport {
             return text
         }
         return "\u{FEFF}" + text
+    }
+
+    /// One independently decodable UTF-8 chunk and its continuation facts.
+    struct Chunk: Sendable, Equatable {
+        let text: String
+        let window: TextReadWindow
+    }
+
+    /// Returns a bounded UTF-8 byte window without splitting a scalar.
+    ///
+    /// The complete document is validated before slicing, so a malformed suffix
+    /// cannot be hidden behind an otherwise valid first chunk.
+    static func readChunk(
+        from data: Data,
+        byteOffset: Int,
+        maximumBytes: Int
+    ) throws -> Chunk {
+        guard String(data: data, encoding: .utf8) != nil else {
+            throw TextError.invalidUTF8
+        }
+        guard byteOffset >= 0, byteOffset <= data.count else {
+            throw TextError.byteOffsetOutOfBounds(
+                offset: byteOffset,
+                totalBytes: data.count
+            )
+        }
+        if byteOffset < data.count,
+           isUTF8ContinuationByte(data[byteOffset]) {
+            throw TextError.byteOffsetNotScalarBoundary(byteOffset)
+        }
+
+        var end = min(data.count, byteOffset + maximumBytes)
+        while end > byteOffset,
+              end < data.count,
+              isUTF8ContinuationByte(data[end]) {
+            end -= 1
+        }
+
+        let chunkData = data.subdata(in: byteOffset..<end)
+        let text = if byteOffset == 0 {
+            try stringPreservingByteOrderMark(from: chunkData)
+        } else {
+            try string(from: chunkData)
+        }
+        return Chunk(
+            text: text,
+            window: TextReadWindow(
+                byteOffset: byteOffset,
+                byteCount: end - byteOffset,
+                totalBytes: data.count,
+                nextByteOffset: end < data.count ? end : nil
+            )
+        )
+    }
+
+    private static func isUTF8ContinuationByte(_ byte: UInt8) -> Bool {
+        byte & 0b1100_0000 == 0b1000_0000
     }
 
     /// Appends text with one line boundary when neither side already supplies one.

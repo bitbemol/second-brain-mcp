@@ -1,6 +1,6 @@
 # SecondBrainMCP
 
-A local MCP server in Swift that gives MCP clients locator-only content search plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes await a recoverable Git snapshot, and snapshot failures are surfaced explicitly.
+A local MCP server in Swift that gives MCP clients bounded file discovery, locator-only content and link queries, plus a format-aware CRUD API for a knowledge vault. Files under `notes/` are writable; `references/` remains structurally read-only. Successful note changes await a recoverable Git snapshot, and snapshot failures are surfaced explicitly.
 
 ```
 stdio-capable MCP client ──> SecondBrainMCP
@@ -11,9 +11,11 @@ stdio-capable MCP client ──> SecondBrainMCP
 
 ## Features
 
-- **Compact file and directory tools** — four format-aware file CRUD tools plus one atomic `move_directory` operation for complete note subtrees
-- **Locator-only vault search** — `search_vault` searches content but returns only note/file paths or physical PDF page numbers for follow-up with `read_file`
+- **Eight composable agent tools** — file discovery, content search, link traversal, four format-aware CRUD operations, and one atomic file-or-directory `move_path`
+- **Content-free discovery** — `list_files`, `search_vault`, and `query_links` return bounded structured locators instead of dumping file contents
+- **Metadata views** — `read_file(view: metadata)` returns bounded Markdown or PDF facts without page text, images, or document bodies
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
+- **Bounded text reads** — UTF-8 documents default to 64 KiB revision-guarded chunks with explicit continuation metadata; no silent truncation or split Unicode scalars
 - **Multi-agent-safe vault access** — concurrent reads overlap, complete mutations are exclusive through their Git snapshot, and exact-byte revisions reject stale updates and deletes
 - **Git snapshots** — note changes request a local `Vault snapshot`; concurrent agents may share one recovery point, and `references/` is never included
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed
@@ -40,15 +42,15 @@ swift build -c release
 
 ## Requirements
 
-- Swift 6.2 or later (builds on 6.4 — note the [build-output path change](#installation) on 6.4+)
+- Swift 6.3 or later (builds on 6.4 — note the [build-output path change](#installation) on 6.4+)
 - macOS 26 (Tahoe) or later
 - Xcode 26 or later
 
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/SecondBrainMCP.git
-cd SecondBrainMCP
+git clone https://github.com/bitbemol/second-brain-mcp.git
+cd second-brain-mcp
 swift build -c release
 ```
 
@@ -174,36 +176,48 @@ Only `notes/` and `references/` need to exist. Writable startup connects the MCP
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vault <path>` | *(required)* | Path to your vault directory |
-| `--read-only` | `false` | Expose only `read_file` and `search_vault` |
+| `--read-only` | `false` | Expose only `list_files`, `search_vault`, `query_links`, and `read_file` |
 
 ## File API
 
-The public API has four generic file CRUD tools, one atomic directory-move tool, and one read-only search tool. File CRUD callers must provide `format`; the server then verifies that the path extension and, where applicable, the decoded/parsed content agree with that format. CRUD schemas and decoders reject unknown arguments, and `update_file` requires an explicit `mode`. Directory moves operate on the subtree path itself and therefore do not require or guess a file format.
+The public API has eight composable tools: three bounded discovery/query tools, four generic file CRUD tools, and one atomic file-or-directory move. File CRUD callers provide `format`; the server verifies that the extension and, where applicable, decoded content agree. Schemas reject unknown arguments, `update_file` requires an explicit `mode`, and every file mutation uses a revision read from the exact source bytes. Directory moves remain structural and therefore omit file-only fields.
 
-Reads under `notes/` return an opaque exact-byte `revision`; `update_file` and `delete_file` require that value as `expected_revision`. Results carrying a revision expose the same `path`, `area`, and `revision` object in `structuredContent` and as a trailing JSON text block, so clients that do not surface structured tool output still receive the token. A conflict means another actor changed the note, so the client must read and reconsider the new content rather than blindly retry. Read-only files under `references/` do not need revisions. A mutation call returns only after its filesystem change and required Git snapshot finish. If the transport loses that response, read the target state before deciding whether another mutation is needed.
+Upgrading from v0.7.1 is a breaking API migration; see [Migrating from v0.7.1 to v2](MIGRATION-v2.md) for capability mappings, removed resources, new behavior, and restart guidance.
+
+Reads under `notes/` return an opaque exact-byte `revision`; `update_file`, `delete_file`, and file-form `move_path` require that value as `expected_revision`. UTF-8 Markdown, Canvas, HAR, patch, JSON, and CSV reads return at most 64 KiB by default and include `text_window` in structured output and the trailing JSON metadata block. When `next_byte_offset` is present, continue with that value as `byte_offset` and the same revision as `expected_revision`; a changed file is rejected instead of mixing chunks from different versions. Callers may select `max_bytes` from 4 bytes through 256 KiB, and chunk boundaries never split a UTF-8 scalar. Read-only files under `references/` do not need revisions. A mutation call returns only after its filesystem change and required Git snapshot finish. If the transport loses that response, read the target state before deciding whether another mutation is needed.
 
 | Tool | Purpose |
 |------|---------|
-| `search_vault` | Locate matching whole-file atoms or physical PDF pages without returning their content |
+| `list_files` | Browse paths and lightweight filesystem metadata without search terms or content reads |
+| `search_vault` | Locate matching file, PDF-page, or Canvas-node atoms without returning their content |
+| `query_links` | Resolve Obsidian wiki links or traverse outgoing links and backlinks without snippets |
 | `create_file` | Validate/transform input, atomically create under `notes/`, and request a vault snapshot |
-| `read_file` | Apply the format-specific reader for a file under `notes/` or `references/` |
+| `read_file` | Read bounded content or a content-free Markdown/PDF metadata view |
 | `update_file` | Apply a supported replace/append/patch operation under `notes/`, with stale-write protection |
 | `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then request a vault snapshot |
-| `move_directory` | Atomically rename a complete `notes/` subtree—including nested files and directories—and request a vault snapshot |
+| `move_path` | Atomically rename one revision-guarded supported file or one complete `notes/` subtree |
 
-### Directory moves
+### Path moves
 
-Use `move_directory` when a project or ticket folder changes lifecycle state. Supply the existing `source_path` and exact unused `destination_path`; there is no `format` argument because this is a structural operation over a set of file atoms. For example, one call can move `notes/in-progress/ticket-123` to `notes/completed/ticket-123` without returning or recreating any file content. Missing destination parents are created safely, the destination is never overwritten, moves into the source subtree are rejected, and case- or Unicode-equivalent source and destination paths are treated as the same directory. Success returns only `source_path` and `destination_path`.
+Use `move_path` instead of a read-create-delete sequence when an existing file or project subtree changes location. For `kind: file`, provide the source's concrete `format` and exact `expected_revision` returned by `read_file`; the source and destination extensions must match. For `kind: directory`, omit those file-only fields. Supply the existing `source_path` and exact unused `destination_path`. Missing destination parents are created safely, destinations are never overwritten, moves into the source subtree are rejected, and case- or Unicode-equivalent paths are treated as identical. Success returns only `source_path` and `destination_path`.
 
-The complete subtree is validated before the descriptor-based no-follow rename, so hidden/package descendants and credential-bearing files are rejected before the move. The global mutation lease remains held through the rename and Git snapshot, so cooperating reads cannot observe a half-completed operation. Pending note changes may deliberately share that snapshot. Empty directories move on the filesystem, but Git has no directory objects and therefore cannot preserve an empty directory by itself. Successful files are immediately discoverable through `search_vault` at their destination paths; search itself remains read-only.
+The selected file or complete subtree is validated before the descriptor-based no-follow rename, so unsupported, hidden/package, symlinked, stale, or credential-bearing content is rejected before the move. The global mutation lease remains held through the rename and Git snapshot, so cooperating reads cannot observe a half-completed operation. Pending note changes may deliberately share that snapshot. Empty directories move on the filesystem, but Git has no directory objects and therefore cannot preserve an empty directory by itself. Successful files are immediately discoverable through `search_vault` at their destination paths; search itself remains read-only.
+
+### File discovery
+
+Use `list_files` when the goal is to inspect what exists rather than match content. Select one `area` (`notes` or `references`), then optionally narrow with an area-relative `directory`, `recursive: false`, or concrete `formats`. Results contain only canonical path, format, byte count, and modified time; the tool does not open document bodies. Pages default to 100 entries and are capped at 500. Continue an unchanged request with `next_cursor`; if matching files change, restart without the stale cursor.
+
+### Link queries
+
+Use `query_links` when the relationship is known and content search would add ceremony. `direction: resolve` maps a wiki target to every matching supported path and marks ambiguity; optional `from_path` ranks nearby candidates first. `direction: outgoing` accepts a `notes/...md` source path and returns its wiki links and embeds. `direction: backlinks` finds Markdown notes that point at a target. Aliases, explicit paths, extensionless Markdown names, and unresolved targets remain structured. Results contain no snippets or file bodies and use request-and-corpus-bound cursor pagination.
 
 ### Search
 
-`search_vault` is a locator, not a reader. It searches content but returns only the atomic elements that contain a match: `path` and `format` for whole-file atoms, plus the one-based physical `page` for a PDF page. Use those values with `read_file` to retrieve the content.
+`search_vault` is a locator, not a reader. It searches content but returns only atomic coordinates: `path` and `format` for whole-file atoms, one-based physical `page` for PDF pages, or `canvas_node_id` plus `canvas_field` for a searchable Canvas node field. Use the path and format with `read_file` to retrieve content.
 
 Every request selects exactly one `location`: `notes` or `references`. It must also supply at least one search criterion: a text `query`, one or more `tags`, `created_from`, or `created_through`. Tags and created-date filters apply only to Markdown notes. Literal text matching is case-, diacritic-, and width-insensitive; every whitespace-separated query term must occur in the same atom. Exact phrases and repeated occurrences only determine stable result order.
 
-Readable textual formats automatically participate without a search-specific format registry. Markdown notes are one atom each and expose their shared frontmatter `created` date and tags to metadata filters. JSON, CSV, HAR, Canvas, patch/diff, and log files are each searched as one whole-file atom. A format that needs a different representation can register a search atom provider without changing the public search contract. A malformed, oversized, unreadable, or concurrently replaced individual file is omitted from that search rather than making every healthy file in the selected area undiscoverable; cancellation and path-validation failures still abort the request.
+Readable textual formats automatically participate without a search-specific format registry. Markdown notes are one atom each and expose their shared frontmatter `created` date and tags to metadata filters. JSON, CSV, HAR, patch/diff, and log files are each searched as one whole-file atom. Canvas is searched as bounded node-field atoms so a result identifies the exact node ID and field instead of returning the entire JSON document as one match. A format that needs a different representation can register a search atom provider without changing the public search contract. A malformed, oversized, unreadable, or concurrently replaced individual file is omitted from that search rather than making every healthy file in the selected area undiscoverable; cancellation and path-validation failures still abort the request. To keep hostile or unexpectedly large vaults from trapping an agent in unbounded work, corpus construction fails safely above 10,000 indexed files, 100,000 scanned entries, 64 MiB of aggregate snapshots, or 100,000 searchable atoms.
 
 PDF references are represented as one atom per physical page. Page text is cached by exact file revision under the vault's private `~/Library/Application Support/SecondBrainMCP/` data directory, never inside the vault or Git. Embedded PDF text is preferred; pages without embedded text use Vision OCR. Search returns only the matching page number. `read_file(format: pdf)` retrieves physical pages with exactly one text block and one bounded PNG image per page, preserving diagrams and non-text content for the model. Select one page with `page`, an ordered set with `pages`, or an inclusive range such as `page_range: "7-10"`; the selectors are mutually exclusive, default to page 1, and are capped at 20 pages per call.
 
@@ -232,17 +246,23 @@ The matrix and each format's create input and update modes come from one exhaust
 
 Format-specific CRUD behavior stays behind the four endpoints:
 
-- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads return the complete sanitized HAR JSON as one atomic document.
+- HAR input must have a valid, duplicate-key-free HAR `log` structure. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads validate the complete sanitized archive before returning a bounded text chunk.
 - Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
-- Patch input must be a unified diff; reads return the complete validated diff as one atomic document.
-- Logs default to the last 500 lines, support bounded line ranges, and can only be appended.
-- JSON accepts any valid top-level JSON value, preserves its original representation, and validates replacements or exact text patches before persistence.
-- CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; every update validates the complete resulting table.
+- Patch input must be a unified diff; reads validate the complete diff before returning a bounded text chunk.
+- Logs default to the last 500 lines, support bounded line ranges or revision-guarded byte pagination, reject a selected line window above the response ceiling, and can only be appended.
+- JSON accepts any valid top-level JSON value, preserves its original representation, validates the complete document, and supports revision-guarded chunk reads plus replacement or exact text patches.
+- CSV supports quoted fields, escaped quotes, embedded line breaks, and consistent column counts; reads and updates validate the complete table before returning or persisting bounded content.
 - Canvas input is structurally validated without re-serializing it, so extension/plugin keys survive.
 - Images are decoded before import; PNG creation strips metadata/trailing payloads and caps the stored long edge. Animated GIF reads return sampled timed frames, and their aggregate encoded frame bytes must remain within the image file-size limit before base64 transport expansion.
 - PDF reads return exactly bounded text plus a PNG image for each selected physical page. `page`, `pages`, and `page_range` provide single-page, ordered-set, and inclusive-range retrieval; content queries belong to `search_vault`.
 
-Complete Markdown, Canvas, patch, JSON, and CSV reads are atomic and may approach 10 MiB; sanitized HAR reads may approach 25 MiB. Responses near those limits can exceed an MCP client's or model's practical context and appear stalled even when server I/O has completed. Keep model-facing files smaller until an explicit chunked text-read contract is available; PDF and log reads already provide bounded selectors.
+### Metadata view
+
+`read_file` defaults to `view: content`. Use `view: metadata` only when document facts are enough: Markdown returns bounded title, tags, word count, and outgoing wiki-link targets; PDF returns bounded title, author, physical page count, page labels, and flattened outline entries. Metadata mode returns no body text, page images, or snippets and cannot be combined with content selectors. Notes still return their exact revision so a later mutation can use the state that was inspected.
+
+### Text continuation
+
+Markdown, Canvas, patch, JSON, CSV, and sanitized HAR files are validated as complete documents but returned as bounded UTF-8 byte windows. The default `max_bytes` is 65,536 and the allowed range is 4–262,144. A first read normally omits `byte_offset`; every response includes `text_window.byte_offset`, `byte_count`, and `total_bytes`. If `next_byte_offset` is present, call `read_file` again with that offset and the exact `revision` from the previous response as `expected_revision`. Continuation fails if the file changed, an offset is outside the document or inside a UTF-8 scalar, or text selectors are combined with incompatible log/PDF selectors. Absence of `next_byte_offset` means the complete document has been returned—content is never silently truncated.
 
 ## Custom Instructions
 
@@ -263,7 +283,7 @@ The server appends the file contents to its default instructions during startup.
 - **No caller-selected commands** — only `/usr/bin/git`, with programmatic argument arrays
 - **Structural write boundaries** — `WritableFileTarget` cannot represent a path under `references/`
 - **Soft deletes only** — files are never permanently deleted
-- **Commit message sanitization** — shell metacharacters stripped from git messages
+- **Fixed Git snapshot identity** — callers cannot select commit messages; hooks and signing are disabled
 
 See [SECURITY.md](SECURITY.md) for the full threat model, network-activity audit, dependency tree, and how to verify it all yourself.
 
@@ -276,13 +296,13 @@ Sources/SecondBrainMCP/
 │   ├── Configuration/                  # Argument parsing
 │   └── MCP/
 │       ├── MCPServerSetup.swift        # Transport lifecycle and tool dispatch
-│       ├── Directories/                # Atomic subtree-move adapter
-│       ├── Files/                      # Four catalog-derived generic CRUD tools
-│       └── Search/                     # Locator-only search schema and adapter
+│       ├── PathMoves/                  # Atomic file-or-subtree move adapter
+│       ├── Files/                      # CRUD and metadata schemas/adapters
+│       └── Search/                     # Listing, content, and link-query schemas/adapters
 ├── Backend/                            # Internal behavior; never imports MCP
 │   ├── Infrastructure/VaultRuntime.swift # Composition root and dependency injection
 │   ├── Concurrency/                    # Reusable gates and vault access coordination
-│   ├── Directories/                    # Validated atomic subtree movement
+│   ├── PathMoves/                      # Validated atomic file-or-subtree movement
 │   ├── Files/
 │   │   ├── Ingress/                    # Stored-text request-to-bytes policy
 │   │   ├── Operations/                 # Format-specific validation/transformation
@@ -291,12 +311,12 @@ Sources/SecondBrainMCP/
 │   │   ├── Targets/                    # Validated readable/writable vault paths
 │   │   ├── Transactions/               # Prepared persistence and Git sequencing
 │   │   └── Validation/                 # Vault and external-source security
-│   ├── Search/                         # Atom providers, literal matching, pagination
+│   ├── Search/                         # Listing, atoms, link resolution, matching, pagination
 │   ├── VaultVersioning/                # Sole Git subprocess boundary
 │   └── Canvas/, HAR/, Media/, References/ # Specialized format processing
 └── Shared/                             # Cross-boundary values and small utilities
-    ├── Files/                          # File CRUD and directory-move contracts
-    ├── Search/                         # Search request/result/service contracts
+    ├── Files/                          # CRUD, listing, metadata, and path-move contracts
+    ├── Search/                         # Search and link-query request/result/service contracts
     ├── References/                     # Shared PDF navigation values
     └── Logging/                        # Shared stderr logger
 ```
@@ -313,29 +333,31 @@ flowchart TB
     subgraph Frontend["Frontend — transport boundary<br/>Sources/SecondBrainMCP/Frontend"]
         direction LR
         Startup["Application + Configuration<br/>startup and CLI arguments"]
-        Server["MCP/MCPServerSetup.swift<br/>server lifecycle and dispatch"]
-        FileAdapter["MCP/Files<br/>CRUD schemas, decoding, result mapping"]
-        SearchAdapter["MCP/Search<br/>locator schema, decoding, result mapping"]
-        MoveAdapter["MCP/Directories<br/>move schema, decoding, result mapping"]
+        Server["MCP/MCPServerSetup.swift<br/>server lifecycle and strict dispatch"]
+        FileAdapter["MCP/Files<br/>CRUD and metadata schemas"]
+        QueryAdapter["MCP/Search<br/>listing, content, and link-query schemas"]
+        MoveAdapter["MCP/PathMoves<br/>file/subtree move schema"]
         Startup --> Server
         Server --> FileAdapter
-        Server --> SearchAdapter
+        Server --> QueryAdapter
         Server --> MoveAdapter
     end
 
     subgraph Shared["Shared — stable protocol boundary<br/>Sources/SecondBrainMCP/Shared"]
         direction LR
-        FilePort["Files/FileCRUDService<br/>formats, requests, outputs"]
-        SearchPort["Search/VaultSearchService<br/>locator requests and results"]
-        MovePort["Files/DirectoryMoveService<br/>subtree move contract"]
+        FilePort["Files<br/>CRUD and metadata contracts"]
+        ListingPort["Files/FileListingService<br/>bounded file descriptors"]
+        MovePort["Files/PathMoveService<br/>file/subtree move contract"]
+        SearchPort["Search/VaultSearchService<br/>bounded atom locators"]
+        LinkPort["Search/VaultLinkQueryService<br/>resolve, outgoing, backlinks"]
     end
 
     subgraph Backend["Backend — policy and execution<br/>Sources/SecondBrainMCP/Backend"]
         direction LR
         Runtime["Infrastructure/VaultRuntime<br/>composition root"]
         FileCore["Files<br/>routing, validation, storage, transactions"]
-        SearchCore["Search<br/>atoms, matching, cursor pagination"]
-        MoveCore["Directories<br/>validated atomic subtree move"]
+        QueryCore["Search<br/>listing, atoms, links, matching, bounded pagination"]
+        MoveCore["PathMoves/VaultPathMoveService<br/>validated atomic file/subtree move"]
         Specialized["Canvas + HAR + Media + References<br/>format-specific processing"]
         Access["VaultAccessCoordinator<br/>shared reads / exclusive mutations"]
         Versioning["VaultVersioning<br/>sole Git boundary"]
@@ -346,19 +368,21 @@ flowchart TB
 
     Client --> Server
     FileAdapter --> FilePort --> FileCore
-    SearchAdapter --> SearchPort --> SearchCore
+    QueryAdapter --> ListingPort --> QueryCore
+    QueryAdapter --> SearchPort --> QueryCore
+    QueryAdapter --> LinkPort --> QueryCore
     MoveAdapter --> MovePort --> MoveCore
 
     Runtime -. "constructs and injects" .-> FileCore
-    Runtime -. "constructs and injects" .-> SearchCore
+    Runtime -. "constructs and injects" .-> QueryCore
     Runtime -. "constructs and injects" .-> MoveCore
     Access -. "coordinates" .-> FileCore
-    Access -. "coordinates" .-> SearchCore
+    Access -. "coordinates" .-> QueryCore
     Access -. "coordinates" .-> MoveCore
 
     FileCore --> Specialized
     FileCore --> Vault
-    SearchCore --> Vault
+    QueryCore --> Vault
     MoveCore --> Vault
     FileCore --> Versioning
     MoveCore --> Versioning
@@ -367,8 +391,8 @@ flowchart TB
 
 The boundary rule is simple: Frontend understands MCP but not vault policy; Shared defines the
 plain Swift contracts both sides agree on; Backend implements those contracts and owns all vault
-behavior. Search and directory moves use their own protocols because neither operation is atomic
-file CRUD.
+behavior. Listing, content search, link queries, and path moves use narrow protocols because none
+is atomic file CRUD.
 
 ### Catalog-driven CRUD
 

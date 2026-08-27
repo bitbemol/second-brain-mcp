@@ -40,7 +40,7 @@ struct FileToolController: Sendable {
             return FileToolResultMapper.failure(error.description)
         } catch {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure("Error: \(error)")
+            return FileToolResultMapper.failure(callerMessage(for: error))
         }
 
         do {
@@ -52,7 +52,14 @@ struct FileToolController: Sendable {
             throw CancellationError()
         } catch {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure("Error: \(error)")
+            return FileToolResultMapper.failure(callerMessage(for: error))
         }
+    }
+
+    private func callerMessage(for error: Error) -> String {
+        guard let safeError = error as? any CallerSafeError else {
+            return "File operation failed due to an internal error"
+        }
+        return "Error: \(safeError.callerSafeDescription)"
     }
 }

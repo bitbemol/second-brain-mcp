@@ -676,6 +676,150 @@ struct `Generic files — routed service` {
     }
 
     @Test
+    func `Default stored text read is bounded instead of returning the full large file`() async throws {
+        let (_, runtime) = try await makeRuntime()
+        let path = "notes/large.md"
+        _ = try await runtime.files.create(CreateFileRequest(
+            format: .markdown,
+            path: path,
+            content: String(repeating: "a", count: 128 * 1_024),
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+
+        let output = try await runtime.files.read(ReadFileRequest(
+            format: .markdown,
+            path: path,
+            options: .default
+        ))
+        guard case .text(let text) = output.contents.first else {
+            Issue.record("Expected text output")
+            return
+        }
+
+        #expect(text.utf8.count <= 64 * 1_024)
+        let revision = try #require(output.metadata?.revision)
+        let window = try #require(output.textWindow)
+        #expect(window.byteOffset == 0)
+        #expect(window.byteCount == text.utf8.count)
+        #expect(window.totalBytes > window.byteCount)
+        let nextOffset = try #require(window.nextByteOffset)
+
+        let continuation = try await runtime.files.read(ReadFileRequest(
+            format: .markdown,
+            path: path,
+            options: ReadFileOptions(
+                byteOffset: nextOffset,
+                expectedRevision: revision
+            )
+        ))
+        guard case .text(let continuedText) = continuation.contents.first else {
+            Issue.record("Expected continuation text output")
+            return
+        }
+        #expect(continuedText.utf8.count <= 64 * 1_024)
+        #expect(continuation.metadata?.revision == revision)
+        #expect(continuation.textWindow?.byteOffset == nextOffset)
+    }
+
+    @Test
+    func `Text continuation rejects a changed exact-byte revision`() async throws {
+        let (root, runtime) = try await makeRuntime()
+        let path = "notes/changing.md"
+        _ = try await runtime.files.create(CreateFileRequest(
+            format: .markdown,
+            path: path,
+            content: String(repeating: "a", count: 80 * 1_024),
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let first = try await runtime.files.read(ReadFileRequest(
+            format: .markdown,
+            path: path,
+            options: .default
+        ))
+        let revision = try #require(first.metadata?.revision)
+        let nextOffset = try #require(first.textWindow?.nextByteOffset)
+        try Data(String(repeating: "b", count: 80 * 1_024).utf8).write(
+            to: URL(fileURLWithPath: root + "/" + path),
+            options: .atomic
+        )
+
+        await #expect(throws: FileRoutingError.self) {
+            try await runtime.files.read(ReadFileRequest(
+                format: .markdown,
+                path: path,
+                options: ReadFileOptions(
+                    byteOffset: nextOffset,
+                    expectedRevision: revision
+                )
+            ))
+        }
+    }
+
+    @Test
+    func `Read selectors reject unsafe continuations and conflicting modes`() async throws {
+        let (_, runtime) = try await makeRuntime()
+        let invalidRequests: [(ReadFileRequest, String)] = [
+            (
+                ReadFileRequest(
+                    format: .markdown,
+                    path: "notes/missing.md",
+                    options: ReadFileOptions(byteOffset: 1)
+                ),
+                "requires expected_revision"
+            ),
+            (
+                ReadFileRequest(
+                    format: .markdown,
+                    path: "notes/missing.md",
+                    options: ReadFileOptions(tailLines: 10)
+                ),
+                "log line selectors"
+            ),
+            (
+                ReadFileRequest(
+                    format: .log,
+                    path: "notes/missing.log",
+                    options: ReadFileOptions(tailLines: 10, byteOffset: 0)
+                ),
+                "log line selectors"
+            ),
+            (
+                ReadFileRequest(
+                    format: .pdf,
+                    path: "references/missing.pdf",
+                    options: ReadFileOptions(maxBytes: 1_024)
+                ),
+                "UTF-8 text reads"
+            ),
+            (
+                ReadFileRequest(
+                    format: .json,
+                    path: "notes/missing.json",
+                    options: ReadFileOptions(
+                        maxBytes: FileReadRequestLimits.maximumTextChunkBytes + 1
+                    )
+                ),
+                "max_bytes"
+            ),
+        ]
+
+        for (request, expectedMessage) in invalidRequests {
+            do {
+                _ = try await runtime.files.read(request)
+                Issue.record("Expected invalid read options")
+            } catch let error as FileRoutingError {
+                #expect(error.description.contains(expectedMessage))
+            } catch {
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    @Test
     func `Unsupported operation is rejected before touching disk`() async throws {
         let (root, runtime) = try await makeRuntime()
         let service = runtime.files
@@ -782,6 +926,75 @@ struct `Generic files — routed service` {
             ))
         }
         #expect(FileManager.default.fileExists(atPath: root + "/" + path))
+    }
+
+    @Test
+    func `Markdown metadata view returns bounded facts and no note content`() async throws {
+        let (root, runtime) = try await makeRuntime()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let markdown = """
+        ---
+        title: "Agent Map"
+        tags: [Swift, architecture]
+        ---
+
+        # Ignored fallback
+        Alpha beta [[Local Note|alias]] [internal](projects/next.md) [web](https://example.com).
+        """
+        try Data(markdown.utf8).write(
+            to: URL(fileURLWithPath: root + "/notes/agent-map.md")
+        )
+
+        let output = try await runtime.files.read(ReadFileRequest(
+            format: .markdown,
+            path: "notes/agent-map.md",
+            options: ReadFileOptions(view: .metadata)
+        ))
+
+        #expect(output.contents.isEmpty)
+        let metadata = try #require(output.readMetadata)
+        #expect(metadata.format == .markdown)
+        #expect(metadata.title == "Agent Map")
+        #expect(metadata.tags == ["architecture", "swift"])
+        #expect(metadata.wordCount == 9)
+        #expect(metadata.outgoingLinkTargets == ["Local Note", "projects/next.md"])
+        #expect(metadata.byteCount == Data(markdown.utf8).count)
+        #expect(output.metadata?.revision != nil)
+
+        await #expect(throws: FileRoutingError.self) {
+            _ = try await runtime.files.read(ReadFileRequest(
+                format: .markdown,
+                path: "notes/agent-map.md",
+                options: ReadFileOptions(
+                    view: .metadata,
+                    byteOffset: 4
+                )
+            ))
+        }
+    }
+
+    @Test
+    func `PDF metadata view returns document structure without pages or images`() async throws {
+        let (root, runtime) = try await makeRuntime()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let data = try generatedSearchPDF(pages: ["first", "second"])
+        try data.write(
+            to: URL(fileURLWithPath: root + "/references/manual.pdf")
+        )
+
+        let output = try await runtime.files.read(ReadFileRequest(
+            format: .pdf,
+            path: "references/manual.pdf",
+            options: ReadFileOptions(view: .metadata)
+        ))
+
+        #expect(output.contents.isEmpty)
+        let metadata = try #require(output.readMetadata)
+        #expect(metadata.format == .pdf)
+        #expect(metadata.pageCount == 2)
+        #expect(metadata.pageLabels?.count == 2)
+        #expect(metadata.byteCount == data.count)
+        #expect(output.metadata?.revision == nil)
     }
 
     private enum GitInspectionError: Error {

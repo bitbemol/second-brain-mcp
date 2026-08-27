@@ -33,3 +33,39 @@ struct VaultSearchRequest: Sendable {
         self.cursor = cursor
     }
 }
+
+/// Supported semantic directions for the compact vault-link query.
+enum LinkQueryDirection: String, CaseIterable, Codable, Sendable {
+    case resolve
+    case outgoing
+    case backlinks
+}
+
+/// Kind of Obsidian wiki-link syntax observed in Markdown.
+enum VaultWikiLinkKind: String, Codable, Sendable {
+    case link
+    case embed
+}
+
+/// Read-only request for resolving or traversing Obsidian wiki links.
+struct LinkQueryRequest: Sendable {
+    let direction: LinkQueryDirection
+    let target: String
+    let fromPath: String?
+    let limit: Int
+    let cursor: String?
+
+    init(
+        direction: LinkQueryDirection,
+        target: String,
+        fromPath: String? = nil,
+        limit: Int = LinkQueryLimits.defaultResults,
+        cursor: String? = nil
+    ) {
+        self.direction = direction
+        self.target = target
+        self.fromPath = fromPath
+        self.limit = limit
+        self.cursor = cursor
+    }
+}

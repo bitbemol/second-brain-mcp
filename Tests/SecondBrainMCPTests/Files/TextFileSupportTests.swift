@@ -57,6 +57,43 @@ struct `Shared text file support` {
     }
 
     @Test
+    func `UTF-8 chunks are bounded without splitting scalars and reconstruct exact text`() throws {
+        let source = "\u{FEFF}" + String(repeating: "a🙂", count: 20)
+        let data = Data(source.utf8)
+        var offset = 0
+        var reconstructed = ""
+
+        repeat {
+            let chunk = try TextFileSupport.readChunk(
+                from: data,
+                byteOffset: offset,
+                maximumBytes: 9
+            )
+            #expect(chunk.text.utf8.count <= 9)
+            #expect(chunk.window.byteOffset == offset)
+            #expect(chunk.window.byteCount == chunk.text.utf8.count)
+            reconstructed += chunk.text
+            guard let next = chunk.window.nextByteOffset else { break }
+            #expect(next > offset)
+            offset = next
+        } while true
+
+        #expect(reconstructed == source)
+    }
+
+    @Test
+    func `Text chunks reject arbitrary offsets inside a UTF-8 scalar`() {
+        let data = Data("a🙂b".utf8)
+        #expect(throws: TextFileSupport.TextError.self) {
+            try TextFileSupport.readChunk(
+                from: data,
+                byteOffset: 2,
+                maximumBytes: 8
+            )
+        }
+    }
+
+    @Test
     func `Records strict decoding and exact patch baselines`() throws {
         let data = Data(repeating: 0x61, count: 8 * 1024 * 1024)
         let strictDecode = try measure(iterations: 4) {

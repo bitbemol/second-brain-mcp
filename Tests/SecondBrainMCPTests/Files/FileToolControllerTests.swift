@@ -1,3 +1,4 @@
+import Foundation
 import MCP
 import Testing
 @testable import second_brain_mcp
@@ -103,6 +104,54 @@ struct `MCP file tool controller` {
         }
     }
 
+    private actor PathLeakingFileService: FileCRUDService {
+        private func fail() throws -> FileOperationOutput {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadNoSuchFileError,
+                userInfo: [NSFilePathErrorKey: leakedAbsolutePath]
+            )
+        }
+
+        func create(_ request: CreateFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+
+        func read(_ request: ReadFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+
+        func update(_ request: UpdateFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+
+        func delete(_ request: DeleteFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+    }
+
+    private actor CallerSafeFailingFileService: FileCRUDService {
+        private func fail() throws -> FileOperationOutput {
+            throw FileRoutingError.invalidReadOptions("choose exactly one read mode")
+        }
+
+        func create(_ request: CreateFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+
+        func read(_ request: ReadFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+
+        func update(_ request: UpdateFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+
+        func delete(_ request: DeleteFileRequest) async throws -> FileOperationOutput {
+            try fail()
+        }
+    }
+
     private func makeController(
         readOnly: Bool
     ) -> (FileToolController, FileServiceSpy) {
@@ -161,6 +210,46 @@ struct `MCP file tool controller` {
         #expect(request?.format == .markdown)
         #expect(request?.path == "notes/dispatched.md")
         #expect(request?.content == "# Dispatched")
+    }
+
+    @Test
+    func `Unexpected backend failures do not disclose absolute filesystem paths`() async throws {
+        let controller = FileToolController(
+            readOnly: false,
+            files: PathLeakingFileService()
+        )
+
+        let result = try await controller.call(.init(
+            name: "read_file",
+            arguments: [
+                "format": .string("markdown"),
+                "path": .string("notes/missing.md"),
+            ]
+        ))
+
+        let message = firstText(in: result)
+        #expect(result.isError == true)
+        #expect(message == "File operation failed due to an internal error")
+        #expect(message?.contains(leakedAbsolutePath) == false)
+    }
+
+    @Test
+    func `Caller-safe domain failures remain actionable`() async throws {
+        let controller = FileToolController(
+            readOnly: false,
+            files: CallerSafeFailingFileService()
+        )
+
+        let result = try await controller.call(.init(
+            name: "read_file",
+            arguments: [
+                "format": .string("markdown"),
+                "path": .string("notes/invalid.md"),
+            ]
+        ))
+
+        #expect(result.isError == true)
+        #expect(firstText(in: result) == "Error: Invalid read options: choose exactly one read mode")
     }
 
     @Test
@@ -230,6 +319,8 @@ struct `MCP file tool controller` {
         return text
     }
 }
+
+private let leakedAbsolutePath = "/Users/private/Vault/notes/secret.md"
 
 private enum ControllerTestError: Error {
     case expected

@@ -26,8 +26,10 @@ do {
     try await MCPServerSetup.start(
         config: config,
         files: runtime.files,
-        directories: runtime.directories,
+        paths: runtime.paths,
         search: runtime.search,
+        links: runtime.links,
+        listing: runtime.listing,
         capabilities: runtime.capabilities,
         startupRecovery: { try await runtime.recoverPendingChanges() }
     )
