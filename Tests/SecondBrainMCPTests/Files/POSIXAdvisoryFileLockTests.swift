@@ -118,6 +118,38 @@ struct `POSIX advisory file lock` {
         }
     }
 
+    @Test
+    func `An expired admission deadline never acquires even a free lock`() async throws {
+        let url = try lockURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        await #expect(throws: POSIXAdvisoryFileLock.DeadlineExceeded.self) {
+            let lease = try await POSIXAdvisoryFileLock(url: url).acquire(
+                .exclusive, deadline: .now.advanced(by: .seconds(-1))
+            )
+            lease.release()
+        }
+        let next = try await POSIXAdvisoryFileLock(url: url).acquire(.exclusive)
+        next.release()
+    }
+
+    @Test
+    func `A contended admission deadline expires without releasing its holder`() async throws {
+        let url = try lockURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let lock = POSIXAdvisoryFileLock(url: url, retryNanoseconds: 1_000_000)
+        let holder = try await lock.acquire(.exclusive)
+        defer { holder.release() }
+        await #expect(throws: POSIXAdvisoryFileLock.DeadlineExceeded.self) {
+            _ = try await lock.acquire(.shared, deadline: .now.advanced(by: .milliseconds(20)))
+        }
+        await #expect(throws: POSIXAdvisoryFileLock.DeadlineExceeded.self) {
+            _ = try await lock.acquire(.shared, deadline: .now.advanced(by: .milliseconds(20)))
+        }
+        holder.release()
+        let next = try await lock.acquire(.exclusive, deadline: .now.advanced(by: .seconds(1)))
+        next.release()
+    }
+
     private func lockURL() throws -> URL {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(

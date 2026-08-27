@@ -24,6 +24,9 @@ struct POSIXAdvisoryFileLock: Sendable {
         }
     }
 
+    /// Optional admission deadline expired before the lock was acquired.
+    struct DeadlineExceeded: Error, Sendable {}
+
     /// Held descriptor whose close releases the advisory lock after crashes too.
     final class Lease: @unchecked Sendable {
         private let mutex = NSLock()
@@ -66,8 +69,12 @@ struct POSIXAdvisoryFileLock: Sendable {
     }
 
     /// Acquires a shared or exclusive lease without blocking an executor thread.
-    func acquire(_ mode: Mode) async throws -> Lease {
+    func acquire(
+        _ mode: Mode,
+        deadline: ContinuousClock.Instant? = nil
+    ) async throws -> Lease {
         try Task.checkCancellation()
+        if let deadline, ContinuousClock.now >= deadline { throw DeadlineExceeded() }
         let descriptor = Darwin.open(
             url.path,
             O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
@@ -92,9 +99,17 @@ struct POSIXAdvisoryFileLock: Sendable {
                 }
                 contentionObserver?()
                 try Task.checkCancellation()
-                try await Task.sleep(nanoseconds: retryNanoseconds)
+                if let deadline {
+                    let now = ContinuousClock.now
+                    guard now < deadline else { throw DeadlineExceeded() }
+                    let delay = min(now.advanced(by: .nanoseconds(Int64(clamping: retryNanoseconds))), deadline)
+                    try await ContinuousClock().sleep(until: delay)
+                } else {
+                    try await Task.sleep(nanoseconds: retryNanoseconds)
+                }
             }
             try Task.checkCancellation()
+            if let deadline, ContinuousClock.now >= deadline { throw DeadlineExceeded() }
             return Lease(descriptor: descriptor)
         } catch {
             _ = Darwin.close(descriptor)

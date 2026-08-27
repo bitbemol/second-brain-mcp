@@ -116,15 +116,56 @@ struct `Async exclusive gate` {
     }
 
     @Test
-    func `Reverse cancellation cost stays near linear at high queue depth`() async throws {
+    func `Reverse cancellation removes every waiter and leaves the gate usable`() async throws {
         let small = try await reverseCancellationDuration(count: 3_000)
         let large = try await reverseCancellationDuration(count: 12_000)
 
-        // Quadrupling queue depth should not approach the 16x work of an
-        // array-backed reverse scan. The absolute floor absorbs suite-level
-        // scheduler contention while the former multi-second behavior still fails.
-        let budget = max(small * 8, .milliseconds(300))
-        #expect(large < budget)
+        // Actor scheduling and continuation resumption are part of these timings.
+        // A wall-clock threshold in the concurrent suite confounds scheduler
+        // contention with queue complexity. Keep latency visible, not as an
+        // algorithmic oracle; the lookup-work test below guards reverse scans.
+        print("GATE_REVERSE_CANCELLATION small=\(small) large=\(large)")
+    }
+
+    @Test
+    func `Reverse removal lookup work is bounded independently of scheduler timing`() {
+        let small = reverseRemovalLookupWork(count: 3_000)
+        let large = reverseRemovalLookupWork(count: 12_000)
+
+        // Count caller-observable Hashable callbacks, not elapsed scheduler time
+        // or private storage. Allow dictionary collision/compaction variation,
+        // while rejecting the millions of comparisons of a reverse linear scan.
+        #expect(small <= 3_000 * 64)
+        #expect(large <= 12_000 * 64)
+        #expect(large <= small * 8)
+        print("QUEUE_REVERSE_LOOKUP_WORK small=\(small) large=\(large)")
+    }
+
+    private func reverseRemovalLookupWork(count: Int) -> Int {
+        let probe = QueueLookupProbe()
+        var queue = IdentifiedFIFOQueue<CountedQueueID, Int>()
+        for value in 0..<count {
+            queue.append(value, id: CountedQueueID(value: value, probe: probe))
+        }
+        probe.reset()
+        for value in (0..<count).reversed() {
+            let removed = queue.remove(id: CountedQueueID(value: value, probe: probe))
+            #expect(removed == value)
+        }
+        let work = probe.operations
+        #expect(queue.count == 0)
+        #expect(queue.isEmpty)
+        #expect(queue.popFirst() == nil)
+
+        // Fully canceled storage must remain reusable, including FIFO order.
+        for value in 0..<3 {
+            queue.append(value, id: CountedQueueID(value: value, probe: probe))
+        }
+        for expected in 0..<3 {
+            #expect(queue.popFirst() == expected)
+        }
+        #expect(queue.isEmpty)
+        return work
     }
 
     private func reverseCancellationDuration(
@@ -141,7 +182,9 @@ struct `Async exclusive gate` {
         queued.reserveCapacity(count)
         for _ in 0..<count {
             queued.append(Task {
-                try await gate.withPermit {}
+                _ = try await gate.withPermit {
+                    Issue.record("A canceled queued operation must never start")
+                }
             })
         }
         while await gate.waitingCount != count {
@@ -154,12 +197,22 @@ struct `Async exclusive gate` {
             task.cancel()
         }
         for task in queued {
-            _ = try? await task.value
+            do {
+                try await task.value
+                Issue.record("Every queued task must report cancellation")
+            } catch is CancellationError {
+                // Every canceled task finishes before the holder releases.
+            } catch {
+                Issue.record("Unexpected cancellation error: \(error)")
+            }
         }
         let elapsed = start.duration(to: clock.now)
+        #expect(await gate.waitingCount == 0)
 
         await hold.release()
         try await holder.value
+        let next = try await gate.withPermit { 42 }
+        #expect(next == 42)
         return elapsed
     }
 }
@@ -215,6 +268,29 @@ private actor CancellationProbe {
 
     func markCanceledOperationStarted() {
         canceledOperationStarted = true
+    }
+}
+
+/// Used only synchronously by one test; no cross-task mutable state.
+private final class QueueLookupProbe {
+    private(set) var operations = 0
+
+    func record() { operations += 1 }
+    func reset() { operations = 0 }
+}
+
+private struct CountedQueueID: Hashable {
+    let value: Int
+    let probe: QueueLookupProbe
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.probe.record()
+        return lhs.value == rhs.value
+    }
+
+    func hash(into hasher: inout Hasher) {
+        probe.record()
+        hasher.combine(value)
     }
 }
 
