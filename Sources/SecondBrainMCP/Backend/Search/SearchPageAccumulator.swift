@@ -42,7 +42,7 @@ actor SearchPageAccumulator {
         if let reason = failure {
             fingerprint.append("failure")
             fingerprint.append(reason.rawValue)
-            coverage.record(path: document.path, reason: reason)
+            coverage.record(path: document.path, reason: reason, format: document.format)
             return
         }
         fingerprint.append("complete")

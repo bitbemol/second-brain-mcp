@@ -21,6 +21,7 @@ enum SearchRequestLimits {
 /// Safe request-validation failures that may cross the backend/frontend boundary.
 enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
     case invalidScope
+    case unsupportedFormats([FileFormat], location: VaultArea)
     case busy
     case workBudgetExceeded
     case missingCriteria
@@ -39,7 +40,10 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
         case .busy:
             "Search is busy; retry after current work finishes"
         case .invalidScope:
-            "Search scope must select an existing visible area-relative directory and compatible readable formats"
+            "Search scope must select an existing visible area-relative directory and compatible filters"
+        case .unsupportedFormats(let formats, let location):
+            "Search is not supported for \(Set(formats).map(\.rawValue).sorted().joined(separator: ", ")) in \(location.rawValue). "
+                + "Use list_files to locate those files and read_file to inspect them, or select advertised searchable formats. No files were searched."
         case .workBudgetExceeded:
             "Search work budget exceeded; narrow directory or formats. Lowering limit does not reduce scan work."
         case .missingCriteria:

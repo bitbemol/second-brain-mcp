@@ -173,7 +173,7 @@ struct MCPBoundaryValidationTests {
 
     @Test("Search recovery guidance narrows scope and link targets exclude display aliases")
     func discoveryGuidanceExplainsRecoveryAndAliasIdentity() throws {
-        let description = try #require(SearchToolDefinition.build().description)
+        let description = try #require(SearchToolDefinition.build(searchableFormats: FileFormat.allCases).description)
         let coverageAdvice = try #require(description.components(separatedBy: ". ").first {
             $0.contains("complete=false")
         })

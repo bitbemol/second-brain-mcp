@@ -6,7 +6,7 @@ import Testing
 struct `MCP vault search contract` {
     @Test
     func `Schema exposes only location filters pagination and atomic locators`() throws {
-        let tool = SearchToolDefinition.build()
+        let tool = SearchToolDefinition.build(searchableFormats: FileFormat.allCases)
         let input = try #require(tool.inputSchema.objectValue)
         let inputProperties = try #require(input["properties"]?.objectValue)
         let required = try #require(input["required"]?.arrayValue).compactMap(\.stringValue)
@@ -41,7 +41,7 @@ struct `MCP vault search contract` {
 
     @Test
     func `Discovery schemas explain selection pagination and every locator field`() throws {
-        let search = SearchToolDefinition.build()
+        let search = SearchToolDefinition.build(searchableFormats: FileFormat.allCases)
         #expect(search.description?.contains("JSON Canvas node") == true)
         #expect(search.description?.contains("PDF OCR may miss words even with complete coverage") == true)
         let searchInput = try schemaProperties(search.inputSchema)
@@ -89,6 +89,7 @@ struct `MCP vault search contract` {
     }
 
     private actor SearchSpy: VaultSearchService {
+        nonisolated let searchableFormats: [FileFormat] = [.canvas, .pdf]
         func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
             VaultSearchResponse(results: [
                 VaultSearchResult(path: "references/book.pdf", format: .pdf, page: 3),
@@ -103,6 +104,7 @@ struct `MCP vault search contract` {
     }
 
     private actor FailingSearch: VaultSearchService {
+        nonisolated let searchableFormats: [FileFormat] = []
         func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
             throw PathValidationError.pathChangedSinceValidation("notes/changed.md")
         }

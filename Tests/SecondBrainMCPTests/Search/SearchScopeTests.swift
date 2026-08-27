@@ -70,7 +70,7 @@ struct `Scoped search contract` {
         }
         let fallback = try JSONDecoder().decode(Value.self, from: Data(text.utf8))
         #expect(fallback == result.structuredContent)
-        let output = try #require(SearchToolDefinition.build().outputSchema?.objectValue)
+        let output = try #require(SearchToolDefinition.build(searchableFormats: FileFormat.allCases).outputSchema?.objectValue)
         #expect(output["required"]?.arrayValue?.contains(.string("coverage")) == true)
         #expect(output["properties"]?.objectValue?["coverage"] != nil)
     }

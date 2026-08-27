@@ -26,6 +26,9 @@ protocol ArraySearchAtomSource: VaultSearchAtomSource {
 }
 
 extension ArraySearchAtomSource {
+    /// Synthetic atom fixtures may supply any concrete format.
+    var searchableFormats: [FileFormat] { FileFormat.allCases }
+
     func scan(
         _ request: VaultSearchRequest,
         consume: @escaping @Sendable (SearchDocument) async throws -> Void

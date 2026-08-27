@@ -8,7 +8,7 @@ import Testing
 struct DiscoveryOutputSchemaTests {
     @Test
     func coverageSchemaRequiresConsistentFailureFacts() throws {
-        for tool in [SearchToolDefinition.build(), LinkQueryToolDefinition.build()] {
+        for tool in [SearchToolDefinition.build(searchableFormats: FileFormat.allCases), LinkQueryToolDefinition.build()] {
             let schema = try #require(tool.outputSchema?.objectValue)
             let coverage = try #require(schema["properties"]?.objectValue?["coverage"]?.objectValue)
             #expect(coverage["required"] == .array([.string("complete")]))
@@ -21,15 +21,19 @@ struct DiscoveryOutputSchemaTests {
             }
             let incomplete = try #require(alternatives.last?.objectValue)
             #expect(incomplete["properties"]?.objectValue?["complete"] == .object(["const": .bool(false)]))
-            #expect(Set(incomplete["required"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-                == Set(["failed_files", "samples", "samples_truncated"]))
+            var required = Set(["failed_files", "samples", "samples_truncated"])
+            if tool.name == "search_vault" {
+                required.insert("failed_by_format")
+                #expect(complete["failed_by_format"] == .bool(false))
+            }
+            #expect(Set(incomplete["required"]?.arrayValue?.compactMap(\.stringValue) ?? []) == required)
         }
     }
 
     @Test
     func locatorsRequireTheirCompanionFields() throws {
         for (tool, first, second) in [
-            (SearchToolDefinition.build(), "canvas_node_id", "canvas_field"),
+            (SearchToolDefinition.build(searchableFormats: FileFormat.allCases), "canvas_node_id", "canvas_field"),
             (LinkQueryToolDefinition.build(), "resolved_path", "resolved_format"),
         ] {
             let properties = try #require(tool.outputSchema?.objectValue?["properties"]?.objectValue)

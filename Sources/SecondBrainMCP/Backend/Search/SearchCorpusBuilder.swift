@@ -9,6 +9,8 @@ struct SearchDocument: Sendable {
 }
 
 protocol VaultSearchAtomSource: Sendable {
+    var searchableFormats: [FileFormat] { get }
+
     func scan(
         _ request: VaultSearchRequest,
         consume: @escaping @Sendable (SearchDocument) async throws -> Void
@@ -51,6 +53,13 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         self.customProviders = customProviders
     }
 
+    /// Discovery and request validation use the same readable/provider intersection.
+    var searchableFormats: [FileFormat] { searchableFormats(in: nil) }
+
+    private func searchableFormats(in area: VaultArea?) -> [FileFormat] {
+        capabilities.supportedFormats(for: .read, in: area).filter { provider(for: $0) != nil }
+    }
+
     private enum CapturedInput: Sendable {
         case file(SearchCaptureSession.Entry)
         case failure(SearchDocument)
@@ -60,10 +69,10 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         _ request: VaultSearchRequest,
         consume: @escaping @Sendable (SearchDocument) async throws -> Void
     ) async throws {
-        let readable = Set(capabilities.supportedFormats(for: .read, in: request.location))
-            .filter { $0.isTextual || customProviders[$0] != nil }
-        guard request.formats.allSatisfy(readable.contains) else {
-            throw VaultSearchRequestError.invalidScope
+        let readable = Set(searchableFormats(in: request.location))
+        let unsupported = request.formats.filter { !readable.contains($0) }
+        guard unsupported.isEmpty else {
+            throw VaultSearchRequestError.unsupportedFormats(unsupported, location: request.location)
         }
         var selectedFormats = request.formats.isEmpty ? readable : Set(request.formats)
         if !request.tags.isEmpty || request.createdFrom != nil || request.createdThrough != nil {

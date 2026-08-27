@@ -274,6 +274,7 @@ struct MCPErrorRecoveryTests {
     }
 
     private struct FailingSearch: VaultSearchService {
+        let searchableFormats: [FileFormat] = []
         let error: any Error
         func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse { throw error }
     }

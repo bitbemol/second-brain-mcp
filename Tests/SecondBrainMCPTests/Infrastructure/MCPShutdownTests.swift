@@ -113,6 +113,7 @@ private func shutdownEventually(_ condition: @Sendable () -> Bool) async -> Bool
 
 /// Deliberately observes cancellation without releasing its owned resource.
 private final class ShutdownSearchHold: VaultSearchService, Sendable {
+    let searchableFormats: [FileFormat] = []
     private struct State {
         var entries = 0
         var cancelled = false

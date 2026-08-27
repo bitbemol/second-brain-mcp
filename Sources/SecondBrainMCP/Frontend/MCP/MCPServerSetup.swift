@@ -81,7 +81,7 @@ struct MCPServerSetup {
                 tools.append(pathDefinition)
             }
             tools.append(ListFilesToolDefinition.build(capabilities: capabilities))
-            tools.append(SearchToolDefinition.build())
+            tools.append(SearchToolDefinition.build(searchableFormats: search.searchableFormats))
             tools.append(LinkQueryToolDefinition.build())
             return ListTools.Result(tools: tools)
         }

@@ -11,6 +11,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         self.strategy = strategy
     }
 
+    var searchableFormats: [FileFormat] { source.searchableFormats }
+
     func search(_ request: VaultSearchRequest) async throws -> VaultSearchResponse {
         let validated = try validate(request)
         let requestHash = try SearchCursorCodec.requestHash(validated)
