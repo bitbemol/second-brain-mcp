@@ -157,7 +157,34 @@ struct `Generic files — CRUD store` {
 
     @Test
     func `Independent snapshot loads overlap instead of queueing on the store actor`() async throws {
+        let overlapped = try await snapshotLoadsOverlap()
+        #expect(overlapped)
+    }
+
+    @Test
+    func `Delayed snapshot task admission is not mistaken for serialized reads`() async throws {
+        let overlapped = try await snapshotLoadsOverlap(
+            secondAdmissionDelay: .milliseconds(1200)
+        )
+        #expect(overlapped)
+    }
+
+    @Test
+    func `Overlap observation rejects deliberately serialized snapshot loads`() async throws {
+        let overlapped = try await snapshotLoadsOverlap(
+            serializeLoads: true,
+            observationTimeout: .milliseconds(100)
+        )
+        #expect(!overlapped)
+    }
+
+    private func snapshotLoadsOverlap(
+        secondAdmissionDelay: Duration = .zero,
+        serializeLoads: Bool = false,
+        observationTimeout: DispatchTimeInterval = .seconds(5)
+    ) async throws -> Bool {
         let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
         let firstTarget = try WritableFileTarget.resolve(
             path: "notes/deep/first.log",
             format: .log,
@@ -172,9 +199,12 @@ struct `Generic files — CRUD store` {
         try Data("second".utf8).write(to: secondTarget.url)
 
         let probe = SnapshotOverlapProbe()
+        let serializationLock = serializeLoads ? NSLock() : nil
         let store = VaultCRUDStore(
             vaultPath: root,
             snapshotLoader: { target, maximumBytes, protectedRoot in
+                serializationLock?.lock()
+                defer { serializationLock?.unlock() }
                 probe.enterAndWait()
                 return try VaultFileInspector.snapshot(
                     target,
@@ -183,18 +213,25 @@ struct `Generic files — CRUD store` {
                 )
             }
         )
-        let first = Task.detached(priority: .background) {
+        let first = Task.detached {
             try await store.snapshot(firstTarget.readable)
         }
-        let second = Task.detached(priority: .background) {
-            try await store.snapshot(secondTarget.readable)
+        let second = Task.detached {
+            try await Task.sleep(for: secondAdmissionDelay)
+            return try await store.snapshot(secondTarget.readable)
         }
 
-        let overlapped = await probe.waitForSecondEntry()
+        defer {
+            probe.releaseBoth()
+            first.cancel()
+            second.cancel()
+        }
+        let overlapped = await probe.waitForSecondEntry(timeout: observationTimeout)
         probe.releaseBoth()
-        _ = try await (first.value, second.value)
-
-        #expect(overlapped)
+        let snapshots = try await (first.value, second.value)
+        #expect(snapshots.0.data == Data("first".utf8))
+        #expect(snapshots.1.data == Data("second".utf8))
+        return overlapped
     }
 
     @Test
@@ -325,29 +362,65 @@ struct `Generic files — CRUD store` {
     }
 }
 
+/// Observes simultaneous loader entry without polling or expiring a blocked loader early.
+/// The observer suspends; a watchdog outside Swift's cooperative executor releases both
+/// callbacks if reads become serialized, so that regression fails instead of hanging.
 private final class SnapshotOverlapProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let release = DispatchSemaphore(value: 0)
     private var entryCount = 0
+    private var released = false
+    private var outcome: Bool?
+    private var waiter: CheckedContinuation<Bool, Never>?
 
     func enterAndWait() {
-        lock.withLock { entryCount += 1 }
-        _ = release.wait(timeout: .now() + 5)
+        let admission = lock.withLock { () -> (Bool, CheckedContinuation<Bool, Never>?) in
+            guard !released else { return (false, nil) }
+            entryCount += 1
+            guard entryCount == 2 else { return (true, nil) }
+            outcome = true
+            let completion = waiter
+            waiter = nil
+            return (true, completion)
+        }
+        admission.1?.resume(returning: true)
+        if admission.0 { release.wait() }
     }
 
-    func waitForSecondEntry() async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
-        while clock.now < deadline {
-            if lock.withLock({ entryCount >= 2 }) {
-                return true
+    func waitForSecondEntry(timeout: DispatchTimeInterval = .seconds(5)) async -> Bool {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let completed = lock.withLock { () -> Bool? in
+                    if let outcome { return outcome }
+                    waiter = continuation
+                    return nil
+                }
+                if let completed {
+                    continuation.resume(returning: completed)
+                } else {
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                        deadline: .now() + timeout
+                    ) { [weak self] in
+                        self?.releaseBoth()
+                    }
+                }
             }
-            await Task.yield()
+        } onCancel: {
+            self.releaseBoth()
         }
-        return false
     }
 
     func releaseBoth() {
+        let completion = lock.withLock { () -> (Bool, CheckedContinuation<Bool, Never>?) in
+            guard !released else { return (false, nil) }
+            released = true
+            if outcome == nil { outcome = false }
+            let completion = waiter
+            waiter = nil
+            return (true, completion)
+        }
+        guard completion.0 else { return }
+        completion.1?.resume(returning: false)
         release.signal()
         release.signal()
     }
