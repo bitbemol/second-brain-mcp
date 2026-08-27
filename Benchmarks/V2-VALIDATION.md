@@ -4,10 +4,132 @@ Status: release-candidate verification in progress; not a publication approval.
 Measurements use generated temporary vaults, never user content. This record is
 separate from the public API contract in the root README.
 
+## Work-client feedback follow-up (2026-08-27)
+
+The work-client report describes fast parallel calls without crashes. This is
+encouraging field feedback, not a controlled latency/token comparison or completion
+of the client qualification protocol. The follow-up starts at source revision
+`5323f7b`; it covers media diagnostics, agent recovery guidance, and SDK string fidelity.
+
+The reported invalid-source, Canvas-root, path-prefix, and metadata-selector
+failures now provide bounded corrective guidance. Tool descriptions explain
+external image/video sources, incomplete-search recovery, and link target versus
+display-alias identity. Source/path policy and metadata/content separation remain
+strict. Unknown framework errors remain opaque; audited media errors expose only
+fixed guidance and numeric limits.
+
+Strict TDD receipts (under Xcode's `ActionArtifacts/default` directory):
+
+- Source diagnostics: three intended behavioral failures in
+  `RunSomeTests/82A790CF-E1F3-49D4-AE9B-2700CACE1D47.txt`.
+- Contract/metadata guidance: six intended failures in
+  `RunSomeTests/CDF5A343-831E-49ED-9434-A9326E8B19A7.txt`.
+- Media diagnostics: eight intended failures in
+  `RunSomeTests/62F95F49-13AF-49B1-89AD-E799ADA1F43D.txt`.
+  Valid external PNG and MOV-to-GIF controls already passed through the real
+  tool, persistence, exact revision, and Git snapshot boundaries.
+- After fixes, all 64 focused cases pass:
+  `RunSomeTests/CC7EB6ED-8257-4D3E-90FA-51F66996EEB4.txt`.
+- Before the SDK fix, the full suite was **628/630 passing, two failing, none skipped**:
+  `RunAllTests/61FCB5D3-4D45-478C-BA97-8A4EC23A2E7D.txt`.
+
+**Resolved: SDK JSON-string fidelity.** The original SDK inferred a binary value
+from data-URI-looking JSON strings. Our raw-pipe regressions observed a 29-byte
+literal `data:text/plain,Hello%20World` returned as 39 bytes, and rejected creation
+of a log containing that valid string. A third raw test reproduced the same loss
+inside nested JSON; explicit binary/image output already passed. That RED receipt is
+`RunSomeTests/21C0AC1A-AEAE-45E9-BE27-6479EDCC376A.txt`.
+
+With explicit user approval, `Vendor/swift-sdk` retains the exact 0.12.1 runtime
+source at `a0ae212ebf6eab5f754c3129608bc5557637e605` and its license, changing JSON
+string decoding to preserve strings. A separate explicit strong-capture annotation
+removes a Swift 6.4 warning without changing ownership. All seven remote dependency
+pins remain unchanged; the SDK itself is now repository-pinned. Independent audits
+confirmed those are the only runtime-source differences. The vendor provenance
+record and Package.swift comment specify removal after an audited official fix
+passes the regression and full suites. No generated checkout was modified.
+
+All 27 focused transport/source cases passed after the fix:
+`RunSomeTests/8DD616E7-8D7B-42D6-8DC4-5564087D3AD0.txt`.
+The portable SDK-only regression file uses public MCP APIs and no app fixture.
+Temporarily restoring the original decoder produced four intended failures with
+both ordinary-text and explicit-binary controls passing:
+`RunSomeTests/D1DE77DB-0D36-466B-B05C-E33EA75B03CA.txt`.
+Restoring the patch returns all six cases to green. No regression was disabled.
+
+Final correctness verification: **638/638 Xcode tests pass, none skipped**:
+`RunAllTests/7C09D08C-42D5-4177-A575-7FF3896F5271.txt`.
+The Xcode build including test targets passes:
+`BuildProject/BuildProject-Log-20260827-120813.txt`.
+The current PDF-admission tests pass; the issue navigator may retain retired
+parameterized failure identifiers from earlier runs. The new test files are visible
+in Xcode. Application/patch whitespace checks pass; the initial vendor import
+retains two upstream blank-at-EOF warnings documented in its provenance record.
+Both files were compared byte-for-byte with upstream. The release build also passes
+with `swift build -c release --force-resolved-versions`, with no warnings emitted.
+
+### Final feedback-candidate screen
+
+Runtime/test source revision: `569c75a` (following media fix `89460e9` and
+agent-guidance fix `24a5157`); the documentation-only commit follows this source.
+The final release binary SHA-256 is
+`9e4ef65778cb6944449eee1d22b94aad9249e40980a09a07200896dc5515072b`.
+The comparator is the previously committed CPU-selection candidate
+`12ae8a0afbb7b74533f147e32ba197b3f67160c21f9e90159ba2aa40c36086fe`,
+not the original `3b17eb9` baseline or the public v0.7.1 release.
+
+Thirty alternating pairs used the unchanged `tool_workflow.py` harness with
+1 MiB JSON mutations and two Markdown graph notes. Independent review verified
+the complete 60-sample grid, both binary hashes, 780 recorded calls (690 successful
+and 90 expected refusals), 120 clean process exits, and removal of all 180 exact
+owned vault/support paths. All ten paired categories and candidate extras pass
+the existing relative and absolute latency limits.
+
+| Tool | p50 before → after (ms) | p95 before → after (ms) | p95 delta |
+|---|---:|---:|---:|
+| create_file | 410.869 → 410.550 | 429.213 → 418.171 | −2.57% |
+| read_file | 2.247 → 1.973 | 2.620 → 2.106 | −19.64% |
+| update_file | 424.645 → 422.285 | 439.090 → 430.984 | −1.85% |
+| list_files | 4.776 → 4.357 | 5.274 → 4.883 | −7.43% |
+| search_vault | 22.671 → 22.331 | 23.951 → 22.955 | −4.16% |
+| query_links | 2.143 → 1.556 | 2.445 → 2.045 | −16.36% |
+| move_path | 394.659 → 396.419 | 413.795 → 403.098 | −2.58% |
+| delete_file | 40.801 → 40.516 | 46.205 → 48.142 | +4.19% |
+
+Delete's p95 remains below its 55.447 ms relative ceiling. Every candidate main-tool
+p95 is below 500 ms; the maximum individual main-tool sample is 432.467 ms.
+These are observed workflow differences, not isolated SDK-patch causality or
+client/model token savings. Builds and test runs were serialized with measurements;
+background OS load, thermals, and filesystem cache were not controlled. A post-run
+load sample was 2.87/3.28/3.09, not a pre-run baseline.
+
+The same final binary passes seven schema cases and all nine native pilot cases
+(ordinary PDF/PNG, 32/256/512 MiB metadata, 256 MiB search, compressed text,
+admission queuing, active cancellation, and disconnect). The native report has
+`complete_and_correct=true` and no failed case. This is one sample per native
+case, not a fresh 270-case native qualification or endurance campaign.
+
+Raw artifacts are under `/private/tmp/second-brain-sdk-fidelity.0c6WlF`:
+`tool-comparison/sdk-fidelity-comparison.json`,
+`schema/sdk-fidelity-schema.json`, and `native-pilot/native-workflow.json`.
+The paired raw report SHA-256 is
+`d92bfc66720032bc2a155eb1a717f570458a3d6342bac3dabf17ae13ee31197f`.
+The pinned dependency graph audit confirms seven unchanged remote versions.
+An initialized read-only process using an empty temporary vault showed no sockets
+in a single `lsof` observation and exited cleanly; this is not continuous network
+monitoring. The Xcode issue navigator is clear after the final regression runs.
+
+All known scoped review findings are resolved and this candidate is ready for the
+[focused work-client retest](CLIENT-EVALUATION.md#focused-retest-of-the-work-agent-feedback-fixes).
+Actual client/model behavior and token cost remain unqualified. Historical large
+resource/native measurements below retain their original binary attribution and
+must not be presented as full release qualification of this newer binary.
+
 ## Reproducibility
 
 - Date: 2026-08-27; arm64 Mac, 36 GiB memory, macOS 27 (26A5421a), Swift 6.4.
-- Starting source revision: `3b17eb9`; candidate includes the uncommitted v2 changes.
+- Original campaign starting revision: `3b17eb9`; its then-uncommitted v2 changes
+  were subsequently committed in the series ending at `5323f7b`.
 - Baseline binary SHA-256:
   `fbf278625166ab9073465849eb08f0d33ba6e55995e69e0fdf229c62aff807b2`.
 - Readiness candidate SHA-256:
@@ -29,7 +151,7 @@ separate from the public API contract in the root README.
   derived text through cache generation 3. The 594-test suite and nine-case native
   pilot passed, but its full native run failed on a disconnect SIGSEGV. It is not
   an accepted candidate; both successes and failure are recorded separately below.
-- Current resumed CPU-selection candidate SHA-256:
+- Last measured CPU-selection candidate SHA-256:
   `12ae8a0afbb7b74533f147e32ba197b3f67160c21f9e90159ba2aa40c36086fe`.
   It passes the 600-test suite, full 270-case native grid, original 30-cycle and
   additional 300-cycle endurance screens, and completed 64-page OCR pilot.
@@ -56,8 +178,9 @@ Its `evidence.tar` SHA-256 is
 `CHECKSUMS.sha256` independently verified the archive and manifest. This is a
 post-build source snapshot, not historical cryptographic attestation. Historical
 runners are audit material, not a newly maintained portable benchmark suite.
-The final source commit and work-client/platform qualification are still required before
-publication. Evidence is not part of the distributed server.
+Work-client/platform qualification is still required before publication. Source commits
+and newer verification are identified in the follow-up above. Evidence is not part of
+the distributed server.
 
 ## Automated correctness
 

@@ -62,6 +62,10 @@ cp .build/release/second-brain-mcp /usr/local/bin/
 
 > **Always use the `.build/release/second-brain-mcp` path — not an architecture-specific one** like `.build/arm64-apple-macosx/release/second-brain-mcp`. Swift 6.4 changed SwiftPM's default build system from `native` (which wrote products to `.build/<triple>/release/`) to `swiftbuild` (which writes to `.build/out/Products/Release/`). SwiftPM keeps `.build/release` and `.build/debug` as symlinks to the current layout under **both** systems, so pinning to the symlink survives toolchain upgrades. Pinning to an arch-specific path will silently keep launching a **stale binary** after you upgrade Swift — the build succeeds, but lands somewhere your config no longer points to.
 
+When redistributing the binary, include the [vendored SDK license](Vendor/swift-sdk/LICENSE)
+and the other dependency licenses. The [SDK provenance record](Vendor/swift-sdk/README.md)
+documents its pinned source and local compatibility fixes.
+
 ## Connecting to Claude and Codex
 
 SecondBrainMCP uses the standard stdio MCP transport. The examples below configure Claude Desktop,
@@ -199,6 +203,22 @@ Reads under `notes/` return an opaque exact-byte `revision`; `update_file`, `del
 | `delete_file` | Soft-delete a supported file under `notes/` to `.trash/`, then request a vault snapshot |
 | `move_path` | Atomically rename one revision-guarded supported file or one complete `notes/` subtree |
 
+### Creation inputs
+
+File paths are relative to the vault root and include their area: use `notes/QA/example.md`, not `QA/example.md`. Creation is limited to `notes/`; the destination must not already exist.
+
+Text formats use inline `content`. Canvas content is a JSON object, for example `{"nodes":[],"edges":[]}`, not a root array. PNG and GIF creation instead require `source`: a local regular-file path outside the vault. Data URIs and existing vault files are not import sources. PNG accepts a supported image; GIF requires a video and `transform: "video_to_gif"`. External sources are never modified.
+
+Example `create_file` arguments (replace the external paths with your own generated fixtures):
+
+```json
+{"format":"png","path":"notes/QA/image.png","source":"/absolute/path/to/external/image.png"}
+```
+
+```json
+{"format":"gif","path":"notes/QA/clip.gif","source":"/absolute/path/to/external/clip.mov","transform":"video_to_gif"}
+```
+
 ### Path moves
 
 Use `move_path` instead of a read-create-delete sequence when an existing file or project subtree changes location. For `kind: file`, provide the source's concrete `format` and exact `expected_revision` returned by `read_file`; the source and destination extensions must match. For `kind: directory`, omit those file-only fields. Supply the existing `source_path` and exact unused `destination_path`. Missing destination parents are created safely, destinations are never overwritten, moves into the source subtree are rejected, and case- or Unicode-equivalent paths are treated as identical. Success returns only `source_path` and `destination_path`.
@@ -212,6 +232,8 @@ Use `list_files` when the goal is to inspect what exists rather than match conte
 ### Link queries
 
 Use `query_links` when the relationship is known. `direction: resolve` maps a wiki `target` to matching supported paths and marks ambiguity; optional `from_path` ranks nearby candidates first. `direction: outgoing` takes the source `notes/...md` path in `target`. `direction: backlinks` defaults to one source/target pair with `occurrence_count`, avoiding repeated copies of the same note. To inspect a group, use `group_by: occurrence` and `source_path`. Resolved entries include `resolved_format` for a subsequent `read_file` call. Grouping and source filters apply only to backlinks.
+
+For `[[target|Display label]]`, resolve `target`, not the display alias `Display label`; aliases are not indexed as alternate identities.
 
 Outgoing links and backlinks recognize wiki links/embeds and inline Markdown links/images. Inline destinations resolve relative to their source, with URI decoding once; wiki destinations use vault/proximity rules. Fragments, aliases, ambiguity and unresolved local targets remain structured. Escapes, fenced/inline code and external URLs are excluded; reference-style Markdown is not supported. Metadata targets are raw identifiers, not necessarily read-ready paths: use an outgoing query on their source to resolve them.
 
@@ -266,7 +288,7 @@ Format-specific CRUD behavior stays behind the four endpoints:
 
 ### Metadata view
 
-`read_file` defaults to `view: content`. Use `view: metadata` only when document facts are enough: Markdown returns bounded title, tags, word count, and outgoing local wiki/inline Markdown targets; PDF returns bounded title, author, physical page count, page labels, and flattened outline entries. Metadata mode returns no body text, page images, or snippets and cannot be combined with content selectors. Notes still return their exact revision so a later mutation can use the state that was inspected. `metadata.incomplete_fields` always lists any omitted or shortened fields (empty when none). Exact tags and link targets are returned whole or omitted; display titles/labels may be shortened with that indicator. Metadata keeps at most 256 tags and 512 distinct outgoing targets within 64 KiB, with separate scan-work bounds.
+`read_file` defaults to `view: content`. Use `view: metadata` only when document facts are enough: Markdown returns bounded title, tags, word count, and outgoing local wiki/inline Markdown targets; PDF returns bounded title, author, physical page count, page labels, and flattened outline entries. Metadata mode returns no body text, page images, or snippets. Omit `max_bytes`, `byte_offset`, `expected_revision`, and log/PDF/Canvas content selectors; metadata uses its own fixed bounds. Incompatible fields are rejected by name, never silently ignored. Notes still return their exact revision so a later mutation can use the state that was inspected. `metadata.incomplete_fields` always lists any omitted or shortened fields (empty when none). Exact tags and link targets are returned whole or omitted; display titles/labels may be shortened with that indicator. Metadata keeps at most 256 tags and 512 distinct outgoing targets within 64 KiB, with separate scan-work bounds.
 
 ### Text continuation
 

@@ -34,7 +34,7 @@ fix or mitigation will be coordinated before any public disclosure.
 |-----------|-------------------|
 | **No vault path escapes the vault** | Every caller-controlled vault path goes through `PathValidator`: rejects absolute paths, screens for `..` (incl. percent-encoded / Unicode dots), resolves symlinks, and asserts containment within the canonical vault root. Writable targets reject every symlink component. CRUD persistence walks and retains no-follow directory descriptors, binds replacements to the validated source identity, and uses descriptor-relative atomic rename; create and trash destinations are no-clobber. The declared concrete format must also match the extension. |
 | **References are read-only by construction** | `WritableFileTarget` can only be resolved under `notes/`, and catalog mutation bindings permit only the notes area. There is no writable representation of a `references/` target. |
-| **External sources are content-gated** | Opaque text/structured formats require inline content and cannot read arbitrary source paths. Only PNG image import and video-to-GIF conversion accept an external source; `ExternalFileSourceValidator` requires the canonical target to be a size-capped regular file outside the vault, then copies it through an opened descriptor into a bounded private snapshot before media decoding. Sources are never mutated. |
+| **External sources are content-gated** | Opaque text/structured formats require inline content and cannot read arbitrary source paths. Only PNG image import and video-to-GIF conversion accept an external source; `ExternalFileSourceValidator` requires the canonical target to be a size-capped regular file outside the vault, then copies it through an opened descriptor into a bounded private snapshot before media decoding. Sources are never mutated. Expected source/media policy failures return fixed corrective guidance and numeric limits, never supplied paths or framework details; unknown failures remain opaque. |
 | **MCP-prepared credentials are rejected before persistence** | Every textual create/update prepared through the MCP boundary is scanned for strong bearer, authorization, cookie, token-assignment, private-key, JWT, and provider-token signals. Path moves validate the selected file or every existing directory descendant before rename. Rejections report only the detector and line, never the matched value. HAR imports additionally replace known authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies with `[REDACTED]`; HAR reads return only the complete sanitized JSON document. Explicit placeholders remain permitted. Direct filesystem edits are outside the MCP ingress policy and may be included by the next notes snapshot, so do not place credentials directly under `notes/`. Detection is defense in depth, not a guarantee that every possible secret format can be recognized, and it does not remove credentials already present in earlier Git history. Rotate and purge any previously committed secret separately. |
 | **No caller-selected command execution** | `GitRepository` is the only subprocess boundary. It launches hardcoded `/usr/bin/git` directly—never a shell—with programmatically built arguments, `-C` for the fixed vault URL, and `--` before the fixed `notes` pathspec. Inherited `GIT_*` variables are removed so callers cannot redirect the repository, worktree, index, or configuration. Prompts and paging are disabled; commit hooks are disabled with `core.hooksPath=/dev/null`, signing is disabled, and the local author identity and constant snapshot subject are supplied by the application. Standard output is discarded and standard error is bounded to 32 KiB. Trusted repository configuration, including clean filters invoked by `git add`, remains part of the local Git trust boundary. |
 | **No hard deletes of user content** | `delete_file` moves files to a collision-proof recoverable name under a real, non-symlink `.trash/` directory; it preserves parent directories and unrelated files. Permanent cleanup applies only to owned staging/derived artifacts, never user content. |
@@ -74,14 +74,21 @@ You don't have to take that on faith — see [Verifying](#verifying-it-yourself)
 
 ## Dependencies
 
-Two direct dependencies (the MCP SDK and Swift Subprocess) plus their transitive packages are
-version-pinned in `Package.resolved` (committed), so `swift build` never silently pulls new versions.
-The table below reflects the committed lockfile — regenerate any time with
-`swift package show-dependencies`.
+The MCP SDK runtime is checked into `Vendor/swift-sdk` at upstream revision
+`a0ae212ebf6eab5f754c3129608bc5557637e605` (0.12.1), with a narrowly scoped
+JSON-string fidelity patch. Its [provenance record](Vendor/swift-sdk/README.md)
+documents local changes and hashes; the complete upstream license is retained.
+JSON strings remain strings even when they look like data URIs; explicit binary
+encoding is unchanged. No generated dependency checkout is patched.
+
+Swift Subprocess and all remote transitive packages remain version-pinned in the
+committed `Package.resolved`. Verification uses `--force-resolved-versions` to
+reject resolution drift. The table reflects the local SDK and remote lockfile;
+inspect the effective graph with `swift package --force-resolved-versions show-dependencies`.
 
 | Package | Owner | Version | Role |
 |---------|-------|---------|------|
-| `modelcontextprotocol/swift-sdk` | MCP org | 0.12.1 | **Direct** — MCP protocol library |
+| `modelcontextprotocol/swift-sdk` | MCP org | 0.12.1 + local patch | **Direct, vendored** — MCP protocol library; see provenance above |
 | `swiftlang/swift-subprocess` | Swift project | 1.0.0 | **Direct** — bounded invocation of the fixed `/usr/bin/git` boundary |
 | `apple/swift-log` | Apple | 1.15.0 | Logging to stderr |
 | `apple/swift-system` | Apple | 1.8.0 | Low-level system calls |
@@ -124,7 +131,7 @@ have a server running against a real vault.
 
 ```bash
 swift package show-dependencies
-grep -ri 'telemetry\|analytics\|tracking\|beacon\|phone.home' .build/checkouts/
+rg -ni 'telemetry|analytics|tracking|beacon|phone.home' Vendor/swift-sdk/Sources .build/checkouts/
 ```
 
 ## Dependency update policy

@@ -31,6 +31,30 @@ Retain for every trial:
 - Actual input/output/cached tokens and cost only when exposed by the client;
   otherwise mark unavailable. Wire bytes are not billing estimates.
 
+## Focused retest of the work-agent feedback fixes
+
+After obtaining the follow-up commits, build with
+`swift build -c release --force-resolved-versions`, record the source commit and
+binary SHA, and fully restart every client/server using the disposable vault.
+Refresh tool discovery; rebuilding alone does not replace an already running MCP.
+The checked-in `Vendor/swift-sdk` is required; do not omit it when transferring
+the changes. No client configuration or personal vault file needs deletion.
+
+| Check | Required observation |
+|---|---|
+| Literal text | Create a log containing exactly `data:text/plain,Hello%20World` (no newline), then read it. It remains exactly 29 UTF-8 bytes, with matching text-window metadata and revision; no binary-type rejection or base64 rewriting. |
+| Path recovery | A destination without `notes/` is rejected with an explicit example. Correct it once and confirm success; do not retry the unchanged invalid request. |
+| Canvas recovery | A root array is rejected with an object-shape example. A valid object such as `{"nodes":[],"edges":[]}` succeeds. |
+| Metadata recovery | `view=metadata` with `max_bytes` names that conflict. Omitting the selector succeeds and returns no body or image. |
+| Media creation | Use generated regular files outside the vault: PNG/image import and a supported short video with `transform=video_to_gif`. Confirm successful reads and unchanged source files. In-vault and data-URI sources remain rejected with corrective guidance. |
+| Discovery recovery | With a known unhealthy source, recognize incomplete coverage and narrow directory/formats. For `[[Target|Display name]]`, query the target, not its per-link display label. |
+| Parallel safety | Repeat independent reads/searches in parallel and one controlled stale-write conflict. Verify exact results, bounded recovery, no crash, and no identical-failure loop. |
+
+Retain all failed attempts as well as successful repairs, and distinguish raw MCP
+text from any client-side display transformation. Clean up only fixtures created
+for this run, using recoverable deletion. This focused retest supplements, rather
+than replaces, the client-level qualification tasks above.
+
 Run at least five fresh conversations per task/client for an exploratory check.
 Every task must return the correct result, with no silent omission, unsafe write,
 or repeated identical-failure loop. Report all failures and variability, not just
