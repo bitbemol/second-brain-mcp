@@ -48,11 +48,11 @@ struct SearchToolController: Sendable {
         let detail: String
         switch error {
         case let error as PathValidationError:
-            detail = error.description
+            detail = error.callerSafeDescription
         case let error as FileRoutingError:
             detail = error.callerSafeDescription
         case let error as VaultFileInspector.InspectionError:
-            detail = error.description
+            detail = error.callerSafeDescription
         case let error as FileResourcePolicy.Violation:
             detail = error.callerSafeDescription
         case PDFReadError.busy:
@@ -77,15 +77,15 @@ struct ListFilesToolController: Sendable {
     func call(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         try Task.checkCancellation()
         guard params.name == ListFilesToolDefinition.name else {
-            return SearchToolResultMapper.failure("Unknown tool: \(params.name)")
+            return ToolFailureProjection.rejected("Unknown tool: choose a tool returned by tools/list")
         }
         let request: ListFilesRequest
         do {
             request = try decode(params)
         } catch let error as DecodingError {
-            return SearchToolResultMapper.failure(error.description)
+            return ToolFailureProjection.rejected(error.description)
         } catch {
-            return SearchToolResultMapper.failure("Invalid list request")
+            return ToolFailureProjection.rejected("Invalid list request")
         }
         do {
             let response = try await listing.list(request)
@@ -93,18 +93,12 @@ struct ListFilesToolController: Sendable {
             return success(response)
         } catch is CancellationError {
             throw CancellationError()
-        } catch let error as FileListingError {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch let error as PathValidationError {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch let error as VaultAccessCoordinator.CapacityExceeded {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.callerSafeDescription)
         } catch {
             try Task.checkCancellation()
-            return SearchToolResultMapper.failure("List failed while reading \(request.area.rawValue)/")
+            return ToolFailureProjection.operation(
+                error, state: .readOnly,
+                fallback: "List failed while reading \(request.area.rawValue)/"
+            )
         }
     }
 

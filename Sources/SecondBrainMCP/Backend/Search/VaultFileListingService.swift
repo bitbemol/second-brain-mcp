@@ -147,9 +147,10 @@ struct VaultFileListingService: FileListingService, Sendable {
                 attributes = try FileManager.default.attributesOfItem(atPath: current.path)
             } catch {
                 let cocoa = error as NSError
-                if directory == nil, cocoa.domain == NSCocoaErrorDomain,
+                if cocoa.domain == NSCocoaErrorDomain,
                    [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(cocoa.code) {
-                    return nil
+                    if directory == nil { return nil }
+                    throw FileListingError.directoryNotFound
                 }
                 throw error
             }

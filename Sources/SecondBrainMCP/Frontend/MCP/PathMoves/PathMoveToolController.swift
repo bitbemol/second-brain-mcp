@@ -16,12 +16,12 @@ struct PathMoveToolController: Sendable {
     func call(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         try Task.checkCancellation()
         guard params.name == PathMoveToolDefinition.name else {
-            return FileToolResultMapper.failure("Unknown tool: \(params.name)")
+            return ToolFailureProjection.rejected("Unknown tool: choose a tool returned by tools/list")
         }
         let values = params.arguments ?? [:]
         if readOnly {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure(
+            return ToolFailureProjection.rejected(
                 "Server is running in read-only mode; 'move_path' is not permitted."
             )
         }
@@ -30,7 +30,7 @@ struct PathMoveToolController: Sendable {
         do {
             request = try Self.decode(values)
         } catch let error as DecodingError {
-            return FileToolResultMapper.failure(error.description)
+            return ToolFailureProjection.rejected(error.description)
         }
         do {
             let output = try await paths.move(request)
@@ -40,16 +40,13 @@ struct PathMoveToolController: Sendable {
             throw CancellationError()
         } catch {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure(callerMessage(for: error))
+            return ToolFailureProjection.operation(
+                error, state: .unknown,
+                fallback: "Path move failed due to an internal error"
+            )
         }
     }
 
-    private func callerMessage(for error: Error) -> String {
-        guard let safeError = error as? any CallerSafeError else {
-            return "Path move failed due to an internal error"
-        }
-        return "Error: \(safeError.callerSafeDescription)"
-    }
 
     private enum DecodingError: Error, CustomStringConvertible {
         case invalid(String)

@@ -22,12 +22,12 @@ struct FileToolController: Sendable {
         try Task.checkCancellation()
         guard let tool = FileToolName(rawValue: params.name) else {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure("Unknown tool: choose a tool returned by tools/list")
+            return ToolFailureProjection.rejected("Unknown tool: choose a tool returned by tools/list")
         }
 
         if readOnly, tool.operation.isMutation {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure(
+            return ToolFailureProjection.rejected(
                 "Server is running in read-only mode; '\(params.name)' is not permitted."
             )
         }
@@ -37,10 +37,13 @@ struct FileToolController: Sendable {
             request = try FileToolRequestDecoder.decode(params, for: tool)
         } catch let error as FileToolRequestDecoder.DecodingError {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure(error.description)
+            return ToolFailureProjection.rejected(error.description)
         } catch {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure(callerMessage(for: error))
+            return ToolFailureProjection.operation(
+                error, state: .notApplied,
+                fallback: "File request could not be decoded due to an internal error"
+            )
         }
 
         do {
@@ -52,14 +55,11 @@ struct FileToolController: Sendable {
             throw CancellationError()
         } catch {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure(callerMessage(for: error))
+            return ToolFailureProjection.operation(
+                error, state: tool.operation.isMutation ? .unknown : .readOnly,
+                fallback: "File operation failed due to an internal error"
+            )
         }
     }
 
-    private func callerMessage(for error: Error) -> String {
-        guard let safeError = error as? any CallerSafeError else {
-            return "File operation failed due to an internal error"
-        }
-        return "Error: \(safeError.callerSafeDescription)"
-    }
 }

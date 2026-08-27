@@ -1,11 +1,24 @@
 /// Enforces the create payload contract selected by the format catalog.
 enum CreateFileContractValidator {
     /// A caller supplied a missing, conflicting, or unsupported create field.
-    enum Violation: Error, CustomStringConvertible, Sendable {
+    enum Violation: Error, CustomStringConvertible, CallerSafeError, Sendable {
         case requiresContent(FileFormat)
         case requiresSource(FileFormat)
         case unsupportedField(format: FileFormat, field: String)
         case requiresTransform(format: FileFormat, transform: FileCreateTransform)
+
+        var callerSafeDescription: String {
+            switch self {
+            case .requiresContent(let format):
+                "Creating '\(format.rawValue)' requires inline content."
+            case .requiresSource(let format):
+                "Creating '\(format.rawValue)' requires an external source file path outside the vault."
+            case .unsupportedField(let format, _):
+                "Create request contains a field unsupported by '\(format.rawValue)'; use its listed create contract."
+            case .requiresTransform(let format, let transform):
+                "Creating '\(format.rawValue)' requires transform=\(transform.rawValue); supply that transform."
+            }
+        }
 
         var description: String {
             switch self {

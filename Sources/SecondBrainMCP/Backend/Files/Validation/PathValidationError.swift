@@ -1,5 +1,5 @@
 /// Rejections produced while canonicalizing a caller-controlled vault path.
-enum PathValidationError: Error, CustomStringConvertible, Sendable {
+enum PathValidationError: Error, CustomStringConvertible, CallerSafeError, Sendable {
     /// The relative path is empty.
     case emptyPath
 
@@ -20,6 +20,26 @@ enum PathValidationError: Error, CustomStringConvertible, Sendable {
 
     /// A path resolves differently than when its target value was constructed.
     case pathChangedSinceValidation(String)
+
+    /// Fixed path rules only; associated paths and extension strings remain private.
+    var callerSafeDescription: String {
+        switch self {
+        case .emptyPath:
+            "Path must not be empty; provide a vault-relative path including its area."
+        case .absolutePathNotAllowed:
+            "Absolute paths are not allowed; provide a vault-relative path including notes/ or references/."
+        case .pathEscapesRoot:
+            "Path must remain inside the vault; choose a contained vault-relative path."
+        case .invalidExtension:
+            "Path extension is not allowed; choose an extension matching the declared format."
+        case .pathContainsTraversal:
+            "Path contains directory traversal; remove parent-directory components and use a vault-relative path."
+        case .symbolicLinkNotAllowed:
+            "Writable paths must not contain symbolic links; choose a regular notes/ path."
+        case .pathChangedSinceValidation:
+            "Path changed after validation; inspect the current path before trying again."
+        }
+    }
 
     /// Human-readable path validation failure.
     var description: String {

@@ -113,7 +113,8 @@ struct MediaImportDiagnosticsTests {
             try Data(repeating: 1, count: 16).write(to: source)
             let result = try await fixture.create(source: source, format: format)
             #expect(result.isError == true)
-            #expect(mediaResultText(result) == "File operation failed due to an internal error")
+            #expect(mediaResultText(result) == "File operation failed due to an internal error"
+                + " Outcome unconfirmed; inspect current state before retrying.")
             #expect(!mediaResultText(result).contains("PRIVATE_MEDIA_SOURCE"))
             #expect(!FileManager.default.fileExists(atPath: fixture.destination(format).path))
             #expect(await fixture.versioning.snapshots == 0)

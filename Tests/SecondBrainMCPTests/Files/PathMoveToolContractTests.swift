@@ -211,7 +211,7 @@ struct `MCP path move contract` {
 
         let message = firstText(in: result)
         #expect(result.isError == true)
-        #expect(message == "Path move failed due to an internal error")
+        #expect(message == "Path move failed due to an internal error Outcome unconfirmed; inspect current state before retrying.")
         #expect(message?.contains(leakedMoveAbsolutePath) == false)
     }
 
@@ -231,7 +231,7 @@ struct `MCP path move contract` {
         ))
 
         #expect(result.isError == true)
-        #expect(firstText(in: result) == "Error: Destination already exists: notes/done/work")
+        #expect(firstText(in: result) == "Error: Destination already exists: notes/done/work Outcome unconfirmed; inspect current state before retrying.")
     }
 
     private func firstText(in result: CallTool.Result) -> String? {

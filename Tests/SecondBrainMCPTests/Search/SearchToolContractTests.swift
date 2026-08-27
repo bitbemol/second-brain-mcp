@@ -124,7 +124,8 @@ struct `MCP vault search contract` {
             return
         }
         #expect(message.contains("notes/"))
-        #expect(message.contains("notes/changed.md"))
+        #expect(message.contains("Path changed after validation"))
+        #expect(!message.contains("notes/changed.md"))
         #expect(!message.contains("failed safely"))
     }
 

@@ -144,6 +144,7 @@ struct ListFilesResult: Equatable, Sendable {
 /// Validation failures for a list-files request or continuation.
 enum FileListingError: Error, CustomStringConvertible, Sendable {
     case invalidRequest(String)
+    case directoryNotFound
     case invalidCursor
     case staleCursor
     case scanLimitExceeded
@@ -152,6 +153,8 @@ enum FileListingError: Error, CustomStringConvertible, Sendable {
         switch self {
         case .invalidRequest(let message):
             "Invalid list options: \(message)"
+        case .directoryNotFound:
+            "List directory not found; choose an existing area-relative directory or omit directory to list the area."
         case .invalidCursor:
             "Invalid list cursor"
         case .staleCursor:

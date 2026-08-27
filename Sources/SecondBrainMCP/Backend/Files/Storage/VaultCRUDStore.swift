@@ -16,13 +16,25 @@ actor VaultCRUDStore {
     ) throws -> BoundedFileReader.Snapshot
 
     /// Persistence failures independent of concrete file-format semantics.
-    enum StoreError: Error, CustomStringConvertible {
+    enum StoreError: Error, CustomStringConvertible, CallerSafeError {
         /// Creation would overwrite an existing destination.
         case alreadyExists(String)
         /// Current bytes differ from the snapshot used to prepare an update.
         case changedSinceRead(String)
         /// The process trash path is not a real directory inside the vault.
         case unsafeTrashDirectory(String)
+        /// No caller path or internal trash location crosses the tool boundary.
+        var callerSafeDescription: String {
+            switch self {
+            case .alreadyExists:
+                "File already exists; inspect it before updating, or choose an unused destination."
+            case .changedSinceRead:
+                "File changed while the operation was prepared; read its current revision before retrying."
+            case .unsafeTrashDirectory:
+                "Vault trash directory is unsafe; ask the vault owner to repair it before deleting files."
+            }
+        }
+
         /// Human-readable generic persistence failure.
         var description: String {
             switch self {

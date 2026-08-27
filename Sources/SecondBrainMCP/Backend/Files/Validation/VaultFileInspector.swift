@@ -29,11 +29,21 @@ struct VaultTemporaryFileSnapshot: Sendable {
 /// generic or format-specific reader opens it.
 enum VaultFileInspector {
     /// Failures raised while inspecting a validated vault target.
-    enum InspectionError: Error, CustomStringConvertible, Sendable {
+    enum InspectionError: Error, CustomStringConvertible, CallerSafeError, Sendable {
         /// No filesystem entry exists at the target path.
         case notFound(String)
         /// The target exists but is not a regular file.
         case notARegularFile(String)
+
+        /// File identities stay private; missing paths are not successful empty reads.
+        var callerSafeDescription: String {
+            switch self {
+            case .notFound:
+                "File not found; use list_files or the destination returned by move_path to locate its current path."
+            case .notARegularFile:
+                "Path is not a regular file; choose a supported file from list_files."
+            }
+        }
 
         /// Human-readable inspection failure.
         var description: String {
