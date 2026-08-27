@@ -4,6 +4,170 @@ Status: release-candidate verification in progress; not a publication approval.
 Measurements use generated temporary vaults, never user content. This record is
 separate from the public API contract in the root README.
 
+## Second regression-review fixes (2026-08-27)
+
+The follow-up work-agent report found real gaps in our acceptance coverage. Passing
+the earlier suite did not establish that all ordinary workflows or the host's image
+display were correct. This round reproduces the server failures locally instead of
+requiring another broad model-driven review.
+
+Source baseline: `4c76723` on `main`. Runtime fixes and their regression tests are
+recorded in focused commits `9b8fae9`, `8f70988`, `f5c4538`, and `f8852ad` on `main`.
+Baseline binary SHA-256:
+`7b5737c67134fb2458dbc1c072c875ed5afc70521fc4115e774e3375b0c41790`.
+Final release binary SHA-256:
+`5c31fc5c3a238406774772f40ca18f65676db31862f74427e36b446c7534df84`.
+Dependency pins and the vendored SDK are unchanged.
+
+| Reported defect | Implemented contract and regression protection |
+|---|---|
+| Nested `attachments/.gitkeep.md` prevents directory moves | Supported dot-named regular files receive the same descriptor, encoding, credential, size, and content checks. Hidden directories, Finder-hidden entries, unsupported dotfiles, packages, and symlinks remain rejected. |
+| Malformed HAR returns an internal error | Audited fixed HAR guidance and `INVALID_REQUEST`, without internal parser reasons or supplied paths. |
+| Missing search directory returns an unexpected read error | `DIRECTORY_NOT_FOUND` with `read_only`; an absent default area remains an empty search. |
+| Deterministic rejection claims an uncertain mutation | Explicit preparation-stage errors report `not_applied`; persistence/snapshot failures remain uncertain. Both file and directory moves use the existing mutation executor and retain the lease through the snapshot. |
+| Canvas append claims all Canvas updates are unsupported | The error names the rejected mode and allowed modes; valid replace still works. |
+| Repeated slash is diagnosed as a symlink | Writable paths reject empty components explicitly; symlink protections remain intact. |
+| Oversized HAR makes unrelated absence evidence unusable | Incomplete coverage adds bounded `complete_formats` for the actual eligible request scope. Empty first-page results certify only those formats; failed/unsearched formats and later empty pages do not prove absence. |
+| GIF creation reports source rather than artifact facts | Finalized ImageIO properties supply dimensions, frame count, quantized duration, and effective rate without another pixel decode or encoding pass. |
+
+### Test-first and full-suite evidence
+
+Xcode receipts are under `ActionArtifacts/default`:
+
+- Initial behavioral RED: 24 failures and 17 passing controls in
+  `RunSomeTests/41DB9DB4-EA61-4F91-8E50-7A3ACD0A2CD0.txt`.
+- Move-stage RED: two failures and two passing post-rename/snapshot controls in
+  `RunSomeTests/56CDC07F-0A3A-43A5-A990-A76C9AAD9AA8.txt`.
+- After the fixes, existing typed-error assertions were updated to require both the
+  original domain error and the explicit preparation stage, not merely any error.
+  Raw persistence, read-only, and synchronous storage assertions remain unchanged.
+- Full plan: **701/701 passed, zero skipped**,
+  `RunAllTests/ADD56464-449C-4AFD-9BFC-4631BFB78CB0.txt`.
+- A final description edit temporarily omitted a scope qualifier required by an
+  existing guidance test. The test caught it; the qualifier was restored, not the
+  assertion relaxed. Focused GREEN:
+  `RunSomeTests/05F883DA-B99E-40BB-A2CE-4153C5813E7A.txt`.
+- Final Xcode build:
+  `BuildProject/BuildProject-Log-20260827-160730.txt`; issue navigator empty.
+  Release build `swift build -c release --force-resolved-versions` passed.
+  Compiler/cache sandbox failures and editing/fixture errors are not counted as RED.
+
+### GIF-create no-regression measurement
+
+[Reproducible harness](gif_create_workflow.py), [oracle tests](test_gif_create_workflow.py),
+and [synthetic video generator](gif_create_fixture.swift).
+A three-pair validity pilot preceded 30 alternating pairs. Each timed request includes
+conversion, persistence, and the awaited Git snapshot; process initialization is
+recorded separately. The generated 64×48, 25.9-second video yields 120 GIF frames.
+This does not qualify large-video throughput or resizing performance.
+
+| Create latency | Baseline | Candidate | Delta |
+|---|---:|---:|---:|
+| Median | 782.237 ms | 782.720 ms | +0.062% |
+| p95 | 813.264 ms | 805.854 ms | −0.911% |
+
+The unchanged gate, p95 ≤ max(1.2×baseline, baseline+5 ms), passed. These differences
+are not a meaningful speedup claim. All 60 GIFs were byte-identical (23,654 bytes);
+creation now reports their 26.4-second quantized duration, agreeing with reads,
+instead of the source's 25.9 seconds. Each creation response remained 464 bytes.
+All 120 tool calls succeeded; 60 processes exited without forced signals. All 180
+owned vault/support paths were confirmed absent after cleanup. Source bytes remained
+unchanged. There is no measured token/cost claim or independent Git-tree audit.
+
+The measured candidate SHA was
+`e448b7df1ce4ea31db1f180f7ec8949085fc8f4d84f82c07269acee2a124cbca`;
+the final binary differs only in the search-description scope qualifier noted above,
+not the measured GIF implementation.
+Local raw evidence: `/private/tmp/second-brain-regression.jCOUqC/gif-create-full/`.
+Raw report SHA-256:
+`bca9d9e824fde8bfcd35aab275365f73ed20e11bd56536b566912ee0ddfe3ed5`.
+The saved `independent-audit.json` rechecks the exact alternating grid, retained GIF
+hash/frames, clean exits, and owned cleanup. The benchmark checker has 12 passing
+tests, including rejection of missing/duplicate rows, corrupt results and bad cleanup.
+
+### Real stdio report replay
+
+[Replay harness](report_regression.py) and [checker tests](test_report_regression.py)
+issue the exact recorded requests against each frozen binary, with fresh synthetic
+vaults. Baseline: **10 intended contract failures**. Final candidate: **22/22 checks
+passed**. Across both runs: 44 tool calls, two initializations, two clean EOF exits,
+zero forced signals, and verified cleanup of only owned vault/support paths.
+
+The replay covers malformed HAR, repeated slashes, Canvas append/replace, stale
+update/move, supported and forbidden dotfiles, missing search scope, incomplete
+format coverage and metadata-filter eligibility. One PNG and eight GIF images are
+decoded and pixel-checked. All eight subsequent unrelated list/search/metadata
+responses contain zero images, including five calls after both renders. This proves
+raw response isolation for the tested sequence, not Kiro's conversation rendering.
+
+Independent review found and closed false-green checker gaps: wrong recorded
+method/tool/arguments, initialization-ID reuse/mismatch, and Python's Boolean/numeric
+equality. Added controls failed first; all **16 replay checker tests** now pass.
+Together with the GIF checker's 12 controls, **28/28 Python tests passed**.
+The final replay was rerun with the hardened checker, not retroactively relabeled.
+No schema-validation, concurrency-performance, token, or host-UI claim is made.
+
+Local final raw reports under
+`/private/tmp/second-brain-regression.jCOUqC/`:
+
+- `report-replay-final-baseline/report-regression.json` — SHA-256
+  `f8ab80a5a43666e531a87d517d5b8372c05d6a42fbd00171cee2a8cc28a1cc95`.
+- `report-replay-final-candidate/report-regression.json` — SHA-256
+  `3aacd40d5b4d0b9f43147b71f86f2de464d1423ea6c450657fd7d9a59c41fa9c`.
+- Both record harness SHA-256
+  `1fadb248536c6e5f56a3ccb8cef5828497e6be391167c73efc09f03d89fbb9e9`
+  and exact binary, request, response, fixture, lifecycle, and cleanup evidence.
+
+### Schema verification completed after approval
+
+The user approved a disposable external test environment. Installed
+`jsonschema==4.23.0` under `/private/tmp/second-brain-schema.TbV0o6/venv`;
+`pip check` passes. The recorded test-only dependency set is attrs 26.1.0,
+jsonschema-specifications 2025.9.1, referencing 0.37.0, rpds-py 2026.6.3,
+and typing_extensions 4.16.0. No project or Swift dependencies changed.
+
+On the same final `5c31fc5…` release binary:
+
+- All eight tools' discovered input and output schemas pass Draft 2020-12
+  meta-schema validation.
+- **51/51 contract cases pass**: 14 discovery-output cases, 27 format/mode
+  combinations, nine invalid update payloads, and the flat-field discovery check.
+- Three fresh eight-tool workflows pass: **48 recorded tool checks**, including
+  six expected error responses. Every successful recorded call's input and output
+  validate against the discovered schemas. Exact 1 MiB JSON bytes, revisions,
+  Git snapshots, moved bytes, recoverable deletion, and unchanged read-only files
+  are independently checked. These are functional runs, not new performance data.
+- The schema process and six workflow processes exit cleanly with no forced
+  signals; owned synthetic vault/support cleanup completes without errors.
+
+Raw evidence under `/private/tmp/second-brain-schema.TbV0o6/`:
+
+- `contracts-approved/candidate.json`, SHA-256
+  `c06d11a6bb5c6376d4d36a8f8fb20f5f3844b86da4e4e121b1849a1b6683ac10`.
+- `workflows/candidate.json`, SHA-256
+  `e2299bc008ea1ecb43c786170401184fe1b3b26357bb35a2af0f1c7c66585b2c`.
+
+The first sandboxed attempt could not create the server's owned Application Support
+directory. Its failure is retained in `contracts/candidate.json`; the approved
+normal-access rerun passed. This infrastructure failure is not behavioral RED.
+The previously pending schema-validation gate is now closed. This does not certify
+how Kiro presents schemas to its model or displays previously returned images.
+
+### Remaining publication gates
+
+- **Kiro image replay remains unverified end-to-end.** The report itself says later
+  MCP bodies were text-only. Our raw replay checks response isolation, not host
+  attachment history, model-visible redisplay, or billing. Do not label the host
+  defect fixed. The [client check](CLIENT-EVALUATION.md) now specifies one short
+  PNG/GIF sequence with five following text-only calls, request IDs, raw content
+  types, and client version; no broad paid review is needed to locate that boundary.
+- Search intentionally does not infer anything about oversized/unsearched formats.
+  `complete_formats` supplies scoped evidence without weakening memory/security
+  limits or silently excluding failed files. It does not make every global search
+  complete. Restore and multi-file transactions remain explicit follow-up features.
+
+No push, tag, or release was performed. This is not unconditional v2 sign-off.
+
 ## Acceptance-report fixes (2026-08-27)
 
 Source baseline: `0f61818737a65c41d58c77a342f555d32f54e701` on `main`.
@@ -90,12 +254,12 @@ and server timings, not measured model-token or billing savings.
 
 ### Remaining qualification
 
-The expanded real JSON Schema matrix and refreshed all-tool/native harness runs
-have not run for this candidate: the documented `jsonschema==4.23.0` validator
-is absent, and installing it in a disposable environment awaits explicit user
-approval. The Swift schema/contract tests pass but do not replace full draft
-validation. Prior campaigns below describe earlier binaries, not this candidate.
-Actual work-client and second-client reruns remain required, especially image
+At this earlier checkpoint, the expanded JSON Schema matrix and refreshed
+all-tool/native harness runs had not run because the optional validator awaited
+approval. The newer final candidate's schema matrix and all-tool workflows are now
+verified in “Schema verification completed after approval” above. Native campaigns
+below still describe their recorded earlier binaries, not a new native run.
+Actual work-client and second-client checks remain required, especially image
 redisplay and how each client presents conditional update schemas.
 
 ## Earlier work-client feedback follow-up (2026-08-27)

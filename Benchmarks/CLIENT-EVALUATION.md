@@ -43,8 +43,10 @@ the changes. No client configuration or personal vault file needs deletion.
 | Check | Required observation |
 |---|---|
 | Image consent and replay | Default PNG/GIF reads return facts and no images. Explicit `render: true` returns one still or at most eight GIF frames; later unrelated results have no new image blocks. Record any client-history redisplay separately from the raw response. |
-| Routine failures | Duplicate create, old/deleted paths, missing list directory, traversal and missing GIF transform return stable error codes and corrective text. Honor `state`/`retry`; never treat an uncertain mutation error as proof nothing changed. |
-| Search capability and coverage | PNG is absent from searchable formats unless a provider exists; a forced unsupported request explains capability. Oversized HAR failures include exact `failed_by_format`; scoped completeness is not global absence. |
+| Routine failures | Duplicate create, malformed HAR, stale revisions, missing paths, repeated-slash paths, and invalid update modes return actionable codes/text. Protected pre-persistence rejection reports `not_applied`; failures after persistence starts remain `unknown`. A missing search directory reports `DIRECTORY_NOT_FOUND`/`read_only`. Never infer unchanged state from an uncertain error. |
+| Search capability and coverage | PNG is absent from searchable formats unless a provider exists. Oversized HAR failures include exact `failed_by_format` and request-scoped `complete_formats`. An empty first page certifies no matches only in the listed formats; metadata-only filters do not certify JSON/HAR, and scoped completeness is not global absence. |
+| Supported placeholders | A subtree containing `.gitkeep.md` moves atomically and retains exact bytes. Unsupported `.env`/`.gitkeep`, hidden directories, symlinks, and unsafe content remain rejected. |
+| GIF artifact facts | Creation reports stored dimensions, frame count, quantized duration, and effective frame rate, agreeing with a subsequent inspection read. Do not compare the stored duration to the source duration as if GIF delay quantization were exact. |
 | Update discovery | Mode/payload fields are visible without trial-and-error. Invalid format/mode pairs and empty patches are rejected. Record whether the host presents conditional schemas understandably. |
 | Log records | `one\ntwo\nthree\n` has three records; `tail_lines: 2` returns two and three. Byte continuation still preserves exact terminators and revisions. |
 | Recovery receipt | Successful deletion returns `trash_path` and `deleted_revision`. Follow documented manual recovery only with local-user permission; no MCP restore/purge capability is implied. |
@@ -55,6 +57,13 @@ the changes. No client configuration or personal vault file needs deletion.
 | Media creation | Use generated regular files outside the vault: PNG/image import and a supported short video with `transform=video_to_gif`. Confirm successful reads and unchanged source files. In-vault and data-URI sources remain rejected with corrective guidance. |
 | Discovery recovery | With a known unhealthy source, recognize incomplete coverage and narrow directory/formats. For `[[Target|Display name]]`, query the target, not its per-link display label. |
 | Parallel safety | Repeat independent reads/searches in parallel and one controlled stale-write conflict. Verify exact results, bounded recovery, no crash, and no identical-failure loop. |
+
+For the reported Kiro image replay, capture just one generated PNG render and one
+GIF render, each followed by `list_files`, `search_vault`, and Markdown metadata reads.
+Keep request IDs and the corresponding raw response content types alongside the
+model-visible view. If later raw responses have no image blocks but images reappear
+in the client view, preserve that evidence and the client version for host diagnosis;
+do not repeat a broad work-agent review or claim the server fixed the display.
 
 Retain all failed attempts as well as successful repairs, and distinguish raw MCP
 text from any client-side display transformation. Clean up only fixtures created
