@@ -23,6 +23,7 @@ enum FileRoutingError: Error, CustomStringConvertible, CallerSafeError {
         operation: FileCRUDOperation,
         area: VaultArea
     )
+    case updateModeNotSupported(format: FileFormat, mode: FileUpdateMode, allowed: Set<FileUpdateMode>)
     /// Read selectors are invalid or conflict for the declared format.
     case invalidReadOptions(String)
     /// Mutable note bytes no longer match the revision supplied by the caller.
@@ -43,7 +44,7 @@ enum FileRoutingError: Error, CustomStringConvertible, CallerSafeError {
             "File content does not match declared format '\(declared.rawValue)'"
         case .revisionConflict:
             "File changed since it was read: read it again before updating or deleting it."
-        case .readOnly, .operationNotSupported, .invalidReadOptions:
+        case .readOnly, .operationNotSupported, .updateModeNotSupported, .invalidReadOptions:
             description
         }
     }
@@ -69,6 +70,9 @@ enum FileRoutingError: Error, CustomStringConvertible, CallerSafeError {
         case .operationNotSupported(let format, let operation, let area):
             return "Operation '\(operation.rawValue)' is not supported for "
                 + "'\(format.rawValue)' files in \(area.rawValue)/"
+        case .updateModeNotSupported(let format, let mode, let allowed):
+            return "Update mode '\(mode.rawValue)' is not supported for '\(format.rawValue)'. Allowed modes: "
+                + allowed.map(\.rawValue).sorted().joined(separator: ", ")
         case .invalidReadOptions(let message):
             return "Invalid read options: \(message)"
         case .revisionConflict(let path):

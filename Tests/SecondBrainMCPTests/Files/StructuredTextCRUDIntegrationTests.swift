@@ -150,7 +150,7 @@ struct `Structured text routed CRUD` {
         let validBytes = try Data(contentsOf: storedURL)
         #expect(validBytes.starts(with: [0xEF, 0xBB, 0xBF]))
 
-        await #expect(throws: JSONFileOperations.InvalidJSON.self) {
+        await expectPreparationFailure(JSONFileOperations.InvalidJSON.self) {
             _ = try await context.service.update(UpdateFileRequest(
                 expectedRevision: updatedRevision,
                 format: .json,

@@ -216,7 +216,7 @@ struct `Vault path move service` {
             encoding: .utf8
         )
 
-        await #expect(throws: FileRoutingError.self) {
+        await expectPreparationFailure(FileRoutingError.self) {
             _ = try await runtime.paths.move(.file(
                 sourcePath: relative,
                 destinationPath: "notes/completed/overview.md",
@@ -246,7 +246,7 @@ struct `Vault path move service` {
             modifiedDate: nil
         ).revision
 
-        await #expect(throws: SensitiveContentPolicy.Violation.self) {
+        await expectPreparationFailure(SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.paths.move(.file(
                 sourcePath: relative,
                 destinationPath: "notes/completed/overview.md",
@@ -254,7 +254,7 @@ struct `Vault path move service` {
                 expectedRevision: revision
             ))
         }
-        await #expect(throws: FileRoutingError.self) {
+        await expectPreparationFailure(FileRoutingError.self) {
             _ = try await runtime.paths.move(.file(
                 sourcePath: relative,
                 destinationPath: "notes/completed/overview.json",
@@ -262,7 +262,7 @@ struct `Vault path move service` {
                 expectedRevision: revision
             ))
         }
-        await #expect(throws: FileRoutingError.self) {
+        await expectPreparationFailure(FileRoutingError.self) {
             _ = try await runtime.paths.move(.file(
                 sourcePath: relative,
                 destinationPath: "references/overview.md",
@@ -308,7 +308,7 @@ struct `Vault path move service` {
             atPath: linkedPath,
             withDestinationPath: root + "/" + sourcePath
         )
-        await #expect(throws: PathValidationError.self) {
+        await expectPreparationFailure(PathValidationError.self) {
             _ = try await runtime.paths.move(.file(
                 sourcePath: "notes/in-progress/linked.md",
                 destinationPath: "notes/completed/linked.md",
@@ -397,7 +397,7 @@ struct `Vault path move service` {
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await makeRecoveredRuntime(vaultPath: root)
 
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
@@ -419,35 +419,35 @@ struct `Vault path move service` {
         )
         let runtime = try await makeRecoveredRuntime(vaultPath: root)
 
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/ticket-123"
             ))
         }
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/completed/Ticket.app/ticket-123"
             ))
         }
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
                 destinationPath: "notes/in-progress/ticket-123/inside"
             ))
         }
-        await #expect(throws: FileRoutingError.self) {
+        await expectPreparationFailure(FileRoutingError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "references/books",
                 destinationPath: "notes/completed/books"
             ))
         }
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123/overview.md",
@@ -488,7 +488,7 @@ struct `Vault path move service` {
             encoding: .utf8
         )
 
-        await #expect(throws: SensitiveContentPolicy.Violation.self) {
+        await expectPreparationFailure(SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
@@ -516,7 +516,7 @@ struct `Vault path move service` {
                 root + "/notes/in-progress/ticket-123/captured.har")
         )
 
-        await #expect(throws: PersistedFileSecurityPolicy.Violation.self) {
+        await expectPreparationFailure(PersistedFileSecurityPolicy.Violation.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
@@ -545,7 +545,7 @@ struct `Vault path move service` {
         try bytes.write(to: URL(fileURLWithPath:
             root + "/notes/in-progress/ticket-123/settings.yaml"))
 
-        await #expect(throws: TextFileSupport.TextError.self) {
+        await expectPreparationFailure(TextFileSupport.TextError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
@@ -629,7 +629,7 @@ struct `Vault path move service` {
         let runtime = try await makeRecoveredRuntime(vaultPath: root)
         let hidden = root + "/notes/in-progress/ticket-123/.gitignore"
         try "*.md".write(toFile: hidden, atomically: true, encoding: .utf8)
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
@@ -641,7 +641,7 @@ struct `Vault path move service` {
             atPath: root + "/notes/in-progress/ticket-123/Nested.app",
             withIntermediateDirectories: true
         )
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",
@@ -657,7 +657,7 @@ struct `Vault path move service` {
             withIntermediateDirectories: false
         )
         #expect(Darwin.chflags(flagged, UInt32(UF_HIDDEN)) == 0)
-        await #expect(throws: DirectoryMoveError.self) {
+        await expectPreparationFailure(DirectoryMoveError.self) {
             _ = try await runtime.paths.move(MovePathRequest.directory(
 
                 sourcePath: "notes/in-progress/ticket-123",

@@ -32,43 +32,46 @@ actor VaultFileService: FileCRUDService {
     func create(_ request: CreateFileRequest) async throws -> FileOperationOutput {
         try requireMutationPermission()
         return try await access.withMutation {
-            let target = try self.resolveWritableTarget(
-                path: request.path,
-                format: request.format
-            )
-            try FileMutationResourcePreflight.validate(request)
-            let binding = try self.catalog.createBinding(
-                for: request.format,
-                in: target.area
-            )
-            try CreateFileContractValidator.validate(request, against: binding.contract)
-            try await self.store.requireAbsent(target)
-            let prepared = try await binding.execute(request, target)
-            try SensitiveContentPolicy.validate(
-                prepared.data,
-                format: target.format,
-                path: target.relativePath
-            )
-            try await self.store.requireAbsent(target)
-            let revision = FileSnapshot(
-                data: prepared.data,
-                modifiedDate: nil
-            ).revision
-            let output = prepared.output.withMetadata(FileOperationMetadata(
-                path: target.relativePath,
-                area: target.area,
-                revision: revision
-            ))
-            return try await self.mutations.execute(PreparedVaultMutation(
-                requiresSnapshot: true,
-                perform: {
-                    _ = try await self.store.create(
-                        target: target,
-                        data: prepared.data
-                    )
-                    return output
-                }
-            ))
+            let mutation = try await self.mutations.prepare {
+                let target = try self.resolveWritableTarget(
+                    path: request.path,
+                    format: request.format
+                )
+                try FileMutationResourcePreflight.validate(request)
+                let binding = try self.catalog.createBinding(
+                    for: request.format,
+                    in: target.area
+                )
+                try CreateFileContractValidator.validate(request, against: binding.contract)
+                try await self.store.requireAbsent(target)
+                let prepared = try await binding.execute(request, target)
+                try SensitiveContentPolicy.validate(
+                    prepared.data,
+                    format: target.format,
+                    path: target.relativePath
+                )
+                try await self.store.requireAbsent(target)
+                let revision = FileSnapshot(
+                    data: prepared.data,
+                    modifiedDate: nil
+                ).revision
+                let output = prepared.output.withMetadata(FileOperationMetadata(
+                    path: target.relativePath,
+                    area: target.area,
+                    revision: revision
+                ))
+                return PreparedVaultMutation(
+                    requiresSnapshot: true,
+                    perform: {
+                        _ = try await self.store.create(
+                            target: target,
+                            data: prepared.data
+                        )
+                        return output
+                    }
+                )
+            }
+            return try await self.mutations.execute(mutation)
         }
     }
 
@@ -121,98 +124,104 @@ actor VaultFileService: FileCRUDService {
     func update(_ request: UpdateFileRequest) async throws -> FileOperationOutput {
         try requireMutationPermission()
         return try await access.withMutation {
-            let target = try self.resolveWritableTarget(
-                path: request.path,
-                format: request.format
-            )
-            try FileMutationResourcePreflight.validate(request)
-            let binding = try self.catalog.updateBinding(
-                for: request.format,
-                in: target.area
-            )
-            let snapshot = try await self.store.snapshot(target.readable)
-            guard snapshot.revision == request.expectedRevision else {
-                throw FileRoutingError.revisionConflict(target.relativePath)
-            }
-            let prepared = try await binding.execute(request, target, snapshot)
-            try SensitiveContentPolicy.validate(
-                prepared.data,
-                format: target.format,
-                path: target.relativePath
-            )
-            let noChanges = prepared.data == snapshot.data
-            let revision = noChanges
-                ? snapshot.revision
-                : FileSnapshot(data: prepared.data, modifiedDate: nil).revision
-            let output = (noChanges
-                ? FileOperationOutput.text("No changes: \(target.relativePath)")
-                : prepared.output
-            ).withMetadata(FileOperationMetadata(
-                path: target.relativePath,
-                area: target.area,
-                revision: revision
-            ))
-            return try await self.mutations.execute(PreparedVaultMutation(
-                requiresSnapshot: !noChanges,
-                perform: {
-                    guard !noChanges else { return output }
-                    do {
-                        _ = try await self.store.replace(
-                            target: target,
-                            data: prepared.data,
-                            expectedRevision: request.expectedRevision
-                        )
-                    } catch VaultCRUDStore.StoreError.changedSinceRead {
-                        throw FileRoutingError.revisionConflict(target.relativePath)
-                    }
-                    return output
+            let mutation = try await self.mutations.prepare {
+                let target = try self.resolveWritableTarget(
+                    path: request.path,
+                    format: request.format
+                )
+                try FileMutationResourcePreflight.validate(request)
+                let binding = try self.catalog.updateBinding(
+                    for: request.format,
+                    in: target.area
+                )
+                let snapshot = try await self.store.snapshot(target.readable)
+                guard snapshot.revision == request.expectedRevision else {
+                    throw FileRoutingError.revisionConflict(target.relativePath)
                 }
-            ))
+                let prepared = try await binding.execute(request, target, snapshot)
+                try SensitiveContentPolicy.validate(
+                    prepared.data,
+                    format: target.format,
+                    path: target.relativePath
+                )
+                let noChanges = prepared.data == snapshot.data
+                let revision = noChanges
+                    ? snapshot.revision
+                    : FileSnapshot(data: prepared.data, modifiedDate: nil).revision
+                let output = (noChanges
+                    ? FileOperationOutput.text("No changes: \(target.relativePath)")
+                    : prepared.output
+                ).withMetadata(FileOperationMetadata(
+                    path: target.relativePath,
+                    area: target.area,
+                    revision: revision
+                ))
+                return PreparedVaultMutation(
+                    requiresSnapshot: !noChanges,
+                    perform: {
+                        guard !noChanges else { return output }
+                        do {
+                            _ = try await self.store.replace(
+                                target: target,
+                                data: prepared.data,
+                                expectedRevision: request.expectedRevision
+                            )
+                        } catch VaultCRUDStore.StoreError.changedSinceRead {
+                            throw FileRoutingError.revisionConflict(target.relativePath)
+                        }
+                        return output
+                    }
+                )
+            }
+            return try await self.mutations.execute(mutation)
         }
     }
 
     func delete(_ request: DeleteFileRequest) async throws -> FileOperationOutput {
         try requireMutationPermission()
         return try await access.withMutation {
-            let target = try self.resolveWritableTarget(
-                path: request.path,
-                format: request.format
-            )
-            let binding = try self.catalog.deleteBinding(
-                for: request.format,
-                in: target.area
-            )
-            let snapshot = try await self.store.snapshot(target.readable)
-            guard snapshot.revision == request.expectedRevision else {
-                throw FileRoutingError.revisionConflict(target.relativePath)
-            }
-            try await binding.execute(request, target)
-            return try await self.mutations.execute(PreparedVaultMutation(
-                requiresSnapshot: true,
-                perform: {
-                    let deletion: (trashPath: String, deletedRevision: FileRevision)
-                    do {
-                        deletion = try await self.store.softDelete(
-                            target: target,
-                            expectedRevision: request.expectedRevision
-                        )
-                    } catch VaultCRUDStore.StoreError.changedSinceRead {
-                        throw FileRoutingError.revisionConflict(target.relativePath)
-                    }
-                    return FileOperationOutput.text(
-                        "Deleted \(target.relativePath) → \(deletion.trashPath). "
-                            + "Retained revision: \(deletion.deletedRevision.rawValue). "
-                            + "Recovery is manual: stop clients, copy the trash file to an unused notes/ path, "
-                            + "then restart and verify the revision. Trash is not automatically purged."
-                    ).withMetadata(FileOperationMetadata(
-                        path: target.relativePath,
-                        area: target.area,
-                        revision: nil,
-                        trashPath: deletion.trashPath,
-                        deletedRevision: deletion.deletedRevision
-                    ))
+            let mutation = try await self.mutations.prepare {
+                let target = try self.resolveWritableTarget(
+                    path: request.path,
+                    format: request.format
+                )
+                let binding = try self.catalog.deleteBinding(
+                    for: request.format,
+                    in: target.area
+                )
+                let snapshot = try await self.store.snapshot(target.readable)
+                guard snapshot.revision == request.expectedRevision else {
+                    throw FileRoutingError.revisionConflict(target.relativePath)
                 }
-            ))
+                try await binding.execute(request, target)
+                return PreparedVaultMutation(
+                    requiresSnapshot: true,
+                    perform: {
+                        let deletion: (trashPath: String, deletedRevision: FileRevision)
+                        do {
+                            deletion = try await self.store.softDelete(
+                                target: target,
+                                expectedRevision: request.expectedRevision
+                            )
+                        } catch VaultCRUDStore.StoreError.changedSinceRead {
+                            throw FileRoutingError.revisionConflict(target.relativePath)
+                        }
+                        return FileOperationOutput.text(
+                            "Deleted \(target.relativePath) → \(deletion.trashPath). "
+                                + "Retained revision: \(deletion.deletedRevision.rawValue). "
+                                + "Recovery is manual: stop clients, copy the trash file to an unused notes/ path, "
+                                + "then restart and verify the revision. Trash is not automatically purged."
+                        ).withMetadata(FileOperationMetadata(
+                            path: target.relativePath,
+                            area: target.area,
+                            revision: nil,
+                            trashPath: deletion.trashPath,
+                            deletedRevision: deletion.deletedRevision
+                        ))
+                    }
+                )
+            }
+            return try await self.mutations.execute(mutation)
         }
     }
 

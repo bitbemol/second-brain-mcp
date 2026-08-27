@@ -45,6 +45,7 @@ struct WritableFileTarget: Sendable {
         guard format.accepts(path: path) else {
             throw FileRoutingError.extensionMismatch(path: path, format: format)
         }
+        guard !path.contains("//") else { throw PathValidationError.emptyComponent }
         let resolved = try PathValidator.resolve(
             relativePath: path,
             root: vaultPath,

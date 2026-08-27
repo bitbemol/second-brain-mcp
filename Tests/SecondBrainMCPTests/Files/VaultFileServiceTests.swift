@@ -230,8 +230,11 @@ struct `Generic files — routed service` {
             do {
                 _ = try await runtime.files.create(request)
                 Issue.record("Expected create contract rejection for \(request.path)")
+            } catch MutationFailure.beforePersistence(let cause) {
+                #expect(cause is CreateFileContractValidator.Violation)
+                #expect(String(describing: cause) == expectedError)
             } catch {
-                #expect(String(describing: error) == expectedError)
+                Issue.record("Expected a preparation rejection, got: \(error)")
             }
             #expect(!FileManager.default.fileExists(atPath: root + "/" + request.path))
         }
@@ -355,7 +358,7 @@ struct `Generic files — routed service` {
         let rejectedPath = "notes/rejected.md"
         let secret = "Bearer " + String(repeating: "q", count: 32)
 
-        await #expect(throws: SensitiveContentPolicy.Violation.self) {
+        await expectPreparationFailure(SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.files.create(CreateFileRequest(
 
                 format: .markdown,
@@ -380,7 +383,7 @@ struct `Generic files — routed service` {
             tags: [],
             transform: nil
         ))
-        await #expect(throws: SensitiveContentPolicy.Violation.self) {
+        await expectPreparationFailure(SensitiveContentPolicy.Violation.self) {
             _ = try await runtime.files.update(UpdateFileRequest(
 
                 expectedRevision: try #require(created.metadata?.revision),
@@ -572,7 +575,12 @@ struct `Generic files — routed service` {
                     Issue.record("Unexpected test operation")
                 }
                 Issue.record("Expected a revision conflict")
-            } catch FileRoutingError.revisionConflict(let conflictPath) {
+            } catch MutationFailure.beforePersistence(let cause) {
+                guard let routing = cause as? FileRoutingError,
+                      case .revisionConflict(let conflictPath) = routing else {
+                    Issue.record("Expected revision-conflict cause, got: \(cause)")
+                    continue
+                }
                 #expect(conflictPath == path)
                 #expect(!String(describing: FileRoutingError.revisionConflict(
                     conflictPath
@@ -611,7 +619,7 @@ struct `Generic files — routed service` {
             transform: nil
         )
 
-        await #expect(throws: VaultCRUDStore.StoreError.self) {
+        await expectPreparationFailure(VaultCRUDStore.StoreError.self) {
             _ = try await runtime.files.create(retryable)
         }
         try FileManager.default.removeItem(atPath: root + "/" + path)
@@ -651,7 +659,9 @@ struct `Generic files — routed service` {
                         replacements: []
                     ))
                     return true
-                } catch FileRoutingError.revisionConflict {
+                } catch MutationFailure.beforePersistence(let cause) {
+                    guard let routing = cause as? FileRoutingError,
+                          case .revisionConflict = routing else { throw cause }
                     return false
                 }
             }
@@ -832,8 +842,8 @@ struct `Generic files — routed service` {
             mode: .replace,
             replacements: []
         )
-        await #expect(throws: FileRoutingError.self) {
-            try await service.update(request)
+        await expectPreparationFailure(FileRoutingError.self) {
+            _ = try await service.update(request)
         }
         #expect(!FileManager.default.fileExists(atPath: root + "/notes/capture.har"))
     }
@@ -917,8 +927,8 @@ struct `Generic files — routed service` {
             )
         )
 
-        await #expect(throws: DeleteHookError.self) {
-            try await service.delete(DeleteFileRequest(
+        await expectPreparationFailure(DeleteHookError.self) {
+            _ = try await service.delete(DeleteFileRequest(
 
                 expectedRevision: revision("protected"),
                 format: .markdown,
@@ -1016,7 +1026,12 @@ struct `Generic files — routed service` {
         do {
             _ = try await operation()
             Issue.record("Expected writable-area rejection")
-        } catch FileRoutingError.areaNotWritable(let path) {
+        } catch MutationFailure.beforePersistence(let cause) {
+            guard let routing = cause as? FileRoutingError,
+                  case .areaNotWritable(let path) = routing else {
+                Issue.record("Expected writable-area rejection cause, got: \(cause)")
+                return
+            }
             #expect(path == expectedPath)
         } catch {
             Issue.record("Unexpected error: \(error)")

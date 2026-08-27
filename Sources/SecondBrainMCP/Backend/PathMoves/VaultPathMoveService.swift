@@ -6,7 +6,7 @@ actor VaultPathMoveService: PathMoveService {
     private let tree: PathTreeStore
     private let fileStore: VaultCRUDStore
     private let supportedFileFormats: Set<FileFormat>
-    private let versioning: any VaultVersioning
+    private let mutations: VaultMutationExecutor
     private let access: any VaultAccessCoordinating
     private let readOnly: Bool
 
@@ -21,7 +21,7 @@ actor VaultPathMoveService: PathMoveService {
         self.tree = PathTreeStore(vaultPath: vaultPath)
         self.fileStore = VaultCRUDStore(vaultPath: vaultPath)
         self.supportedFileFormats = supportedFileFormats
-        self.versioning = versioning
+        self.mutations = VaultMutationExecutor(versioning: versioning)
         self.access = access
         self.readOnly = readOnly
     }
@@ -29,34 +29,37 @@ actor VaultPathMoveService: PathMoveService {
     func move(_ request: MovePathRequest) async throws -> FileOperationOutput {
         guard !readOnly else { throw FileRoutingError.readOnly }
         return try await access.withMutation {
-            switch request {
-            case .file(
-                let sourcePath,
-                let destinationPath,
-                let format,
-                let expectedRevision
-            ):
-                return try await self.moveFile(
-                    sourcePath: sourcePath,
-                    destinationPath: destinationPath,
-                    format: format,
-                    expectedRevision: expectedRevision
-                )
-            case .directory(let sourcePath, let destinationPath):
-                return try await self.moveDirectory(
-                    sourcePath: sourcePath,
-                    destinationPath: destinationPath
-                )
+            let prepared = try await self.mutations.prepare {
+                switch request {
+                case .file(
+                    let sourcePath,
+                    let destinationPath,
+                    let format,
+                    let expectedRevision
+                ):
+                    return try await self.prepareFileMove(
+                        sourcePath: sourcePath,
+                        destinationPath: destinationPath,
+                        format: format,
+                        expectedRevision: expectedRevision
+                    )
+                case .directory(let sourcePath, let destinationPath):
+                    return try await self.prepareDirectoryMove(
+                        sourcePath: sourcePath,
+                        destinationPath: destinationPath
+                    )
+                }
             }
+            return try await self.mutations.execute(prepared)
         }
     }
 
-    private func moveFile(
+    private func prepareFileMove(
         sourcePath: String,
         destinationPath: String,
         format: FileFormat,
         expectedRevision: FileRevision
-    ) async throws -> FileOperationOutput {
+    ) async throws -> PreparedVaultMutation {
         guard sourcePath.utf8.count <= PathMoveRequestLimits.maximumPathBytes,
               destinationPath.utf8.count <= PathMoveRequestLimits.maximumPathBytes else {
             throw PathMoveError.pathTooLong
@@ -95,14 +98,12 @@ actor VaultPathMoveService: PathMoveService {
         try Task.checkCancellation()
 
         let tree = self.tree
-        let versioning = self.versioning
-        return try await Task.detached {
+        return PreparedVaultMutation(requiresSnapshot: true, perform: {
             let movedRevision = try tree.moveFile(
                 source: source,
                 destination: destination,
                 expectedRevision: expectedRevision
             )
-            try await versioning.recordSnapshot()
             return FileOperationOutput.text(
                 "Moved \(source.relativePath) → \(destination.relativePath)"
             ).withMetadata(FileOperationMetadata(
@@ -111,13 +112,13 @@ actor VaultPathMoveService: PathMoveService {
                 area: .notes,
                 revision: movedRevision
             ))
-        }.value
+        })
     }
 
-    private func moveDirectory(
+    private func prepareDirectoryMove(
         sourcePath: String,
         destinationPath: String
-    ) async throws -> FileOperationOutput {
+    ) async throws -> PreparedVaultMutation {
         let canonicalSource = try NotesDirectoryTarget.canonicalize(path: sourcePath)
         let canonicalDestination = try NotesDirectoryTarget.canonicalize(path: destinationPath)
         let sourceIdentity = Self.pathIdentity(canonicalSource)
@@ -154,14 +155,12 @@ actor VaultPathMoveService: PathMoveService {
             .rebased(to: destination.relativePath)
         try Task.checkCancellation()
         let tree = self.tree
-        let versioning = self.versioning
-        return try await Task.detached {
+        return PreparedVaultMutation(requiresSnapshot: true, perform: {
             _ = try tree.moveDirectory(
                 source: source,
                 destination: destination,
                 expectedIdentity: identity
             )
-            try await versioning.recordSnapshot()
             return FileOperationOutput.text(
                 "Moved \(source.relativePath) → \(destination.relativePath)"
             ).withMetadata(FileOperationMetadata(
@@ -170,7 +169,7 @@ actor VaultPathMoveService: PathMoveService {
                 area: .notes,
                 revision: nil
             ))
-        }.value
+        })
     }
 
     private nonisolated static func pathIdentity(_ path: String) -> String {

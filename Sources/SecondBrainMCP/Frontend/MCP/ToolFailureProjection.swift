@@ -31,16 +31,29 @@ enum ToolFailureProjection {
         state: State,
         fallback: String
     ) -> CallTool.Result {
+        let projectedError: any Error
+        let projectedState: State
+        switch error {
+        case MutationFailure.beforePersistence(let cause):
+            projectedError = cause
+            projectedState = .notApplied
+        case MutationFailure.afterPersistenceStarted(let cause):
+            projectedError = cause
+            projectedState = .unknown
+        default:
+            projectedError = error
+            projectedState = state
+        }
         let message: String
-        if let listingError = error as? FileListingError {
+        if let listingError = projectedError as? FileListingError {
             // Listing diagnostics contain fixed policy text, limits, and audited option names.
             message = listingError.description
-        } else if let safe = error as? any CallerSafeError {
+        } else if let safe = projectedError as? any CallerSafeError {
             message = "Error: \(safe.callerSafeDescription)"
         } else {
             message = fallback
         }
-        return failure(message, code: code(for: error), state: state)
+        return failure(message, code: code(for: projectedError), state: projectedState)
     }
 
     private static func failure(
@@ -78,6 +91,10 @@ enum ToolFailureProjection {
             case .notFound: .notFound
             case .notARegularFile: .invalidPath
             }
+        case VaultSearchRequestError.directoryNotFound:
+            .directoryNotFound
+        case is HARInspector.InspectionError:
+            .invalidRequest
         case is PathValidationError:
             .invalidPath
         case let error as CreateFileContractValidator.Violation:

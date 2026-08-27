@@ -11,8 +11,8 @@ struct RoutineToolErrorTests {
         defer { fixture.cleanup() }
         _ = try await fixture.create()
         let result = try await fixture.create()
-        try expectFailure(result, code: "ALREADY_EXISTS", state: "unknown",
-                          retry: "inspect_state", detail: "already exists")
+        try expectFailure(result, code: "ALREADY_EXISTS", state: "not_applied",
+                          retry: "correct_request", detail: "already exists")
         #expect(try Data(contentsOf: fixture.file) == Data("{}".utf8))
         #expect(await fixture.versioning.calls == 1)
     }
@@ -79,8 +79,8 @@ struct RoutineToolErrorTests {
         let create = try await fixture.controller.call(.init(name: "create_file", arguments: [
             "format": .string("json"), "path": .string(hostile), "content": .string("{}"),
         ]))
-        try expectFailure(create, code: "INVALID_PATH", state: "unknown",
-                          retry: "inspect_state", detail: "traversal")
+        try expectFailure(create, code: "INVALID_PATH", state: "not_applied",
+                          retry: "correct_request", detail: "traversal")
         let listing = try await ListFilesToolController(listing: fixture.listing).call(.init(
             name: "list_files", arguments: [
                 "area": .string("notes"), "directory": .string("../PRIVATE_ERROR_MARKER"),
@@ -99,8 +99,8 @@ struct RoutineToolErrorTests {
             "format": .string("gif"), "path": .string("notes/import.gif"),
             "source": .string("/missing/PRIVATE_ERROR_MARKER.mov"),
         ]))
-        try expectFailure(result, code: "MISSING_TRANSFORM", state: "unknown",
-                          retry: "inspect_state", detail: "video_to_gif")
+        try expectFailure(result, code: "MISSING_TRANSFORM", state: "not_applied",
+                          retry: "correct_request", detail: "video_to_gif")
         #expect(await fixture.versioning.calls == 0)
         #expect(!FileManager.default.fileExists(atPath: fixture.vault.appendingPathComponent("notes/import.gif").path))
     }
@@ -149,11 +149,138 @@ struct RoutineToolErrorTests {
         #expect(!text(result).lowercased().contains("unchanged"))
     }
 
+
+    @Test("Malformed HAR is a private, actionable rejection before persistence",
+          arguments: ["{}", "{\"log\":{}}", "not JSON", "{\"log\":{\"version\":\"1.2\"}}"])
+    func malformedHARIsRejected(_ content: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let result = try await fixture.controller.call(.init(name: "create_file", arguments: [
+            "format": .string("har"), "path": .string("notes/invalid.har"), "content": .string(content),
+        ]))
+        try expectFailure(result, code: "INVALID_REQUEST", state: "not_applied",
+                          retry: "correct_request", detail: "HAR")
+        #expect(!text(result).lowercased().contains("internal error"))
+        #expect(!text(result).lowercased().contains("unconfirmed"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.vault.appendingPathComponent("notes/invalid.har").path))
+        #expect(await fixture.versioning.calls == 0)
+    }
+
+    @Test("Canvas append explains the unsupported mode and the supported replacement")
+    func unsupportedUpdateModeIsSpecific() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let original = "{\"nodes\":[],\"edges\":[]}"
+        let created = try await fixture.controller.call(.init(name: "create_file", arguments: [
+            "format": .string("canvas"), "path": .string("notes/map.canvas"), "content": .string(original),
+        ]))
+        try #require(created.isError != true)
+        let revision = try #require(created.structuredContent?.objectValue?["revision"]?.stringValue)
+        let result = try await fixture.controller.call(.init(name: "update_file", arguments: [
+            "format": .string("canvas"), "path": .string("notes/map.canvas"), "content": .string(original),
+            "mode": .string("append"), "expected_revision": .string(revision),
+        ]))
+        try expectFailure(result, code: "INVALID_REQUEST", state: "not_applied",
+                          retry: "correct_request", detail: "append")
+        #expect(text(result).contains("replace"))
+        #expect(!text(result).contains("Operation 'update' is not supported"))
+        #expect(try String(contentsOf: fixture.vault.appendingPathComponent("notes/map.canvas"), encoding: .utf8) == original)
+        #expect(await fixture.versioning.calls == 1)
+        let valid = try await fixture.controller.call(.init(name: "update_file", arguments: [
+            "format": .string("canvas"), "path": .string("notes/map.canvas"), "content": .string(original),
+            "mode": .string("replace"), "expected_revision": .string(revision),
+        ]))
+        #expect(valid.isError != true)
+    }
+
+    @Test("Repeated path separators are invalid syntax, not alleged symlinks")
+    func repeatedSeparatorHasPreciseDiagnosis() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let result = try await fixture.controller.call(.init(name: "create_file", arguments: [
+            "format": .string("json"), "path": .string("notes//invalid.json"), "content": .string("{}"),
+        ]))
+        try expectFailure(result, code: "INVALID_PATH", state: "not_applied",
+                          retry: "correct_request", detail: "empty path component")
+        #expect(!text(result).lowercased().contains("symbolic"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.vault.appendingPathComponent("notes/invalid.json").path))
+        #expect(await fixture.versioning.calls == 0)
+    }
+
+
+    @Test("A stale file move is rejected before persistence without uncertainty")
+    func staleMoveIsNotApplied() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        _ = try await fixture.create()
+        let result = try await PathMoveToolController(readOnly: false, paths: fixture.paths).call(.init(
+            name: "move_path", arguments: [
+                "kind": .string("file"), "format": .string("json"),
+                "source_path": .string("notes/source.json"), "destination_path": .string("notes/moved.json"),
+                "expected_revision": .string("sha256:" + String(repeating: "0", count: 64)),
+            ]
+        ))
+        try expectFailure(result, code: "REVISION_CONFLICT", state: "not_applied",
+                          retry: "correct_request", detail: "changed")
+        #expect(try Data(contentsOf: fixture.file) == Data("{}".utf8))
+        #expect(!FileManager.default.fileExists(atPath: fixture.vault.appendingPathComponent("notes/moved.json").path))
+        #expect(await fixture.versioning.calls == 1)
+    }
+
+    @Test("A directory collision is rejected before persistence without uncertainty")
+    func directoryCollisionIsNotApplied() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        for name in ["source", "destination"] {
+            try FileManager.default.createDirectory(at: fixture.vault.appendingPathComponent("notes/" + name),
+                                                    withIntermediateDirectories: true)
+        }
+        let result = try await PathMoveToolController(readOnly: false, paths: fixture.paths).call(.init(
+            name: "move_path", arguments: [
+                "kind": .string("directory"), "source_path": .string("notes/source"),
+                "destination_path": .string("notes/destination"),
+            ]
+        ))
+        try expectFailure(result, code: "OPERATION_FAILED", state: "not_applied",
+                          retry: "correct_request", detail: "exists")
+        #expect(FileManager.default.fileExists(atPath: fixture.vault.appendingPathComponent("notes/source").path))
+        #expect(await fixture.versioning.calls == 0)
+    }
+
+    @Test("Move snapshot failures stay uncertain after bytes actually moved", arguments: [false, true])
+    func persistedMoveFailureIsUnknown(_ directory: Bool) async throws {
+        let failure = PathValidationError.pathContainsTraversal("PRIVATE_ERROR_MARKER")
+        let fixture = try Fixture(snapshotFailure: failure)
+        defer { fixture.cleanup() }
+        let source = directory ? "notes/source/file.json" : "notes/source.json"
+        let destination = directory ? "notes/destination/file.json" : "notes/destination.json"
+        let url = fixture.vault.appendingPathComponent(source)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bytes = Data("{}".utf8)
+        try bytes.write(to: url)
+        var args: [String: Value] = [
+            "kind": .string(directory ? "directory" : "file"),
+            "source_path": .string(directory ? "notes/source" : source),
+            "destination_path": .string(directory ? "notes/destination" : destination),
+        ]
+        if !directory {
+            args["format"] = .string("json")
+            args["expected_revision"] = .string(FileSnapshot(data: bytes, modifiedDate: nil).revision.rawValue)
+        }
+        let result = try await PathMoveToolController(readOnly: false, paths: fixture.paths)
+            .call(.init(name: "move_path", arguments: args))
+        try expectFailure(result, code: "INVALID_PATH", state: "unknown",
+                          retry: "inspect_state", detail: "inspect")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(try Data(contentsOf: fixture.vault.appendingPathComponent(destination)) == bytes)
+        #expect(await fixture.versioning.calls == 1)
+    }
+
     private func expectMissingReadAndDelete(_ fixture: Fixture, revision: String) async throws {
         try expectFailure(try await fixture.call("read_file"), code: "NOT_FOUND", state: "read_only",
                           retry: "correct_request", detail: "not found")
         try expectFailure(try await fixture.call("delete_file", revision: revision),
-                          code: "NOT_FOUND", state: "unknown", retry: "inspect_state", detail: "not found")
+                          code: "NOT_FOUND", state: "not_applied", retry: "correct_request", detail: "not found")
     }
 
     private func expectFailure(_ result: CallTool.Result, code: String, state: String,

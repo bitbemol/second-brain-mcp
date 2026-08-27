@@ -6,6 +6,20 @@ struct VaultMutationExecutor: Sendable {
         self.versioning = versioning
     }
 
+    /// Preparation is persistence-free and remains inside the caller's exclusive lease.
+    func prepare(
+        _ operation: @Sendable () async throws -> PreparedVaultMutation
+    ) async throws -> PreparedVaultMutation {
+        do {
+            try Task.checkCancellation()
+            return try await operation()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw MutationFailure.beforePersistence(error)
+        }
+    }
+
     /// Runs under the caller's exclusive ``VaultAccessCoordinating`` lease.
     ///
     /// Cancellation is honored before persistence starts. Once it starts, the
@@ -16,11 +30,17 @@ struct VaultMutationExecutor: Sendable {
         try Task.checkCancellation()
         let versioning = self.versioning
         return try await Task.detached {
-            let output = try await mutation.perform()
-            if mutation.requiresSnapshot {
-                try await versioning.recordSnapshot()
+            do {
+                let output = try await mutation.perform()
+                if mutation.requiresSnapshot {
+                    try await versioning.recordSnapshot()
+                }
+                return output
+            } catch let failure as MutationFailure {
+                // A nested preparation failure from persistence/versioning is not evidence
+                // that this outer operation left the vault untouched.
+                throw MutationFailure.afterPersistenceStarted(failure.underlying)
             }
-            return output
         }.value
     }
 }

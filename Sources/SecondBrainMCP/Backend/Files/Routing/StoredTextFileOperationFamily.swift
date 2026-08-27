@@ -92,10 +92,8 @@ struct StoredTextFileOperationFamily: Sendable {
             supportedModes: supportedModes
         ) { request, target, snapshot in
             guard supportedModes.contains(request.mode) else {
-                throw FileRoutingError.operationNotSupported(
-                    format: format,
-                    operation: .update,
-                    area: .notes
+                throw FileRoutingError.updateModeNotSupported(
+                    format: format, mode: request.mode, allowed: supportedModes
                 )
             }
 

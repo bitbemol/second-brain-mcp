@@ -3,11 +3,20 @@ import Foundation
 /// Validates required HTTP Archive structure and derives traffic summary facts.
 enum HARInspector {
     /// Errors produced while validating the minimum required HAR structure.
-    enum InspectionError: Error, CustomStringConvertible, Sendable {
+    enum InspectionError: Error, CustomStringConvertible, CallerSafeError, Sendable {
         /// The payload cannot be decoded as a top-level JSON object.
         case invalidJSON
         /// The JSON object is missing a required HAR field or field type.
         case invalidStructure(String)
+
+        var callerSafeDescription: String {
+            switch self {
+            case .invalidJSON:
+                "HAR input must be valid, duplicate-key-free JSON with a top-level log object."
+            case .invalidStructure:
+                "Invalid HAR structure: require log.version, log.creator.name, and log.entries with valid request, response, and timing fields."
+            }
+        }
 
         /// Human-readable archive validation failure.
         var description: String {

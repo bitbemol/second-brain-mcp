@@ -21,6 +21,7 @@ enum SearchRequestLimits {
 /// Safe request-validation failures that may cross the backend/frontend boundary.
 enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
     case invalidScope
+    case directoryNotFound
     case unsupportedFormats([FileFormat], location: VaultArea)
     case busy
     case workBudgetExceeded
@@ -39,6 +40,8 @@ enum VaultSearchRequestError: Error, CustomStringConvertible, Sendable {
         switch self {
         case .busy:
             "Search is busy; retry after current work finishes"
+        case .directoryNotFound:
+            "Search directory not found; choose an existing area-relative directory or omit directory to search the area."
         case .invalidScope:
             "Search scope must select an existing visible area-relative directory and compatible filters"
         case .unsupportedFormats(let formats, let location):
