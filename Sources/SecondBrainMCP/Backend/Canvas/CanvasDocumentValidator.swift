@@ -18,7 +18,7 @@ enum CanvasDocumentValidator {
         var callerSafeDescription: String {
             switch self {
             case .malformed:
-                "Invalid canvas JSON; check node and edge fields and allowed values"
+                "Invalid canvas JSON; expected an object, e.g. {\"nodes\":[],\"edges\":[]}. Check node and edge fields and allowed values"
             case .duplicateNodeID:
                 "Duplicate node identifiers are not allowed"
             case .danglingEdge:

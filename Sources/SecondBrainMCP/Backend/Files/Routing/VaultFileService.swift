@@ -285,16 +285,23 @@ private enum ReadFileOptionsValidator {
             throw invalid("metadata view is supported only for markdown and pdf")
         }
         let options = request.options
-        guard options.tailLines == nil,
-              options.startLine == nil,
-              options.maxLines == nil,
-              options.page == nil,
-              options.pages == nil,
-              options.pageRange == nil,
-              options.byteOffset == nil,
-              options.maxBytes == nil,
-              options.expectedRevision == nil else {
-            throw invalid("metadata view cannot be combined with content selectors or expected_revision")
+        let selectors: [(name: String, provided: Bool)] = [
+            ("tail_lines", options.tailLines != nil),
+            ("start_line", options.startLine != nil),
+            ("max_lines", options.maxLines != nil),
+            ("page", options.page != nil),
+            ("pages", options.pages != nil),
+            ("page_range", options.pageRange != nil),
+            ("byte_offset", options.byteOffset != nil),
+            ("max_bytes", options.maxBytes != nil),
+            ("expected_revision", options.expectedRevision != nil),
+        ]
+        let conflicts = selectors.filter(\.provided).map(\.name)
+        guard conflicts.isEmpty else {
+            throw invalid(
+                "metadata view cannot be combined with \(conflicts.joined(separator: ", ")). "
+                    + "Omit these fields for metadata, or use view=content."
+            )
         }
     }
 

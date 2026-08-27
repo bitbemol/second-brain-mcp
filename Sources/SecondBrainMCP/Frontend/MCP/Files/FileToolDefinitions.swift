@@ -32,7 +32,7 @@ enum FileToolDefinitions {
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .create),
                     formatDescription: createContractDescription(capabilities),
-                    pathDescription: "Destination under notes/ with an extension matching format",
+                    pathDescription: "Destination is vault-relative including notes/, e.g. notes/QA/example.md; extension must match format",
                     additionalProperties: [
                         .content: .object([
                             "type": .string("string"),
@@ -155,7 +155,7 @@ enum FileToolDefinitions {
                             "minimum": .int(FileReadRequestLimits.minimumTextChunkBytes),
                             "maximum": .int(FileReadRequestLimits.maximumTextChunkBytes),
                             "default": .int(FileReadRequestLimits.defaultTextChunkBytes),
-                            "description": .string("Maximum UTF-8 bytes in one text chunk; chunk boundaries never split a scalar."),
+                            "description": .string("Content only; omit for metadata. Maximum UTF-8 bytes per text chunk; never splits a scalar."),
                         ]),
                         .expectedRevision: expectedRevisionSchema,
                     ]
@@ -261,8 +261,23 @@ enum FileToolDefinitions {
             }
             return capability.format.rawValue
         }
-        return "Required \(input.rawValue) input for: "
+        let required = "Required \(input.rawValue) input for: "
             + formats.joined(separator: ", ")
+        guard input == .source else { return required }
+        let media = capabilities.formats.compactMap { capability -> String? in
+            guard let contract = capability.createContract, contract.input == .source else {
+                return nil
+            }
+            if contract.transform == .videoToGIF {
+                return "\(capability.format.rawValue): video file with transform=video_to_gif"
+            }
+            if capability.format == .png {
+                return "png: image file"
+            }
+            return nil
+        }
+        return required + ". External local file path outside the vault, not a data URI. "
+            + media.joined(separator: "; ")
     }
 
     private static func tagDescription(

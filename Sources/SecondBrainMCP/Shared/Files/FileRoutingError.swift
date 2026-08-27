@@ -33,7 +33,7 @@ enum FileRoutingError: Error, CustomStringConvertible, CallerSafeError {
         case .unknownFormat:
             "Unsupported file format: choose a listed concrete format"
         case .invalidArea:
-            "Path must be within notes/ or references/"
+            "Path must be vault-relative under notes/ or references/, e.g. notes/QA/example.md; include the area prefix"
         case .areaNotWritable:
             "Writable file paths must be within notes/"
         case .extensionMismatch(_, let format):

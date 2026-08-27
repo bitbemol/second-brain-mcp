@@ -13,6 +13,8 @@ struct FileToolArguments: Sendable {
         case unknown
         /// A present argument has the wrong JSON type.
         case invalidType(argument: FileToolArgument, expected: String)
+        /// A data URI is inline content, never an external source file path.
+        case inlineSource
 
         /// Human-readable boundary validation failure.
         var description: String {
@@ -21,6 +23,8 @@ struct FileToolArguments: Sendable {
                 "Missing required parameter: \(argument.rawValue)"
             case .unknown:
                 "File request contains an unknown parameter"
+            case .inlineSource:
+                "Invalid parameter 'source': use an external file path outside the vault, not a data URI"
             case .invalidType(let argument, let expected):
                 "Invalid parameter '\(argument.rawValue)': expected \(expected)"
             }
@@ -45,6 +49,18 @@ struct FileToolArguments: Sendable {
     /// Returns an optional string, rejecting a present non-string value.
     func string(_ argument: FileToolArgument) throws -> String? {
         try value(argument, expected: "string", using: \.stringValue)
+    }
+
+    /// Source is a filesystem path, never inline data or a directly constructed binary value.
+    func sourcePath() throws -> String? {
+        if case .data? = values[FileToolArgument.source.rawValue] {
+            throw ValidationError.inlineSource
+        }
+        let source = try string(.source)
+        if source?.prefix(5).lowercased() == "data:" {
+            throw ValidationError.inlineSource
+        }
+        return source
     }
 
     /// Returns a required string, distinguishing absence from an invalid type.

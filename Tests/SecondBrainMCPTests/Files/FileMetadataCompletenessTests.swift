@@ -177,6 +177,67 @@ struct `Truthful bounded metadata` {
         #expect(properties["outline"]?.objectValue?["maxItems"]?.intValue == FileMetadataLimits.maximumPDFOutlineEntries)
     }
 
+    @Test("Metadata errors name only the conflicting supplied selector")
+    func metadataConflictNamesProvidedSelector() async throws {
+        let selectors: [String: Value] = [
+            "tail_lines": .int(1), "start_line": .int(1), "max_lines": .int(1),
+            "page": .int(1), "pages": .array([.int(1)]), "page_range": .string("1-2"),
+            "byte_offset": .int(0), "max_bytes": .int(65_536),
+            "expected_revision": .string("sha256:" + String(repeating: "a", count: 64)),
+        ]
+        try await withFixture(Data("# Safe metadata\nBODY_NOT_FOR_ERRORS".utf8)) { controller in
+            for (selector, value) in selectors {
+                let result = try await controller.call(.init(name: "read_file", arguments: [
+                    "format": .string("markdown"), "path": .string("notes/note.md"),
+                    "view": .string("metadata"), selector: value,
+                ]))
+                let message = result.content.compactMap { content -> String? in
+                    if case .text(let text, _, _) = content { return text }
+                    return nil
+                }.joined()
+                #expect(result.isError == true)
+                #expect(message.contains(selector))
+                #expect(message.lowercased().contains("omit"))
+                #expect(message.contains("view=content"))
+                let mentioned = Set(message.split {
+                    !$0.isLetter && !$0.isNumber && $0 != "_"
+                }.map(String.init)).intersection(selectors.keys)
+                #expect(mentioned == [selector])
+                #expect(message.utf8.count <= 512)
+                #expect(!message.contains("BODY_NOT_FOR_ERRORS"))
+            }
+            // The valid repair must still return metadata, never a body.
+            let repaired = try await readMetadata(controller)
+            _ = try metadata(repaired)
+            try assertContentFree(repaired, sentinel: "BODY_NOT_FOR_ERRORS")
+        }
+    }
+
+    @Test("Metadata errors report every conflict without echoing selector values")
+    func metadataConflictNamesAllProvidedSelectors() async throws {
+        try await withFixture(Data("safe note".utf8)) { controller in
+            let marker = "PRIVATE_SELECTOR_VALUE"
+            let result = try await controller.call(.init(name: "read_file", arguments: [
+                "format": .string("markdown"), "path": .string("notes/note.md"),
+                "view": .string("metadata"), "max_bytes": .int(65_536),
+                "byte_offset": .int(0), "page_range": .string(marker),
+                "expected_revision": .string("sha256:" + String(repeating: "a", count: 64)),
+            ]))
+            let message = result.content.compactMap { content -> String? in
+                if case .text(let text, _, _) = content { return text }
+                return nil
+            }.joined()
+            #expect(result.isError == true)
+            for field in ["max_bytes", "byte_offset", "page_range", "expected_revision"] {
+                #expect(message.contains(field))
+            }
+            #expect(message.lowercased().contains("omit"))
+            #expect(message.contains("view=content"))
+            #expect(!message.contains(marker))
+            #expect(message.utf8.count <= 512)
+        }
+    }
+
     private func readMetadata(_ controller: FileToolController, format: FileFormat = .markdown) async throws -> CallTool.Result {
         let path = format == .pdf ? "references/manual.pdf" : "notes/note.md"
         let parameters = CallTool.Parameters(name: "read_file", arguments: [

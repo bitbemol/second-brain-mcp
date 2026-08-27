@@ -71,7 +71,7 @@ enum FileToolRequestDecoder {
             format: format,
             path: path,
             content: try arguments.string(.content),
-            source: try arguments.string(.source),
+            source: try arguments.sourcePath(),
             tags: try arguments.stringArray(.tags) ?? [],
             transform: transform
         )

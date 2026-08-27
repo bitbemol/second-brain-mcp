@@ -1,3 +1,4 @@
+import Foundation
 import MCP
 import Testing
 @testable import second_brain_mcp
@@ -99,6 +100,91 @@ struct MCPBoundaryValidationTests {
             #expect(result.isError == true)
             #expect(await service.callCount() == 0)
         }
+    }
+
+    @Test("Canvas root-array errors show the object shape without supplied values")
+    func canvasRootArrayExplainsObjectShape() throws {
+        let marker = "PRIVATE_CANVAS_VALUE"
+        do {
+            _ = try CanvasDocumentValidator.decodeValidated(jsonData: Data("[\"\(marker)\"]".utf8))
+            Issue.record("Canvas root arrays must remain invalid")
+        } catch let error as any CallerSafeError {
+            let message = error.callerSafeDescription
+            #expect(message.contains("object"))
+            #expect(message.contains(#"{"nodes":[],"edges":[]}"#))
+            #expect(!message.contains(marker))
+            #expect(message.utf8.count <= 512)
+        }
+        // The shape is an example, not a new requirement for present keys.
+        let empty = try CanvasDocumentValidator.decodeValidated(jsonData: Data("{}".utf8))
+        #expect(empty.nodes.isEmpty)
+        #expect(empty.edges.isEmpty)
+    }
+
+    @Test("Area errors show an explicit vault-relative notes path without inferring it")
+    func missingAreaPrefixExplainsExplicitPath() throws {
+        do {
+            _ = try VaultArea.resolve(path: "QA/PRIVATE_PATH_VALUE.md")
+            Issue.record("An omitted area prefix must not be inferred")
+        } catch let error as any CallerSafeError {
+            let message = error.callerSafeDescription
+            #expect(message.contains("vault-relative"))
+            #expect(message.contains("notes/QA/example.md"))
+            #expect(!message.contains("PRIVATE_PATH_VALUE"))
+            #expect(message.utf8.count <= 512)
+        }
+        #expect(try VaultArea.resolve(path: "notes/QA/example.md") == .notes)
+    }
+
+    @Test("Create guidance distinguishes vault destinations from external media sources")
+    func createGuidanceDistinguishesSourceAndDestination() throws {
+        let capabilities = FileCapabilities(formats: [
+            .init(format: .markdown, operations: [.create: [.notes], .read: [.notes]], createContract: .content),
+            .init(format: .png, operations: [.create: [.notes]], createContract: .init(
+                input: .source, transform: nil, acceptsTags: false
+            )),
+            .init(format: .gif, operations: [.create: [.notes]], createContract: .init(
+                input: .source, transform: .videoToGIF, acceptsTags: false
+            )),
+        ])
+        let tool = try #require(FileToolDefinitions.build(
+            capabilities: capabilities, readOnly: false
+        ).first { $0.name == "create_file" })
+        let properties = try #require(tool.inputSchema.objectValue?["properties"]?.objectValue)
+        let path = try #require(properties["path"]?.objectValue?["description"]?.stringValue)
+        #expect(path.contains("vault-relative"))
+        #expect(path.contains("notes/QA/example.md"))
+        let source = try #require(properties["source"]?.objectValue?["description"]?.stringValue)
+        #expect(source.contains("outside the vault"))
+        #expect(source.contains("local file"))
+        #expect(source.contains("data URI"))
+        #expect(source.contains("png"))
+        #expect(source.contains("image"))
+        #expect(source.contains("gif"))
+        #expect(source.contains("video_to_gif"))
+        let read = try #require(FileToolDefinitions.build(
+            capabilities: capabilities, readOnly: true
+        ).first { $0.name == "read_file" })
+        let maxBytes = try #require(read.inputSchema.objectValue?["properties"]?
+            .objectValue?["max_bytes"]?.objectValue?["description"]?.stringValue)
+        #expect(maxBytes.contains("Content only"))
+        #expect(maxBytes.contains("omit for metadata"))
+    }
+
+    @Test("Search recovery guidance narrows scope and link targets exclude display aliases")
+    func discoveryGuidanceExplainsRecoveryAndAliasIdentity() throws {
+        let description = try #require(SearchToolDefinition.build().description)
+        let coverageAdvice = try #require(description.components(separatedBy: ". ").first {
+            $0.contains("complete=false")
+        })
+        #expect(coverageAdvice.contains("directory"))
+        #expect(coverageAdvice.contains("formats"))
+        #expect(coverageAdvice.contains("absence"))
+        let target = try #require(LinkQueryToolDefinition.build().inputSchema.objectValue?["properties"]?
+            .objectValue?["target"]?.objectValue?["description"]?.stringValue)
+        #expect(target.contains("alias"))
+        #expect(target.contains("display"))
+        #expect(target.contains("|"))
     }
 
     private actor ServiceSpy: FileCRUDService {

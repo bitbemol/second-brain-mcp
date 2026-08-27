@@ -22,7 +22,7 @@ enum LinkQueryToolDefinition {
                         "type": .string("string"),
                         "minLength": .int(1),
                         "maxLength": .int(LinkQueryLimits.maximumTargetBytes),
-                        "description": .string("Wiki target, or notes/...md source path for outgoing"),
+                        "description": .string("Wiki target before |, not its display alias; or notes/...md source path for outgoing"),
                     ]),
                     LinkQueryToolArgument.fromPath.rawValue: .object([
                         "type": .string("string"),
