@@ -6,7 +6,7 @@ enum TextLineScanner {
     struct Window: Sendable {
         /// Selected lines, never exceeding the requested maximum.
         let lines: [String]
-        /// Total logical lines in the source, including a trailing empty line.
+        /// Total logical records; a final delimiter terminates its record.
         let totalLineCount: Int
         /// One-based first selected line, or `nil` for an empty out-of-range window.
         let firstLine: Int?
@@ -14,7 +14,7 @@ enum TextLineScanner {
         let lastLine: Int?
     }
 
-    /// Counts newline-delimited components without allocating one `String` per line.
+    /// Counts records without allocating one `String` per line; empty text has none.
     static func lineCount(in text: String) -> Int {
         // The empty cancellation check cannot throw.
         try! lineCount(in: text, cancellationCheck: {})
@@ -170,6 +170,10 @@ enum TextLineScanner {
             lineNumber += 1
         }
         try cancellationCheck()
-        body(scalars[start..<scalars.endIndex], lineNumber)
+        // Delimiters already emitted their records, including intentional blanks.
+        // Only an unterminated final record remains; empty text has no records.
+        if start < scalars.endIndex {
+            body(scalars[start..<scalars.endIndex], lineNumber)
+        }
     }
 }
