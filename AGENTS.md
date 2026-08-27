@@ -86,7 +86,9 @@ details belong in code and tests.
   derived text is revision-keyed outside the vault and never mutation authority.
 - PDF/image/video work remains in-process and bounded. Inspect dimensions, frame counts, pages, and
   aggregate output before expensive decoding or rendering. Keep admission control, autorelease scopes,
-  and cooperative cancellation; never cache rendered PDF page images.
+  and cooperative cancellation; never cache rendered PDF page images. Direct PDF reads acquire their
+  shared PDF permit before the vault lease and snapshot. Search releases the vault lease before PDF
+  admission and never reacquires it during extraction.
 - Metadata view and content selectors remain mutually exclusive. Metadata reads must not return
   Markdown bodies, PDF page text, or images.
 

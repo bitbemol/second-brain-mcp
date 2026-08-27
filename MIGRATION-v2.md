@@ -71,14 +71,14 @@ Status meanings:
 | `read_note` | **Direct** | `read_file(format: markdown)` returns a bounded note window and an exact-byte revision; follow `next_byte_offset` with that revision until complete. |
 | `read_notes` | **Composable / weaker** | Call `read_file` for each path, preferably concurrently. There is no one-call batch, combined summary, or per-item error envelope. |
 | `list_notes` | **Composable / weaker** | `list_files(area: notes, formats: [markdown])` enumerates paths with directory, recursion, and format filters plus size/modified-time facts, using stable path order rather than newest-first order. |
-| `get_note_metadata` | **Direct** | `read_file(format: markdown, view: metadata)` returns bounded title, tags, word count, outgoing wiki targets, filesystem facts, and the note revision without body content. |
+| `get_note_metadata` | **Direct** | `read_file(format: markdown, view: metadata)` returns bounded title, tags, word count, outgoing local wiki/inline Markdown targets, filesystem facts, and the note revision without body content. |
 | `search_notes` | **Composable / weaker** | `search_vault(location: notes)`, then `read_file`. Search is bounded and paginated but returns locators, not snippets or scores. |
-| `read_canvas` | **Composable / weaker** | `read_file(format: canvas)` exposes revision-consistent windows of validated raw JSON. The old node/edge summary and per-node warning projection are not returned. |
+| `read_canvas` | **Composable / weaker** | `read_file(format: canvas)` exposes revision-consistent raw JSON windows or the decoded `canvas_node_id`/`canvas_field` selected by search. The old node/edge summary and per-node warning projection are not returned. |
 | `list_canvas` | **Composable / weaker** | `list_files(area: notes, formats: [canvas])` enumerates Canvas paths and filesystem facts, but not node-type counts. |
 | `search_canvas` | **Direct** | `search_vault(location: notes)` returns exact `canvas_node_id` and `canvas_field` locators for semantic node fields, without snippets. |
 | `list_attachments` | **Composable / weaker** | `list_files` enumerates every registered readable format, but intentionally excludes unknown binary escape hatches. |
 | `resolve_link` | **Direct** | `query_links(direction: resolve)` handles aliases, embeds, explicit and extensionless paths, ambiguity, and optional source proximity. |
-| `find_backlinks` | **Direct** | `query_links(direction: backlinks)` resolves targets per source context and returns bounded structured source locators. |
+| `find_backlinks` | **Direct** | `query_links(direction: backlinks)` resolves targets per source context and defaults to source/target groups with occurrence counts. Use `group_by: occurrence` and `source_path` to inspect one group. |
 | `create_note` | **Direct** | `create_file(format: markdown)`; parent directories and absent frontmatter are handled. |
 | `update_note` | **Direct** | `update_file(format: markdown)` supports replace, append, and exact patch, with required optimistic revision checking. |
 | `move_note` | **Direct** | `move_path(kind: file)` performs an atomic, no-follow, no-clobber rename with explicit format and exact source revision. |
@@ -141,10 +141,12 @@ documentation, but they do not reproduce these data resources.
 | Cross-process advisory locking | Cooperating v2 MCP processes coordinate through vault-specific locks. v0.7.1 processes did not share this boundary. |
 | Atomic path movement | `move_path` performs a validated, no-follow, no-clobber file or subtree rename under one mutation lease; file moves preserve exact bytes and revision. |
 | Bounded composable discovery | `list_files`, `search_vault`, and `query_links` are capped, deterministic, request/corpus-bound, and reject stale or forged continuation. |
-| Search failure isolation and hard corpus ceilings | One malformed, oversized, unreadable, or raced file can be omitted without hiding healthy results, while file/entry/byte/atom ceilings, cancellation, and path-policy failures abort safely. |
+| Search scope and truthful completeness | `directory` and `formats` exclude unrelated content before opening. Isolated bad files preserve healthy results but set `coverage.complete: false`; an incomplete empty result is not proof of absence. Traversal failures and file/entry/work limits abort safely. |
 | PDF OCR and revision cache | PDF search prefers embedded text and uses Vision OCR when absent; page text is cached outside the vault by exact revision. |
 | Ordered PDF reads and metadata | One call can request bounded physical pages with text/PNG rendering; metadata view returns title, author, page count, labels, and bounded outline without page content. |
-| Structured format validation and Canvas locators | JSON, CSV, HAR, Canvas, unified diffs, images, and updates are validated without silent repair; Canvas search identifies exact semantic node fields while preserving stored JSON. |
+| Structured format validation and consumable Canvas locators | JSON, CSV, HAR, Canvas, unified diffs, images, and updates are validated without silent repair. Canvas search returns a node/field that `read_file` can read directly, with the full raw-file revision. |
+| Local links and grouped backlinks | Wiki and inline Markdown links/images share grammar across metadata and graph queries; external URLs/code are excluded, reference-style links remain unsupported. Backlinks group repeated occurrences and allow source-specific drill-down. |
+| Explicit metadata incompleteness | Bounded facts name any omitted/shortened fields. Exact tags and link targets are never replaced by clipped identifiers. |
 | Credential protection before Git | High-confidence secrets in textual writes are rejected without echoing the secret; known HAR credential fields are sanitized before persistence. |
 | Safer external media ingress | External sources are canonicalized, regular-file-only, size-capped, decoded in-process, and never moved, edited, or deleted. |
 | HAR capture support | Valid HAR documents can be stored after targeted credential redaction and read back as complete sanitized JSON. |
@@ -184,7 +186,7 @@ workflows. Specialized aliases and operator-facing ceremony remain intentionally
 | Link resolution and backlinks | **Included** as `query_links` | Resolves Obsidian ambiguity and graph navigation directly without broad content searches. |
 | Version history and restore tools | **Removed** | Git remains the operator recovery boundary; model-visible history would misrepresent coalesced snapshots and enlarge mutation risk. |
 | PDF navigation metadata | **Included** in `read_file(view: metadata)` | Gives agents bounded title, author, page-count, labels, and outline facts without page decoding. |
-| Structured Canvas hits | **Included** in `search_vault` | Exact node and field locators prevent whole-Canvas reads just to find a match. |
+| Structured Canvas hits and reads | **Included** in `search_vault` and `read_file` | Exact node/field selectors avoid paging through unrelated raw Canvas JSON to consume a hit. |
 | Arbitrary attachment management | **Removed** | Only registered, validated formats cross the public boundary; an unrestricted binary escape hatch would weaken size, media, revision, and credential policy. |
 | MCP resources | **Removed** | The bounded tool schemas are the single discovery contract, avoiding parallel resource implementations and stale indexes. |
 | Operation auditing | **Removed** | Git recovery plus bounded stderr diagnostics are sufficient; a durable access log would retain sensitive read/search history without improving agent work. |
@@ -194,11 +196,11 @@ workflows. Specialized aliases and operator-facing ceremony remain intentionally
 ### Release-safety gate resolved separately from parity
 
 Large complete text reads in v0.7.1 were not a capability worth preserving: a response near the
-storage ceiling could exceed a client's practical context and appear stuck. v2 now validates the
+storage ceiling could exceed a client's practical context and appear stuck. v2 validates the
 complete UTF-8 document but returns explicit 64 KiB windows by default, with a 256 KiB maximum,
 UTF-8-safe boundaries, `text_window` continuation facts, and an exact-revision requirement for every
-nonzero continuation offset. This removes the model-facing unbounded-response gate without lowering
-the supported storage limits.
+nonzero continuation offset. This bounds document-text responses without lowering the supported
+storage limits; images, locators and protocol framing have separate limits.
 
 The parity decisions above remain independent. Do not restore a missing legacy capability merely
 because bounded reading changed the generic tool schema.
