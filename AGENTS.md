@@ -1,61 +1,126 @@
 # Second Brain MCP agent policy
 
-## Sources of truth
+This is the always-on repository contract. Keep it short, durable, and action-oriented. Product
+behavior belongs in `README.md`; threat and dependency policy belongs in `SECURITY.md`; implementation
+details belong in code and tests.
 
-- Treat this file as the always-on operating contract.
-- Use `$second-brain-development` for implementation, debugging, testing, review, architecture, security, dependency, or public-API work in this repository.
-- Read the relevant sections of `CLAUDE.md` before code changes; it is authoritative for architecture, invariants, and conventions.
-- Use `README.md` for the public product contract and setup, `SECURITY.md` for threat and dependency policy, and `Package.swift` for targets and dependencies. Do not duplicate those documents here.
+## Load only what the task needs
+
+- Read `README.md` when public behavior, setup, tools, formats, or discovery can change.
+- Read `SECURITY.md` for paths, external files, credentials, subprocesses, dependencies, or trust
+  boundaries. Read `Package.swift` and `Package.resolved` only for targets, platforms, or dependencies.
+- Prefer the affected implementation and focused tests over broad background reading. Do not load
+  unrelated documentation or duplicate volatile facts here.
 
 ## Required Xcode workflow
 
-- Use Xcode MCP tools for discovery, reading, searching, creation, editing, moving, renaming, and deletion of files or directories represented in the active Xcode workspace.
-- When a skill's complete content is already present in the task context, treat it as loaded and do not reread its filesystem path.
-- Xcode MCP omits hidden agent configuration. Read-only direct-filesystem access to `.agents/**` and `.codex/**` is pre-authorized when needed to load or inspect repository agent instructions. Use only non-mutating commands and continue without asking the user.
-- Do not mutate project files with `apply_patch`, shell redirection, `sed -i`, `perl -i`, `cp`, `mv`, `rm`, `touch`, `mkdir`, `tee`, or Git restore/checkout/reset/clean commands.
-- Use Xcode build, test, diagnostics, documentation, snippet, and preview tools whenever they cover the task.
-- Read-only Git inspection such as status, diff, and log is allowed. Never use Git as a substitute for an Xcode file operation.
-- If Xcode MCP is unavailable, the workspace is not open, or Xcode cannot represent a mutation or a read outside the narrow hidden-config exception above, stop and obtain explicit user permission before a direct-filesystem fallback.
-- Preserve unrelated user changes. Do not stage, commit, push, update dependencies, or perform broad mechanical rewrites unless requested.
+- Use Xcode MCP for discovery, reading, searching, project-file creation and mutation, structure,
+  diagnostics, builds, and tests whenever it covers the operation.
+- Do not mutate project files with shell-writing commands, `apply_patch`, or Git restore/checkout/
+  reset/clean. If Xcode cannot represent a required mutation, obtain explicit user permission before
+  a direct-filesystem fallback.
+- Read-only Git inspection is allowed. Preserve unrelated changes and do not stage, commit, push,
+  update dependencies, or perform broad rewrites unless requested.
+- Treat `.swiftpm/xcode` and `.build` as generated data; never edit them directly.
 
-## Load-bearing invariants
+## Architecture boundaries
 
-- Keep dependencies flowing `Frontend -> Backend -> Shared`; keep MCP types inside `Frontend/MCP`.
-- Reserve stdout for JSON-RPC. Send logs and diagnostics to stderr.
-- Route every caller-controlled path through `PathValidator` and the appropriate readable or writable target.
-- Keep `references/` structurally read-only and restrict writes to supported content under `notes/`.
-- Never add caller-selected command execution. `GitRepository` and `/usr/bin/git` remain the only subprocess boundary.
-- Preserve soft-delete behavior; user content moves to `.trash/` and is never permanently deleted.
-- Keep preparation separate from persistence. `VaultMutationExecutor` owns prepared persistence followed by any required versioning request under the global `VaultAccessCoordinating` mutation lease; `VaultVersioning` is the only Git boundary.
-- Preserve exact-byte revisions, the shared/exclusive global vault-access boundary, bounded search, cancellation behavior, and strict Swift concurrency unless a reviewed design explicitly replaces them.
+- Dependencies flow `Frontend -> Backend -> Shared`. MCP types stay in `Frontend/MCP`; Backend and
+  Shared never import MCP.
+- Frontend owns CLI/startup, MCP lifecycle, schemas, strict decoding, controllers, and output mapping.
+  Backend owns policy, filesystem work, search, media/PDF processing, concurrency, and persistence.
+  Shared contains only stable cross-boundary values, protocols, formats, capabilities, and logging.
+- Keep the executable/product identity `second-brain-mcp`; tests import its Swift module as
+  `second_brain_mcp`. A differently named executable target can build in SwiftPM while failing in Xcode.
+- File CRUD remains catalog-driven. `FileFormat` describes concrete storage formats, not semantic roles.
+  Operation bindings and areas are explicit and exhaustive; public schemas derive from the catalog.
+- Keep listing, content search, link queries, and path moves as narrow ports outside atomic file CRUD.
+  Keep format handlers persistence-free: they prepare or interpret bytes, then stores and transaction
+  owners perform mutations.
+- Put system-framework code behind narrow protocols in the layer that needs it. Do not create manager-
+  shaped dependency bags or speculative abstractions.
 
-## Test-driven changes
+## Non-negotiable safety and state rules
 
-- For every behavior change or bug fix, add or update a focused test before editing production code. Model the externally observable behavior and failure path, not private implementation details.
-- Run the focused test against the current implementation and confirm that it fails for the intended behavioral reason. A compiler error, broken fixture, or unrelated infrastructure failure does not count as the red phase.
-- Only after observing the expected failure, implement the smallest coherent change, rerun the focused test to green, and retain the test as regression coverage.
-- If the behavior has no practical automated test boundary, explain the constraint and obtain explicit user agreement before implementation. Documentation-only changes, build configuration, and behavior-preserving refactors do not require manufacturing a failing test, but still require their applicable verification.
+- Reserve stdout exclusively for JSON-RPC. Send lifecycle logs and diagnostics to stderr.
+- Route every caller-controlled vault path through `PathValidator` and the appropriate readable or
+  writable target. Require the declared concrete format to agree with extension and content.
+- `references/` is structurally read-only. Writes and moves are limited to supported content under
+  `notes/`; user deletion is always recoverable movement into `.trash/`, never permanent removal.
+- `create_file` is the only public operation that may read an external source. External sources are
+  canonicalized, regular-file-only, bounded, immutable, outside the vault, and copied through a stable
+  descriptor snapshot before decoding.
+- Text prepared through MCP is credential-screened before persistence. HAR redaction is the explicit
+  transformation exception. Never include secret values in errors or logs.
+- `GitRepository` invoking fixed `/usr/bin/git` is the only subprocess boundary. Never add
+  caller-selected commands, shells, hooks, signing, or another `Process` site.
+- `VaultMutationExecutor` owns prepared persistence followed by required
+  `VaultVersioning.recordSnapshot()` under the global exclusive vault mutation lease. Keep the lease
+  through persistence and snapshot; propagate snapshot failure even if bytes already changed.
+- Reads under `notes/` return exact-byte revisions. Update, delete, continuation reads, and file moves
+  compare the supplied revision at the protected boundary. There is no mutation replay/idempotency
+  token: after a lost response, observe current state before deciding whether to retry.
+- Preserve writer-preferring shared/exclusive vault coordination and the cross-process advisory lock.
+  Queues must keep constant-time cancellation removal and amortized constant-time dequeue; do not
+  reintroduce array front-removal or full-queue scans.
+- Capture a readable file once per protected operation and use that immutable snapshot throughout.
+  Keep preparation separate from persistence and check cancellation before expensive or queued work.
+- Writable startup connects transport before pending Git recovery. Reads and discovery remain available;
+  mutations await the recovery gate and surface a persistent recovery failure rather than terminating.
+- Only explicitly audited `CallerSafeError` values may cross the MCP boundary verbatim. Unknown Cocoa,
+  POSIX-wrapper, or internal errors receive stable generic messages without absolute paths.
+- Reject malformed or unsupported input; do not silently repair, infer hidden defaults, or weaken a
+  structural constraint for convenience.
+
+## Bounded agent-facing operations
+
+- Text content reads validate the complete stored document, return bounded UTF-8 windows, never split a
+  scalar, and require the same revision for continuation.
+- `search_vault`, `list_files`, and `query_links` return locators or bounded metadata, never
+  snippets or bodies. Preserve request/corpus-bound cursors, real-anchor validation, deterministic
+  ordering, stale-cursor rejection, cancellation, and limits defined by their request-limit types.
+- Directory enumeration must stop before retaining data beyond scan ceilings. Do not restore eager
+  unbounded directory arrays, sort every dense match, rescan once per repeated query token, or format
+  expensive metadata for entries outside the returned page.
+- Canvas search atoms retain node and field identity. PDF search uses one atom per physical page;
+  derived text is revision-keyed outside the vault and never mutation authority.
+- PDF/image/video work remains in-process and bounded. Inspect dimensions, frame counts, pages, and
+  aggregate output before expensive decoding or rendering. Keep admission control, autorelease scopes,
+  and cooperative cancellation; never cache rendered PDF page images.
+- Metadata view and content selectors remain mutually exclusive. Metadata reads must not return
+  Markdown bodies, PDF page text, or images.
+
+## Strict test-driven changes
+
+- For every behavior change or bug fix, add or update a focused test first. Model observable behavior
+  and the failure path, not private implementation.
+- Run it against the current implementation and confirm the intended behavioral failure. Compiler
+  errors, broken fixtures, or unrelated infrastructure failures do not count as red.
+- Only then implement the smallest coherent change, rerun to green, and keep the regression test.
+- If no practical automated boundary exists, explain why and obtain explicit user agreement before
+  implementation. Documentation-only, configuration, and behavior-preserving refactors do not require
+  a manufactured red, but still require applicable verification.
+- Tests use temporary vaults and never user content.
 
 ## Change workflow
 
-1. Establish scope and inspect the relevant implementation, callers, tests, and current diagnostics through Xcode.
-2. Trace the complete boundary affected by the request before editing: MCP/CLI ingress, Shared contract, Backend policy, persistence or search, then output.
-3. For a behavior change or bug fix, complete the red phase in **Test-driven changes** before editing production code.
-4. Make the smallest coherent change. Prefer explicit types, exhaustive switches, structural constraints, and rejection of invalid input over hidden defaults or repair.
-5. Run the focused test to green. Use temporary vaults and verify externally observable behavior and failure paths.
-6. Synchronize documentation: public behavior in `README.md`, security or dependency posture in `SECURITY.md`, architecture or durable gotchas in `CLAUDE.md`, and recurring agent workflow lessons in this policy or the repo skill.
-7. Inspect the final Xcode project structure and diff. Report unresolved references, missing files, unexpected untracked files, suspected orphans, and any verification not run.
+1. Establish scope through Xcode; inspect the implementation, callers, tests, and current diagnostics.
+2. Trace the complete affected path: MCP/CLI ingress, Shared contract, Backend policy, storage/search,
+   then output. For structural changes, inspect references and usages before editing.
+3. Complete the required red phase, make the smallest explicit change, and run the focused test green.
+4. Check adjacent security, concurrency, cancellation, cursor, and failure behavior proportional to risk.
+5. Synchronize only the owning documentation: public contract in `README.md`, security/dependencies in
+   `SECURITY.md`, and durable agent workflow or architecture rules here.
+6. Inspect Xcode structure, diagnostics, and the final Git diff. Report missing/orphaned files,
+   unexpected untracked files, unresolved references, and verification not run.
 
-## Verification matrix
+## Risk-based verification
 
-- Documentation or harness-only changes: confirm Xcode visibility and validate the affected configuration; a Swift build is not required.
-- Localized Swift changes: refresh Xcode diagnostics and run the smallest relevant test group.
-- Cross-layer, concurrency, path-security, mutation, Git, search-bounds, MCP-schema, startup, or public-contract changes: run focused tests, then the full Xcode test plan and an Xcode build.
-- Dependency or toolchain changes: review `Package.resolved`, follow the audit in `SECURITY.md`, run the full test plan, and verify a release build.
-- Treat any failing relevant test, new error diagnostic, reference inconsistency, or documentation mismatch as incomplete work.
-
-## Structural-change checks
-
-- Before deleting, moving, or renaming content, inspect Xcode project references and relevant usages.
-- After structural changes, confirm the result in Xcode's project structure and run risk-appropriate diagnostics/tests.
-- Treat `.swiftpm/xcode` and `.build` as generated workspace data; do not edit them directly.
+- Documentation or harness-only: confirm Xcode visibility, references, and affected configuration.
+- Localized Swift: refresh diagnostics and run the smallest relevant test group.
+- Cross-layer, concurrency, path-security, mutation, Git, search bounds, MCP schema, startup, or public
+  contract: focused tests, then the full Xcode test plan and an Xcode build.
+- Dependency or toolchain: explicit authorization, `Package.resolved` and security audit, full test
+  plan, and release build through the documented `.build/release/second-brain-mcp` symlink.
+- Any relevant failing test, new diagnostic, broken reference, stale documentation, or leaked internal
+  path is incomplete work.

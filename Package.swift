@@ -26,5 +26,3 @@ let package = Package(
         )
     ]
 )
-// Note: PDFKit is a system framework — no dependency entry needed.
-// Just `import PDFKit` in the source files that use it.
