@@ -21,6 +21,8 @@ struct CanvasReadSelection: Codable, Equatable, Sendable {
 struct ReadFileOptions: Sendable {
     /// Explicit content or metadata representation.
     let view: ReadFileView
+    /// Image-only opt-in to emit visual content; omission returns inspection facts.
+    let render: Bool?
     /// Number of trailing log lines to return.
     let tailLines: Int?
     /// First one-indexed log line in a bounded range.
@@ -47,6 +49,7 @@ struct ReadFileOptions: Sendable {
     /// Options representing each format's default read behavior.
     init(
         view: ReadFileView = .content,
+        render: Bool? = nil,
         tailLines: Int? = nil,
         startLine: Int? = nil,
         maxLines: Int? = nil,
@@ -60,6 +63,7 @@ struct ReadFileOptions: Sendable {
         canvasField: CanvasReadField? = nil
     ) {
         self.view = view
+        self.render = render
         self.tailLines = tailLines
         self.startLine = startLine
         self.maxLines = maxLines

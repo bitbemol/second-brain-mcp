@@ -64,9 +64,21 @@ struct ImageFileOperations: Sendable {
         target: ReadableFileTarget,
         snapshot: FileSnapshot
     ) throws -> FileOperationOutput {
-        let result = try imageReader.read(target: target, snapshot: snapshot)
+        let render = request.options.render ?? false
+        let result = try imageReader.read(target: target, snapshot: snapshot, render: render)
         var contents: [VaultFileContent] = []
         let size = Self.formatBytes(result.originalBytes)
+
+        if !render {
+            let animation = result.totalFrames > 1
+                ? ", \(result.totalFrames) frames"
+                    + (result.totalDurationSeconds.map { String(format: ", %.1fs", $0) } ?? "")
+                : ""
+            return .text(
+                "\(result.format.rawValue.uppercased()) \(result.originalWidth)×\(result.originalHeight), \(size)\(animation). "
+                    + "No images returned. Use render=true to view this image or sampled animation frames."
+            )
+        }
 
         if result.totalFrames > 1 {
             let duration = result.totalDurationSeconds.map { String(format: ", %.1fs", $0) } ?? ""

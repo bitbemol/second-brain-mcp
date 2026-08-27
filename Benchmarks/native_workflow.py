@@ -247,7 +247,7 @@ def guarded_case(binary, case, assets, result):
                 row, value = invoke(client, tools, rows, 'read_file',
                     {'format': 'pdf', 'path': 'references/ordinary.pdf', 'view': 'metadata'})
                 require_metadata(row, value, master['bytes'])
-                row, value = invoke(client, tools, rows, 'read_file', {'format': 'png', 'path': 'notes/imported.png'})
+                row, value = invoke(client, tools, rows, 'read_file', {'format': 'png', 'path': 'notes/imported.png', 'render': True})
                 require_images(row, 1, (32, 24))
                 invoke(client, tools, rows, 'create_file',
                     {'format': 'png', 'path': 'notes/forbidden.png', 'source': str(assets['png']['path'])}, expect_error=True)
@@ -304,7 +304,7 @@ def ordinary_workflow(client, tools, rows, vault, master, external):
     stored = (vault / 'notes/imported.png').read_bytes()
     assert png_dimensions(stored) == (32, 24)
     assert value['revision'] == digest(stored) and git_bytes(vault, 'notes/imported.png') == stored
-    row, value = invoke(client, tools, rows, 'read_file', {'format': 'png', 'path': 'notes/imported.png'})
+    row, value = invoke(client, tools, rows, 'read_file', {'format': 'png', 'path': 'notes/imported.png', 'render': True})
     require_images(row, 1, (32, 24))
     assert value['revision'] == digest(stored)
     assert external.read_bytes() == png_bytes(), 'External import source was modified'

@@ -55,7 +55,8 @@ struct ImageReader: Sendable {
     /// Reads transport content exclusively from the immutable service snapshot.
     func read(
         target: ReadableFileTarget,
-        snapshot: FileSnapshot
+        snapshot: FileSnapshot,
+        render: Bool = true
     ) throws -> ImageReadResult {
         // 1. Size guard before passing captured bytes to a decoder.
         try FileResourcePolicy.validate(
@@ -99,8 +100,10 @@ struct ImageReader: Sendable {
             limits: limits
         )
         let frames: [ImageReadFrame]
-        switch plan.encoding {
-        case .sourceBytes(let mimeType):
+        switch render ? plan.encoding : nil {
+        case nil:
+            frames = []
+        case .sourceBytes(let mimeType)?:
             frames = plan.selections.map { selection in
                 ImageReadFrame(
                     data: snapshot.data,
@@ -109,7 +112,7 @@ struct ImageReader: Sendable {
                     timeOffsetSeconds: selection.timeOffsetSeconds
                 )
             }
-        case .png(let maximumLongEdge):
+        case .png(let maximumLongEdge)?:
             var encodedFrames: [ImageReadFrame] = []
             encodedFrames.reserveCapacity(plan.selections.count)
             var encodedBytes = 0
@@ -149,7 +152,7 @@ struct ImageReader: Sendable {
             originalBytes: bytes,
             totalFrames: plan.totalFrames,
             frames: frames,
-            passedThrough: plan.passedThrough,
+            passedThrough: render && plan.passedThrough,
             totalDurationSeconds: plan.totalDurationSeconds
         )
     }

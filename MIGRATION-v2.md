@@ -96,7 +96,7 @@ Status meanings:
 | `read_reference` | **Direct** | `read_file(format: pdf)` supports physical pages/ranges and a separate metadata view with title, author, page count, page labels, and bounded outline; compose `search_vault` for passage discovery. |
 | `search_references` | **Composable / weaker** | `search_vault(location: references)`, then `read_file`. v2 adds per-page OCR and stable pagination but returns locators rather than snippets/reference metadata. |
 | `get_reference_metadata` | **Direct** | `read_file(format: pdf, view: metadata)` returns the bounded metadata-only projection without page text or images. |
-| `read_image` | **Direct** | `read_file` covers PNG/GIF plus JPEG, WebP, HEIC, TIFF, and BMP aliases, with bounded decoding and animated-GIF sampling. |
+| `read_image` | **Direct** | `read_file(render: true)` covers PNG/GIF plus JPEG, WebP, HEIC, TIFF, and BMP aliases, with bounded decoding and animated-GIF sampling. Omit `render` for low-payload image inspection facts instead of visual blocks. |
 
 ### Resources
 

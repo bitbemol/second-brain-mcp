@@ -19,6 +19,8 @@ enum FileToolArgument: String, Sendable {
     case transform
     /// Agent-facing content or metadata representation.
     case view
+    /// Explicit consent to return image content for this call only.
+    case render
     /// Number of trailing log lines to return.
     case tailLines = "tail_lines"
     /// First log line in a bounded range.

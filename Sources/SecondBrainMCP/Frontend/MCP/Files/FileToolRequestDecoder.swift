@@ -81,7 +81,7 @@ enum FileToolRequestDecoder {
         _ arguments: FileToolArguments
     ) throws -> ReadFileRequest {
         try arguments.requireOnly([
-            .format, .path, .view, .tailLines, .startLine, .maxLines,
+            .format, .path, .view, .render, .tailLines, .startLine, .maxLines,
             .page, .pages, .pageRange, .byteOffset, .maxBytes,
             .expectedRevision, .canvasNodeID, .canvasField,
         ])
@@ -106,6 +106,7 @@ enum FileToolRequestDecoder {
             path: path,
             options: ReadFileOptions(
                 view: view,
+                render: try arguments.boolean(.render),
                 tailLines: try arguments.integer(.tailLines),
                 startLine: try arguments.integer(.startLine),
                 maxLines: try arguments.integer(.maxLines),

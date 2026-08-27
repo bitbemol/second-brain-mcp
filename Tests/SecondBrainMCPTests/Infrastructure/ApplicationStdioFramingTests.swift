@@ -490,9 +490,29 @@ struct ApplicationStdioFramingTests {
         #expect(typedImages == [imageBase64])
     }
 
+    @Test("Rendered images belong only to their response, never later unrelated calls")
+    func rawImagesDoNotReplayAcrossCalls() async throws {
+        let bytes = Data([0, 1, 2, 3])
+        let response = try await rawSDKCompatibilityCall(
+            arguments: ["render": true],
+            followUpArguments: Array(repeating: ["render": false], count: 8)
+        ) { parameters in
+            if parameters.arguments?["render"]?.boolValue == true {
+                return FileToolResultMapper.success(FileOperationOutput(contents: [
+                    .text("one explicitly rendered response"),
+                    .image(data: bytes, mimeType: "image/png"),
+                ]))
+            }
+            return FileToolResultMapper.success(.text("unrelated result"))
+        }
+        let content = try #require(response["content"] as? [[String: Any]])
+        #expect(content.filter { $0["type"] as? String == "image" }.count == 1)
+    }
+
     /// Exercises SDK ingress and egress with raw JSON, without repeating its decoder in the client.
     private nonisolated(nonsending) func rawSDKCompatibilityCall(
         arguments: [String: Any],
+        followUpArguments: [[String: Any]] = [],
         handler: @escaping @Sendable (CallTool.Parameters) async throws -> CallTool.Result
     ) async throws -> [String: Any] {
         let pipes = try Pipes()
@@ -526,6 +546,21 @@ struct ApplicationStdioFramingTests {
             #expect(response["id"] as? Int == 2)
             let result = try #require(response["result"] as? [String: Any])
             #expect(result["isError"] as? Bool != true)
+            for (offset, followingArguments) in followUpArguments.enumerated() {
+                let identifier = offset + 3
+                let following = try await rawJSONRequest([
+                    "jsonrpc": "2.0", "id": identifier, "method": "tools/call",
+                    "params": ["name": "fixture", "arguments": followingArguments],
+                ], pipes: pipes)
+                #expect(following["id"] as? Int == identifier)
+                let body = try #require(following["result"] as? [String: Any])
+                #expect(body["isError"] as? Bool != true)
+                let blocks = try #require(body["content"] as? [[String: Any]])
+                #expect(blocks.count == 1)
+                #expect(blocks.first?["type"] as? String == "text")
+                #expect(blocks.first?["text"] as? String == "unrelated result")
+                #expect(!blocks.contains { $0["type"] as? String == "image" })
+            }
             watchdog.cancel()
             await pipes.transport.disconnect()
             await completed.value

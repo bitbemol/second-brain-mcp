@@ -232,6 +232,9 @@ private enum ReadFileOptionsValidator {
     static func validate(_ request: ReadFileRequest) throws {
         let options = request.options
         try validateCanvasSelectors(request)
+        if options.render != nil, !request.format.isImage || options.view != .content {
+            throw invalid("render is available only for image content reads; omit it for other formats or metadata")
+        }
         if options.view == .metadata {
             try validateMetadataSelectors(request)
             return

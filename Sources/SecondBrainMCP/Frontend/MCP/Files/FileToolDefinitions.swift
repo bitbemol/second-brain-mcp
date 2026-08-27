@@ -90,7 +90,7 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read one known file after list_files, search_vault, or query_links. Use view=metadata for content-free Markdown title/tags/word count/links or bounded PDF title/author/page labels/outline; do not combine metadata with content selectors. The default content view returns bounded UTF-8 chunks, log lines, images, or physical PDF pages. For a Canvas result from search_vault, pass both canvas_node_id and canvas_field to read only that decoded field instead of paging through the raw JSON; repeat both selectors on every continuation. Continue text with text_window.next_byte_offset and the same revision as expected_revision. Reads under notes/ return the exact revision required before update_file, delete_file, or file-form move_path.",
+                description: "Read one known file after list_files, search_vault, or query_links. Use view=metadata for content-free Markdown title/tags/word count/links or bounded PDF title/author/page labels/outline; do not combine metadata with content selectors. The default content view returns bounded UTF-8 chunks, log lines, image inspection facts, or physical PDF pages. Image formats return visual payloads only with render=true; GIF rendering returns at most 8 sampled frames. For a Canvas result from search_vault, pass both canvas_node_id and canvas_field to read only that decoded field instead of paging through the raw JSON; repeat both selectors on every continuation. Continue text with text_window.next_byte_offset and the same revision as expected_revision. Reads under notes/ return the exact revision required before update_file, delete_file, or file-form move_path.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
@@ -101,6 +101,11 @@ enum FileToolDefinitions {
                             "enum": .array(ReadFileView.allCases.map { .string($0.rawValue) }),
                             "default": .string(ReadFileView.content.rawValue),
                             "description": .string("content returns file data; metadata returns no file content and is supported for markdown and pdf"),
+                        ]),
+                        .render: .object([
+                            "type": .string("boolean"),
+                            "default": .bool(false),
+                            "description": .string("Image formats only: true returns an image or up to 8 sampled GIF frames. Omit or use false for dimensions, size and animation facts without image payloads or frame encoding. Applies to this call only; omit for PDF/text and metadata."),
                         ]),
                         .canvasNodeID: .object([
                             "type": .string("string"),

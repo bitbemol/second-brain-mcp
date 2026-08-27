@@ -71,6 +71,11 @@ struct FileToolArguments: Sendable {
         return value
     }
 
+    /// Returns an optional boolean without accepting strings or numbers.
+    func boolean(_ argument: FileToolArgument) throws -> Bool? {
+        try value(argument, expected: "boolean", using: \.boolValue)
+    }
+
     /// Returns an optional integer, rejecting a present non-integer value.
     func integer(_ argument: FileToolArgument) throws -> Int? {
         try value(argument, expected: "integer", using: \.intValue)
