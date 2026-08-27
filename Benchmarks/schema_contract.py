@@ -22,6 +22,8 @@ def main():
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--sha', required=True)
     parser.add_argument('--label', required=True)
+    parser.add_argument('--include-mutations', action='store_true',
+                        help='Also validate the update input contract; no mutation calls are sent')
     args = parser.parse_args()
     args.binary = args.binary.resolve(strict=True)
     ROOT = artifact_root(args.output)
@@ -38,15 +40,18 @@ def main():
     report = {'binary': str(args.binary), 'sha256': args.sha, 'cases': [],
               'schema_validator': 'jsonschema' + importlib.metadata.version('jsonschema') + '/Draft202012'}
     try:
-        client = RPC(args.binary, vault, True)
+        client = RPC(args.binary, vault, not args.include_mutations)
         report['initialize'] = client.initialize()
         tools, report['discovery'] = discover(client)
-        coverage = {'complete': False, 'failed_files': 1,
+        coverage = {'complete': False, 'failed_files': 1, 'failed_by_format': {'markdown': 1},
                     'samples': [{'path': 'notes/broken.md', 'reason': 'invalid_document'}],
                     'samples_truncated': False}
         cases = [
             ('search_vault', 'complete success', {'results': [], 'coverage': {'complete': True}}, True),
             ('search_vault', 'incomplete success', {'results': [], 'coverage': coverage}, True),
+            ('search_vault', 'missing format counts', {'results': [], 'coverage': {key: value for key, value in coverage.items() if key != 'failed_by_format'}}, False),
+            ('search_vault', 'unknown coverage format', {'results': [], 'coverage': dict(coverage, failed_by_format={'unknown': 1})}, False),
+            ('search_vault', 'zero failed format count', {'results': [], 'coverage': dict(coverage, failed_by_format={'markdown': 0})}, False),
             ('search_vault', 'missing incomplete facts', {'results': [], 'coverage': {'complete': False}}, False),
             ('search_vault', 'complete contradicts failures', {'results': [], 'coverage': dict(coverage, complete=True)}, False),
             ('search_vault', 'Canvas locator without field', {'results': [{'path': 'notes/a.canvas', 'format': 'canvas',
@@ -65,6 +70,48 @@ def main():
                                     'expected_valid': expected, 'actual_valid': valid,
                                     'passed': valid == expected,
                                     'errors': [error.message for error in errors]})
+        if args.include_mutations:
+            update = tools['update_file']['inputSchema']
+            validator = Draft202012Validator(update)
+            supported = {
+                'markdown': {'replace', 'append', 'patch'}, 'canvas': {'replace'},
+                'csv': {'replace', 'append', 'patch'}, 'json': {'replace', 'patch'},
+                'log': {'append'}, 'har': set(), 'patch': set(), 'png': set(), 'gif': set(),
+            }
+            for format_name, modes in supported.items():
+                for mode in ['replace', 'append', 'patch']:
+                    instance = {'format': format_name, 'path': 'notes/example.' + format_name,
+                                'expected_revision': 'sha256:' + 'a' * 64, 'mode': mode}
+                    if mode == 'patch':
+                        instance['replacements'] = [{'old_text': 'before', 'new_text': 'after'}]
+                    else:
+                        instance['content'] = 'replacement'
+                    expected = mode in modes
+                    valid = validator.is_valid(instance)
+                    report['cases'].append({'tool': 'update_file', 'schema': 'input',
+                        'label': format_name + '/' + mode, 'instance': instance,
+                        'expected_valid': expected, 'actual_valid': valid, 'passed': valid == expected})
+            base = {'format': 'markdown', 'path': 'notes/example.md',
+                    'expected_revision': 'sha256:' + 'a' * 64}
+            invalid_payloads = [
+                {'mode': 'replace'}, {'mode': 'append'},
+                {'mode': 'patch'}, {'mode': 'patch', 'replacements': []},
+                {'mode': 'patch', 'replacements': [{'old_text': '', 'new_text': 'after'}]},
+                {'mode': 'patch', 'replacements': [{'old_text': 'before'}]},
+                {'mode': 'patch', 'content': 'wrong', 'replacements': [{'old_text': 'a', 'new_text': 'b'}]},
+                {'mode': 'replace', 'content': 'x', 'replacements': []},
+                {'mode': 'append', 'content': 'x', 'unexpected': True},
+            ]
+            for index, payload in enumerate(invalid_payloads):
+                instance = dict(base, **payload)
+                valid = validator.is_valid(instance)
+                report['cases'].append({'tool': 'update_file', 'schema': 'input',
+                    'label': 'invalid payload ' + str(index), 'instance': instance,
+                    'expected_valid': False, 'actual_valid': valid, 'passed': not valid})
+            properties = update.get('properties', {})
+            visible = {'format', 'path', 'expected_revision', 'mode', 'content', 'replacements'} <= properties.keys()
+            report['cases'].append({'tool': 'update_file', 'label': 'flat discoverable fields without root union',
+                                    'passed': visible and 'oneOf' not in update and 'anyOf' not in update})
         report['all_passed'] = all(case['passed'] for case in report['cases'])
     except BaseException as error:
         report['error'] = repr(error)
