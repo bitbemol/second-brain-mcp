@@ -66,7 +66,8 @@ enum VaultFileInspector {
     static func snapshot(
         _ target: ReadableFileTarget,
         maximumBytes: Int,
-        rejectHiddenDescendantsOf protectedRoot: URL? = nil
+        rejectHiddenDescendantsOf protectedRoot: URL? = nil,
+        didReadBytes: BoundedFileReader.ReadObserver? = nil
     ) throws -> BoundedFileReader.Snapshot {
         try target.revalidate()
         do {
@@ -74,7 +75,8 @@ enum VaultFileInspector {
                 fromCanonical: target.url,
                 maximumBytes: maximumBytes,
                 path: target.relativePath,
-                rejectHiddenDescendantsOf: protectedRoot
+                rejectHiddenDescendantsOf: protectedRoot,
+                didReadBytes: didReadBytes
             )
         } catch BoundedFileReader.ReadError.notFound {
             throw InspectionError.notFound(target.relativePath)
@@ -106,7 +108,7 @@ enum VaultFileInspector {
         }
     }
 
-    /// Returns descriptor-bound metadata without reading file bytes.
+    /// Returns descriptor-bound metadata without reading file bytes or applying content limits.
     static func stableMetadata(
         _ target: ReadableFileTarget,
         vaultRoot: URL
@@ -115,7 +117,7 @@ enum VaultFileInspector {
         do {
             return try BoundedFileReader.withStableFileDescriptor(
                 fromCanonical: target.url,
-                maximumBytes: target.format.maximumFileBytes,
+                maximumBytes: Int.max,
                 path: target.relativePath,
                 rejectHiddenDescendantsOf: vaultRoot
             ) { _, _ in () }.metadata

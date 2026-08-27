@@ -202,14 +202,15 @@ struct `Generic files — CRUD store` {
         let serializationLock = serializeLoads ? NSLock() : nil
         let store = VaultCRUDStore(
             vaultPath: root,
-            snapshotLoader: { target, maximumBytes, protectedRoot in
+            snapshotLoader: { target, maximumBytes, protectedRoot, didReadBytes in
                 serializationLock?.lock()
                 defer { serializationLock?.unlock() }
                 probe.enterAndWait()
                 return try VaultFileInspector.snapshot(
                     target,
                     maximumBytes: maximumBytes,
-                    rejectHiddenDescendantsOf: protectedRoot
+                    rejectHiddenDescendantsOf: protectedRoot,
+                    didReadBytes: didReadBytes
                 )
             }
         )

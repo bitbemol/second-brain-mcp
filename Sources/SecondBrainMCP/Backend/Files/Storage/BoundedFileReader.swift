@@ -3,6 +3,9 @@ import Foundation
 
 /// Opens and reads regular-file bytes without following raced symbolic links.
 enum BoundedFileReader {
+    /// Observes actual positive reads, including work later discarded on failure.
+    typealias ReadObserver = @Sendable (Int) -> Void
+
     /// Structural or stability failure observed on the opened descriptor.
     enum ReadError: Error, Sendable {
         case notFound
@@ -71,7 +74,8 @@ enum BoundedFileReader {
         path: String,
         cancellationCheck: () throws -> Void = { try Task.checkCancellation() },
         descriptorDidClose: ((Int32) -> Void)? = nil,
-        rejectHiddenDescendantsOf protectedRoot: URL? = nil
+        rejectHiddenDescendantsOf protectedRoot: URL? = nil,
+        didReadBytes: ReadObserver? = nil
     ) throws -> Snapshot {
         let captured = try withStableFileDescriptor(
             fromCanonical: url,
@@ -96,6 +100,7 @@ enum BoundedFileReader {
                     if errno == EINTR { continue }
                     throw posixError()
                 }
+                didReadBytes?(count)
                 data.append(contentsOf: buffer.prefix(count))
                 guard data.count <= maximumBytes else {
                     throw FileResourcePolicy.Violation(

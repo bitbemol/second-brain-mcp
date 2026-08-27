@@ -11,7 +11,8 @@ actor VaultCRUDStore {
     typealias SnapshotLoader = @Sendable (
         ReadableFileTarget,
         Int,
-        URL?
+        URL?,
+        BoundedFileReader.ReadObserver?
     ) throws -> BoundedFileReader.Snapshot
 
     /// Persistence failures independent of concrete file-format semantics.
@@ -34,24 +35,29 @@ actor VaultCRUDStore {
 
     private nonisolated let vaultPath: String
     private nonisolated let snapshotLoader: SnapshotLoader
+    private let persistence: VaultDescriptorPersistence
 
     /// Creates a store rooted at one vault.
     ///
     /// - Parameters:
     ///   - vaultPath: Canonical vault root.
     ///   - snapshotLoader: Stable descriptor reader, injectable for concurrency tests.
+    ///   - beforePersistence: Test barrier after opening commit descriptors.
     init(
         vaultPath: String,
         snapshotLoader: @escaping SnapshotLoader = {
             try VaultFileInspector.snapshot(
                 $0,
                 maximumBytes: $1,
-                rejectHiddenDescendantsOf: $2
+                rejectHiddenDescendantsOf: $2,
+                didReadBytes: $3
             )
-        }
+        },
+        beforePersistence: (@Sendable () throws -> Void)? = nil
     ) {
         self.vaultPath = vaultPath
         self.snapshotLoader = snapshotLoader
+        self.persistence = VaultDescriptorPersistence(vaultPath: vaultPath, beforeCommit: beforePersistence)
     }
 
     /// Reads immutable bytes and modification metadata for optimistic updates.
@@ -85,29 +91,44 @@ actor VaultCRUDStore {
     nonisolated func snapshot(
         _ target: ReadableFileTarget,
         maximumBytes: Int,
-        rejectHiddenComponents: Bool = false
+        rejectHiddenComponents: Bool = false,
+        didReadBytes: BoundedFileReader.ReadObserver? = nil
     ) async throws -> FileSnapshot {
         try loadSnapshot(
             target,
             maximumBytes: maximumBytes,
-            rejectHiddenComponents: rejectHiddenComponents
+            rejectHiddenComponents: rejectHiddenComponents,
+            didReadBytes: didReadBytes
         )
     }
 
     private nonisolated func loadSnapshot(
         _ target: ReadableFileTarget,
         maximumBytes: Int,
-        rejectHiddenComponents: Bool = false
+        rejectHiddenComponents: Bool = false,
+        didReadBytes: BoundedFileReader.ReadObserver? = nil
     ) throws -> FileSnapshot {
-        let effectiveLimit = min(target.format.maximumFileBytes, maximumBytes)
-        let opened = try snapshotLoader(
-            target,
-            effectiveLimit,
-            rejectHiddenComponents ? URL(fileURLWithPath: vaultPath) : nil
+        let opened = try loadRawSnapshot(
+            target, maximumBytes: maximumBytes, rejectHiddenComponents: rejectHiddenComponents,
+            didReadBytes: didReadBytes
         )
         return FileSnapshot(
             data: opened.data,
             modifiedDate: opened.metadata.modificationDate
+        )
+    }
+
+    private nonisolated func loadRawSnapshot(
+        _ target: ReadableFileTarget,
+        maximumBytes: Int,
+        rejectHiddenComponents: Bool = false,
+        didReadBytes: BoundedFileReader.ReadObserver? = nil
+    ) throws -> BoundedFileReader.Snapshot {
+        try snapshotLoader(
+            target,
+            min(target.format.maximumFileBytes, maximumBytes),
+            rejectHiddenComponents ? URL(fileURLWithPath: vaultPath) : nil,
+            didReadBytes
         )
     }
 
@@ -133,36 +154,14 @@ actor VaultCRUDStore {
     ///   or a filesystem error.
     @discardableResult
     func create(target: WritableFileTarget, data: Data) throws -> FileRevision {
-        let fm = FileManager.default
         try target.revalidate()
         try FileResourcePolicy.validate(
             bytes: data.count,
             format: target.format,
             path: target.relativePath
         )
-        guard !fm.fileExists(atPath: target.url.path) else {
-            throw StoreError.alreadyExists(target.relativePath)
-        }
-        try fm.createDirectory(
-            at: target.url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        // Write a sibling temporary file, then atomically move it into place.
-        // moveItem refuses an existing destination, preserving no-clobber even
-        // if an external editor wins the race after the check above.
-        let temporary = target.url.deletingLastPathComponent()
-            .appendingPathComponent(".secondbrain-\(UUID().uuidString).tmp")
-        do {
-            try data.write(to: temporary, options: .atomic)
-            try fm.moveItem(at: temporary, to: target.url)
-            return FileSnapshot(data: data, modifiedDate: nil).revision
-        } catch {
-            try? fm.removeItem(at: temporary)
-            if fm.fileExists(atPath: target.url.path) {
-                throw StoreError.alreadyExists(target.relativePath)
-            }
-            throw error
-        }
+        try persistence.write(data, to: target)
+        return FileSnapshot(data: data, modifiedDate: nil).revision
     }
 
     /// Atomically replaces a file only when its bytes still match a snapshot.
@@ -185,14 +184,15 @@ actor VaultCRUDStore {
             format: target.format,
             path: target.relativePath
         )
-        let current = try loadSnapshot(
+        let current = try loadRawSnapshot(
             target.readable,
             maximumBytes: target.format.maximumFileBytes
         )
-        guard current.revision == expectedRevision else {
+        let revision = FileSnapshot(data: current.data, modifiedDate: current.metadata.modificationDate).revision
+        guard revision == expectedRevision else {
             throw StoreError.changedSinceRead(target.relativePath)
         }
-        try data.write(to: target.url, options: .atomic)
+        try persistence.write(data, to: target, replacing: current.metadata)
         return FileSnapshot(data: data, modifiedDate: nil).revision
     }
 
@@ -207,64 +207,18 @@ actor VaultCRUDStore {
         target: WritableFileTarget,
         expectedRevision: FileRevision
     ) throws -> (trashPath: String, deletedRevision: FileRevision) {
-        let fm = FileManager.default
-        // Capture and compare the bytes immediately before the move. This makes
-        // deletion use the same compare-and-swap contract as replacement rather
-        // than deleting whichever version happens to occupy the path now.
-        let current = try loadSnapshot(
+        let current = try loadRawSnapshot(
             target.readable,
             maximumBytes: target.format.maximumFileBytes
         )
-        guard current.revision == expectedRevision else {
+        let revision = FileSnapshot(data: current.data, modifiedDate: current.metadata.modificationDate).revision
+        guard revision == expectedRevision else {
             throw StoreError.changedSinceRead(target.relativePath)
         }
-
-        let canonicalVault = URL(fileURLWithPath: vaultPath)
-            .standardized
-            .resolvingSymlinksInPath()
-        let trashURL = canonicalVault.appendingPathComponent(".trash", isDirectory: true)
-        guard !PathValidator.containsSymbolicLinkComponent(
-            relativePath: ".trash",
-            root: canonicalVault.path
-        ) else {
-            throw StoreError.unsafeTrashDirectory(trashURL.path)
-        }
-        try fm.createDirectory(at: trashURL, withIntermediateDirectories: true)
-        guard !PathValidator.containsSymbolicLinkComponent(
-            relativePath: ".trash",
-            root: canonicalVault.path
-        ),
-              let attributes = try? fm.attributesOfItem(atPath: trashURL.path),
-              attributes[.type] as? FileAttributeType == .typeDirectory else {
-            throw StoreError.unsafeTrashDirectory(trashURL.path)
-        }
-
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
-        // The UUID prevents same-second collisions for equal basenames from
-        // different folders, while retaining the original name for recovery.
-        let destination = trashURL.appendingPathComponent(
-            "\(timestamp)_\(UUID().uuidString)_\(target.url.lastPathComponent)"
-        )
-        try fm.moveItem(at: target.url, to: destination)
-        cleanupEmptyDirectories(from: target.url.deletingLastPathComponent())
-        return (
-            ".trash/\(destination.lastPathComponent)",
-            current.revision
-        )
-    }
-
-    private func cleanupEmptyDirectories(from startingURL: URL) {
-        let notesURL = URL(fileURLWithPath: vaultPath).appendingPathComponent("notes", isDirectory: true)
-        var directory = startingURL
-        let fm = FileManager.default
-
-        while directory.path != notesURL.path && directory.path.hasPrefix(notesURL.path + "/") {
-            let contents = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? ["occupied"]
-            let meaningful = contents.filter { $0 != ".DS_Store" }
-            guard meaningful.isEmpty else { break }
-            try? fm.removeItem(at: directory)
-            directory.deleteLastPathComponent()
-        }
+        let name = "\(timestamp)_\(UUID().uuidString)_\(target.url.lastPathComponent)"
+        try persistence.moveToTrash(target, expected: current.metadata, name: name)
+        return (".trash/\(name)", revision)
     }
 }
