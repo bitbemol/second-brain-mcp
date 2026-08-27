@@ -387,6 +387,20 @@ struct `VideoImporter tests` {
         #expect(exists(inVault))   // untouched
     }
 
+    @Test("A generated MOV crosses the real GIF tool, storage, and Git boundaries")
+    func realVideoToolImportSucceeds() async throws {
+        let fixture = try MediaImportBoundaryFixture()
+        defer { fixture.cleanup() }
+        let source = try await makeTinyMOV(width: 64, height: 48, frames: 4, fps: 4)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let original = try Data(contentsOf: source)
+        let result = try await fixture.create(source: source, format: .gif)
+        let stored = try await fixture.expectSuccessfulImport(result, source: source, format: .gif)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(Array(stored.prefix(4)) == Array("GIF8".utf8))
+        #expect(gifFrameCount(stored) > 1)
+    }
+
     // MARK: - End-to-end with the real AVFoundation encoder
 
     @Test

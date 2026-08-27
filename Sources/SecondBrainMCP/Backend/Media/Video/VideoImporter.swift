@@ -58,7 +58,7 @@ actor VideoImporter {
             inspection = try await encoder.inspect(url: sourceURL)
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
+        } catch is VideoEncodingError {
             throw VideoImportError.notAVideo(source)
         }
         guard inspection.hasVideoTrack, inspection.durationSeconds > 0 else {
@@ -87,7 +87,7 @@ actor VideoImporter {
             )
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
+        } catch let error as VideoEncodingError {
             throw VideoImportError.conversionFailed("\(error)")
         }
 

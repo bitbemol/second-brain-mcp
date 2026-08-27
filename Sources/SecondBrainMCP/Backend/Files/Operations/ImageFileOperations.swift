@@ -7,11 +7,14 @@ import Foundation
 /// returning model-compatible image content.
 struct ImageFileOperations: Sendable {
     /// Request-shape errors specific to media creation.
-    enum ImageOperationError: Error, CustomStringConvertible {
+    enum ImageOperationError: Error, CustomStringConvertible, CallerSafeError {
         /// Media creation did not provide exactly one external source path.
         case sourceRequired
         /// GIF creation did not request the supported video conversion.
         case transformRequired
+
+        /// These fixed request rules contain no caller-controlled values.
+        var callerSafeDescription: String { description }
 
         /// Human-readable media request failure.
         var description: String {

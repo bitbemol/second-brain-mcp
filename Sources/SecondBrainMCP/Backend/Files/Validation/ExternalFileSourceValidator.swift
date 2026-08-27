@@ -44,7 +44,7 @@ struct ExternalFileSnapshot: Sendable {
 /// media importer applies the same security policy to the real source file.
 struct ExternalFileSourceValidator: Sendable {
     /// Failures raised before a media decoder may inspect an external source.
-    enum ValidationError: Error, CustomStringConvertible, Sendable {
+    enum ValidationError: Error, CustomStringConvertible, CallerSafeError, Sendable {
         /// No filesystem entry exists at the canonical source path.
         case sourceNotFound(String)
         /// The resolved source is not a regular file.
@@ -53,6 +53,20 @@ struct ExternalFileSourceValidator: Sendable {
         case sourceInsideVault(String)
         /// The resolved regular file exceeds the caller's byte limit.
         case sourceTooLarge(bytes: Int, limit: Int)
+
+        /// Corrective policy only; never expose a caller or canonical filesystem path.
+        var callerSafeDescription: String {
+            switch self {
+            case .sourceNotFound:
+                "Source file not found; provide an existing external file path outside the vault."
+            case .sourceNotAFile:
+                "Source must be a readable regular file outside the vault; directories are not supported."
+            case .sourceInsideVault:
+                "Source must be outside the vault; choose an external file path."
+            case .sourceTooLarge(let bytes, let limit):
+                "Source file is too large: \(bytes) bytes (limit \(limit)); choose a smaller file."
+            }
+        }
 
         /// Human-readable external-source validation failure.
         var description: String {

@@ -1,5 +1,24 @@
 import Foundation
 
+/// Failures while loading video metadata, rendering frames, or encoding GIF data.
+enum VideoEncodingError: Error, CustomStringConvertible {
+    /// AVFoundation could not load required asset metadata.
+    case cannotLoad(String)
+    /// AVFoundation could not render a requested presentation time.
+    case frameRenderFailed(String)
+    /// ImageIO could not create or finalize the GIF output.
+    case encodeFailed(String)
+
+    /// Human-readable AVFoundation or ImageIO failure.
+    var description: String {
+        switch self {
+        case .cannotLoad(let path): return "Cannot load video: \(path)"
+        case .frameRenderFailed(let path): return "Failed to render a video frame: \(path)"
+        case .encodeFailed(let path): return "Failed to encode GIF: \(path)"
+        }
+    }
+}
+
 /// Platform seam for the OS-specific video work.
 ///
 /// The video twin of `ImageEncoding`: isolates the only platform-bound,

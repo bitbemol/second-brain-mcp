@@ -60,8 +60,13 @@ actor ImageImporter {
             )
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
-            throw ImageImportError.notAnImage(source)
+        } catch let error as ImageEncodingError {
+            switch error {
+            case .tooManyFrames(let count, let limit):
+                throw ImageResourcePolicy.ValidationError.tooManyAnimationFrames(count: count, limit: limit)
+            case .cannotOpen, .missingDimensions, .decodeFailed, .encodeFailed:
+                throw ImageImportError.notAnImage(source)
+            }
         }
         guard let sourceFormat = FileFormat.imageFormat(
             matching: inspection.format
@@ -88,8 +93,13 @@ actor ImageImporter {
             )
         } catch is CancellationError {
             throw CancellationError()
-        } catch {
-            throw ImageImportError.notAnImage(source)
+        } catch let error as ImageEncodingError {
+            switch error {
+            case .tooManyFrames(let count, let limit):
+                throw ImageResourcePolicy.ValidationError.tooManyAnimationFrames(count: count, limit: limit)
+            case .cannotOpen, .missingDimensions, .decodeFailed, .encodeFailed:
+                throw ImageImportError.notAnImage(source)
+            }
         }
         try FileResourcePolicy.validate(
             bytes: png.count,

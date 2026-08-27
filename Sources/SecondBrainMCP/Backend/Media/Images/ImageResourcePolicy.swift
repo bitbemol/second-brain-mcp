@@ -7,7 +7,7 @@ import Foundation
 /// decode-bomb limit and its diagnostic identical across both workflows.
 enum ImageResourcePolicy {
     /// Invalid or unsafe pixel geometry reported by an image encoder.
-    enum ValidationError: Error, CustomStringConvertible, Sendable {
+    enum ValidationError: Error, CustomStringConvertible, CallerSafeError, Sendable {
         /// Width or height is zero or negative.
         case invalidDimensions(width: Int, height: Int)
         /// The decoded pixel count exceeds the configured resource limit.
@@ -16,6 +16,9 @@ enum ImageResourcePolicy {
         case invalidFrameCount(Int)
         /// The animation exceeds the configured metadata frame ceiling.
         case tooManyAnimationFrames(count: Int, limit: Int)
+
+        /// Only numeric geometry and fixed policy text cross the tool boundary.
+        var callerSafeDescription: String { description }
 
         /// Human-readable image geometry failure.
         var description: String {

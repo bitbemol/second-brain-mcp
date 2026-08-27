@@ -1,5 +1,31 @@
 import Foundation
 
+/// Failures while inspecting, decoding, or encoding an image.
+enum ImageEncodingError: Error, CustomStringConvertible {
+    /// ImageIO could not construct an image source for the URL.
+    case cannotOpen(String)
+    /// Image metadata did not contain usable pixel dimensions.
+    case missingDimensions(String)
+    /// An animated source exceeds the metadata-inspection frame ceiling.
+    case tooManyFrames(count: Int, limit: Int)
+    /// ImageIO could not decode the requested frame.
+    case decodeFailed(String)
+    /// ImageIO could not create or finalize the PNG output.
+    case encodeFailed(String)
+
+    /// Human-readable ImageIO failure.
+    var description: String {
+        switch self {
+        case .cannotOpen(let path): return "Cannot open image: \(path)"
+        case .missingDimensions(let path): return "Image has no readable dimensions: \(path)"
+        case .tooManyFrames(let count, let limit):
+            return "Animated image has too many frames: \(count) (limit \(limit))"
+        case .decodeFailed(let path): return "Failed to decode image: \(path)"
+        case .encodeFailed(let path): return "Failed to encode image: \(path)"
+        }
+    }
+}
+
 /// Platform seam for the OS-specific image work.
 ///
 /// Isolates the only platform-bound, hard-to-test piece — pixel inspection and
