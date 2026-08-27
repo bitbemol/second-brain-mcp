@@ -84,16 +84,24 @@ struct FileOperationMetadata: Sendable, Codable {
     let area: VaultArea
     /// Exact stored-byte revision, when a file remains after the operation.
     let revision: FileRevision?
+    /// Exact recoverable trash locator, present only after a successful deletion.
+    let trashPath: String?
+    /// Revision of the retained deleted bytes, not an active notes revision.
+    let deletedRevision: FileRevision?
 
     init(
         path: String,
         sourcePath: String? = nil,
         area: VaultArea,
-        revision: FileRevision?
+        revision: FileRevision?,
+        trashPath: String? = nil,
+        deletedRevision: FileRevision? = nil
     ) {
         self.path = path
         self.sourcePath = sourcePath
         self.area = area
         self.revision = revision
+        self.trashPath = trashPath
+        self.deletedRevision = deletedRevision
     }
 }

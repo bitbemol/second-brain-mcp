@@ -12,6 +12,10 @@ enum FileToolOutputField: String, Sendable {
     case area
     /// Exact stored-byte revision when a file survives the operation.
     case revision
+    /// Locator of exact bytes retained by a successful soft deletion.
+    case trashPath = "trash_path"
+    /// Revision of retained deleted bytes for manual recovery verification.
+    case deletedRevision = "deleted_revision"
     /// Content-free format metadata for an explicit metadata read.
     case readMetadata = "metadata"
     /// Explicit byte-window metadata for a paginated text read.

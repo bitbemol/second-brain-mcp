@@ -234,7 +234,7 @@ enum FileToolDefinitions {
         case .delete:
             Tool(
                 name: tool.rawValue,
-                description: "Soft-delete a supported file under notes/ by moving it to .trash/. expected_revision must be the opaque revision returned by the read that authorized deletion; a conflict requires a fresh read. The declared format and extension must agree. References are structurally read-only. Git auto-commits the deletion.",
+                description: "Soft-delete a supported file under notes/ by moving it to .trash/. expected_revision must be the opaque revision returned by the read that authorized deletion; a conflict requires a fresh read. The declared format and extension must agree. References are structurally read-only. Success returns trash_path and deleted_revision for manual recovery; trash is retained indefinitely, never automatically purged. No MCP restore/purge operation exists. Git auto-commits the deletion.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .delete),
                     formatDescription: "Concrete file format",
@@ -251,7 +251,7 @@ enum FileToolDefinitions {
                     openWorldHint: false
                 ),
                 outputSchema: outputSchema(
-                    required: [.path, .area]
+                    required: [.path, .area, .trashPath, .deletedRevision]
                 )
             )
         }
@@ -557,6 +557,16 @@ enum FileToolDefinitions {
                     "pattern": .string("^sha256:[0-9a-f]{64}$"),
                     "description": .string("Exact-byte revision for the current notes content; use it for the next mutation or text continuation"),
                 ]),
+                FileToolOutputField.trashPath.rawValue: .object([
+                    "type": .string("string"),
+                    "pattern": .string("^\\.trash/"),
+                    "description": .string("Exact vault-relative recovery location; no MCP read or move authority"),
+                ]),
+                FileToolOutputField.deletedRevision.rawValue: .object([
+                    "type": .string("string"),
+                    "pattern": .string("^sha256:[0-9a-f]{64}$"),
+                    "description": .string("Revision of the retained deleted bytes; verify after manual recovery"),
+                ]),
                 FileToolOutputField.readMetadata.rawValue: metadataOutputSchema,
                 FileToolOutputField.canvasNodeID.rawValue: .object([
                     "type": .string("string"),
@@ -603,6 +613,9 @@ enum FileToolDefinitions {
         ]
         if !required.contains(.revision) && !includesRevision {
             properties.removeValue(forKey: FileToolOutputField.revision.rawValue)
+        }
+        for field in [FileToolOutputField.trashPath, .deletedRevision] where !required.contains(field) {
+            properties.removeValue(forKey: field.rawValue)
         }
         if !includesReadFields {
             properties.removeValue(forKey: FileToolOutputField.readMetadata.rawValue)

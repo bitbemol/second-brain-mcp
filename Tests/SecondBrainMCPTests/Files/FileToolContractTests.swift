@@ -136,7 +136,7 @@ struct `MCP file consistency contract` {
             "area", "path", "revision",
         ])
         #expect(try requiredOutputs(of: #require(tools["delete_file"])) == [
-            "area", "path",
+            "area", "deleted_revision", "path", "trash_path",
         ])
         #expect(Set(try outputProperties(of: #require(tools["create_file"])).keys) == [
             "area", "path", "revision",
@@ -148,7 +148,7 @@ struct `MCP file consistency contract` {
             "area", "path", "revision",
         ])
         #expect(Set(try outputProperties(of: #require(tools["delete_file"])).keys) == [
-            "area", "path",
+            "area", "deleted_revision", "path", "trash_path",
         ])
         let readOutput = try #require(tools["read_file"]?.outputSchema?.objectValue)
         let readOutputProperties = try #require(

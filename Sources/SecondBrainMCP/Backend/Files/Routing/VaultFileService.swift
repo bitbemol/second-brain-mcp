@@ -200,11 +200,16 @@ actor VaultFileService: FileCRUDService {
                         throw FileRoutingError.revisionConflict(target.relativePath)
                     }
                     return FileOperationOutput.text(
-                        "Deleted \(target.relativePath) → \(deletion.trashPath)"
+                        "Deleted \(target.relativePath) → \(deletion.trashPath). "
+                            + "Retained revision: \(deletion.deletedRevision.rawValue). "
+                            + "Recovery is manual: stop clients, copy the trash file to an unused notes/ path, "
+                            + "then restart and verify the revision. Trash is not automatically purged."
                     ).withMetadata(FileOperationMetadata(
                         path: target.relativePath,
                         area: target.area,
-                        revision: nil
+                        revision: nil,
+                        trashPath: deletion.trashPath,
+                        deletedRevision: deletion.deletedRevision
                     ))
                 }
             ))

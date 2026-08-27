@@ -98,6 +98,12 @@ enum FileToolResultMapper {
         if let revision = metadata.revision {
             values[FileToolOutputField.revision] = .string(revision.rawValue)
         }
+        if let trashPath = metadata.trashPath {
+            values[.trashPath] = .string(trashPath)
+        }
+        if let deletedRevision = metadata.deletedRevision {
+            values[.deletedRevision] = .string(deletedRevision.rawValue)
+        }
         if let readMetadata = output.readMetadata {
             values[FileToolOutputField.readMetadata] = readMetadataValue(readMetadata)
         }
