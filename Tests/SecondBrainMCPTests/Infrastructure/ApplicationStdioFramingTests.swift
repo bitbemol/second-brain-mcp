@@ -410,6 +410,266 @@ struct ApplicationStdioFramingTests {
         #expect(received == expected)
     }
 
+
+    @Test("Raw MCP read preserves data-URI-looking text and exact-byte metadata")
+    func rawDataURIReadPreservesTextBytes() async throws {
+        try await exerciseRawDataURI(create: false)
+    }
+
+    @Test("Raw MCP create preserves a data-URI-looking content string")
+    func rawDataURICreatePreservesContentBytes() async throws {
+        try await exerciseRawDataURI(create: true)
+    }
+
+    @Test("Raw MCP nested JSON strings retain their type and spelling")
+    func rawNestedJSONStringsPreserveTypesAndSpelling() async throws {
+        let strings = [
+            "ordinary 🧠 text", "true", "1", "null", #"{"key":"value"}"#,
+            "data:text/plain,Hello%20World",
+            "data:text/plain;base64,SGVsbG8=",
+            "data:application/octet-stream;base64,AAH/",
+            "data:text/plain,", "data:text/plain;base64,not-base64!",
+            "data:text/plain,🧠%20",
+        ]
+        let expected: Value = .object([
+            "items": .array(strings.map { .object(["value": .string($0)]) }),
+            "boolean": .bool(true), "number": .int(7), "empty": .null,
+        ])
+        let response = try await rawSDKCompatibilityCall(arguments: [
+            "nested": [
+                "items": strings.map { ["value": $0] },
+                "boolean": true, "number": 7, "empty": NSNull(),
+            ],
+        ]) { parameters in
+            #expect(parameters.arguments?["nested"] == expected,
+                    "Ordinary JSON strings must not acquire an inferred binary type")
+            return CallTool.Result(content: [], structuredContent: .object(parameters.arguments ?? [:]))
+        }
+        let structured = try #require(response["structuredContent"] as? [String: Any])
+        let nested = try #require(structured["nested"] as? [String: Any])
+        let items = try #require(nested["items"] as? [[String: Any]])
+        #expect(items.compactMap { $0["value"] as? String } == strings)
+        #expect(nested["boolean"] as? Bool == true)
+        #expect(nested["number"] as? Int == 7)
+        #expect(nested["empty"] is NSNull)
+    }
+
+    @Test("Explicit binary values and image content preserve their wire bytes and MIME types")
+    func rawExplicitBinaryAndImageOutputRemainIntact() async throws {
+        let binary = Data([0x00, 0x01, 0x02, 0xFF])
+        // Small fixed image payload; verifies wire serialization, not image decoding.
+        let imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/wAAAABJRU5ErkJggg=="
+        let response = try await rawSDKCompatibilityCall(arguments: [:]) { _ in
+            CallTool.Result(content: [
+                .text(text: "binary control", annotations: nil, _meta: nil),
+                .image(data: imageBase64, mimeType: "image/png", annotations: nil, _meta: nil),
+            ], structuredContent: .object([
+                "explicit_binary": .data(mimeType: "application/octet-stream", binary),
+            ]))
+        }
+        let structured = try #require(response["structuredContent"] as? [String: Any])
+        #expect(structured["explicit_binary"] as? String
+                == "data:application/octet-stream;base64," + binary.base64EncodedString())
+        let content = try #require(response["content"] as? [[String: Any]])
+        #expect(content.count == 2)
+        #expect(content.first?["type"] as? String == "text")
+        #expect(content.first?["text"] as? String == "binary control")
+        let image = try #require(content.first { $0["type"] as? String == "image" })
+        #expect(image["mimeType"] as? String == "image/png")
+        #expect(image["data"] as? String == imageBase64)
+        #expect(Data(base64Encoded: try #require(image["data"] as? String))
+                == Data(base64Encoded: imageBase64))
+        let typed = try JSONDecoder().decode(
+            CallTool.Result.self, from: JSONSerialization.data(withJSONObject: response)
+        )
+        let typedImages = typed.content.compactMap { item -> String? in
+            guard case .image(let data, let mimeType, _, _) = item else { return nil }
+            #expect(mimeType == "image/png")
+            return data
+        }
+        #expect(typedImages == [imageBase64])
+    }
+
+    /// Exercises SDK ingress and egress with raw JSON, without repeating its decoder in the client.
+    private nonisolated(nonsending) func rawSDKCompatibilityCall(
+        arguments: [String: Any],
+        handler: @escaping @Sendable (CallTool.Parameters) async throws -> CallTool.Result
+    ) async throws -> [String: Any] {
+        let pipes = try Pipes()
+        defer { pipes.close() }
+        let server = Server(
+            name: "SDK JSON compatibility fixture", version: "1",
+            capabilities: .init(tools: .init(listChanged: false))
+        )
+        await server.withMethodHandler(CallTool.self, handler: handler)
+        try await server.start(transport: pipes.transport)
+        let completed = Task { await server.waitUntilCompleted() }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(10))
+            await pipes.transport.disconnect()
+        }
+        do {
+            let initialized = try await rawJSONRequest([
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": ["protocolVersion": "2025-06-18", "capabilities": [:],
+                           "clientInfo": ["name": "RawSDKCompatibilityTest", "version": "1"]],
+            ], pipes: pipes)
+            try #require(initialized["result"] as? [String: Any] != nil)
+            try await Self.write(
+                Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8) + Data([0x0A]),
+                to: pipes.inputWrite
+            )
+            let response = try await rawJSONRequest([
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": ["name": "fixture", "arguments": arguments],
+            ], pipes: pipes)
+            #expect(response["id"] as? Int == 2)
+            let result = try #require(response["result"] as? [String: Any])
+            #expect(result["isError"] as? Bool != true)
+            watchdog.cancel()
+            await pipes.transport.disconnect()
+            await completed.value
+            await server.stop()
+            _ = await watchdog.result
+            return result
+        } catch {
+            watchdog.cancel()
+            await pipes.transport.disconnect()
+            await completed.value
+            await server.stop()
+            _ = await watchdog.result
+            throw error
+        }
+    }
+
+    private func exerciseRawDataURI(create: Bool) async throws {
+        let literal = "data:text/plain,Hello%20World"
+        let expected = Data(literal.utf8)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("notes"), withIntermediateDirectories: true
+        )
+        let dataDirectory = try VaultDataDirectory.prepare(vaultPath: root.path)
+        defer {
+            try? FileManager.default.removeItem(at: dataDirectory.rootURL)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let path = create ? "notes/data-uri.log" : "notes/data-uri.md"
+        let fileURL = root.appendingPathComponent(path)
+        if !create { try expected.write(to: fileURL) }
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root.path, readOnly: !create)
+        let pipes = try Pipes()
+        defer { pipes.close() }
+        let serverTask = Task {
+            try await MCPServerSetup.start(
+                config: ServerConfig(vaultPath: root.path, readOnly: !create),
+                files: runtime.files, paths: runtime.paths, search: runtime.search,
+                links: runtime.links, listing: runtime.listing, capabilities: runtime.capabilities,
+                transport: pipes.transport
+            )
+        }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(10))
+            await pipes.transport.disconnect()
+            serverTask.cancel()
+        }
+        do {
+            let initialized = try await rawJSONRequest([
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": ["protocolVersion": "2025-06-18", "capabilities": [:],
+                           "clientInfo": ["name": "RawTextFidelityTest", "version": "1"]],
+            ], pipes: pipes)
+            #expect(initialized["id"] as? Int == 1)
+            _ = try #require(initialized["result"] as? [String: Any])
+            try await Self.write(
+                Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8) + Data([0x0A]),
+                to: pipes.inputWrite
+            )
+            if create {
+                let control = try await rawJSONRequest([
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": ["name": "create_file", "arguments": [
+                        "format": "log", "path": "notes/control.log", "content": "ordinary",
+                    ]],
+                ], pipes: pipes)
+                let controlResult = try #require(control["result"] as? [String: Any])
+                try #require(controlResult["isError"] as? Bool != true)
+                let controlBytes = try Data(contentsOf: root.appendingPathComponent("notes/control.log"))
+                try #require(controlBytes == Data("ordinary".utf8))
+            }
+            var arguments: [String: Any] = ["format": create ? "log" : "markdown", "path": path]
+            if create { arguments["content"] = literal }
+            let response = try await rawJSONRequest([
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": ["name": create ? "create_file" : "read_file", "arguments": arguments],
+            ], pipes: pipes)
+            #expect(response["id"] as? Int == 3)
+            let result = try #require(response["result"] as? [String: Any])
+            #expect(result["isError"] as? Bool != true, "A JSON string must not become an unsupported binary argument")
+            if result["isError"] as? Bool != true {
+                let structured = try #require(result["structuredContent"] as? [String: Any])
+                let revision = FileSnapshot(data: expected, modifiedDate: nil).revision.rawValue
+                #expect(structured["revision"] as? String == revision)
+                let stored = try Data(contentsOf: fileURL)
+                #expect(stored == expected)
+                if !create {
+                    let content = try #require(result["content"] as? [[String: Any]])
+                    let actualText = try #require(content.first?["text"] as? String)
+                    let window = try #require(structured["text_window"] as? [String: Any])
+                    #expect(Data(actualText.utf8) == expected, "SDK type erasure must not rewrite literal data URI text")
+                    #expect(window["byte_offset"] as? Int == 0)
+                    #expect(window["byte_count"] as? Int == expected.count)
+                    #expect(window["total_bytes"] as? Int == expected.count)
+                    #expect(window["byte_count"] as? Int == actualText.utf8.count)
+                }
+            }
+        } catch {
+            watchdog.cancel()
+            await pipes.transport.disconnect()
+            _ = await serverTask.result
+            _ = await watchdog.result
+            throw error
+        }
+        watchdog.cancel()
+        await pipes.transport.disconnect()
+        try await serverTask.value
+        _ = await watchdog.result
+    }
+
+    /// Both directions stay raw JSON; an MCP client would repeat the same Value coercion.
+    private nonisolated(nonsending) func rawJSONRequest(
+        _ object: [String: Any], pipes: Pipes
+    ) async throws -> [String: Any] {
+        var encoded = try JSONSerialization.data(withJSONObject: object)
+        encoded.append(0x0A)
+        try await Self.write(encoded, to: pipes.inputWrite)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        var response = Data()
+        var buffer = [UInt8](repeating: 0, count: 8_192)
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(pipes.outputRead, $0.baseAddress, $0.count)
+            }
+            if count > 0 {
+                response.append(contentsOf: buffer.prefix(count))
+                guard response.count <= 64 * 1_024 else { throw PipeFailure.io }
+                if let newline = response.firstIndex(of: 0x0A) {
+                    #expect(newline == response.index(before: response.endIndex))
+                    return try #require(JSONSerialization.jsonObject(
+                        with: Data(response[..<newline])
+                    ) as? [String: Any])
+                }
+            } else if count == 0 {
+                throw PipeFailure.unexpectedEOF
+            } else if errno != EAGAIN && errno != EINTR {
+                throw PipeFailure.io
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        throw PipeFailure.timeout
+    }
+
     private final class IOBlockedProbe: Sendable {
         private let counts = Mutex((input: 0, output: 0))
 

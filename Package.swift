@@ -8,7 +8,12 @@ let package = Package(
         .macOS(.v26)
     ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
+        // Temporary audited SDK patch: prevent data-URI-looking JSON strings from being rewritten.
+        // No security checks are bypassed or new network behavior introduced.
+        // Pinned revision, patch scope and license: Vendor/swift-sdk/README.md.
+        // Remove this local copy and restore the official SDK dependency once an audited upstream
+        // release fixes the bug and passes SDKJSONStringFidelityTests and the full test suite.
+        .package(path: "Vendor/swift-sdk"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "1.0.0")
     ],
     targets: [
