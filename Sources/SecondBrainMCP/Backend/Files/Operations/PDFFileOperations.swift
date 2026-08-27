@@ -14,6 +14,28 @@ struct PDFFileOperations: Sendable {
             snapshot: snapshot,
             options: request.options
         )
+        return Self.output(pages)
+    }
+
+    /// The factory pairs this handler with admission from the same reader.
+    func readAdmitted(
+        _ request: ReadFileRequest,
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) async throws -> FileOperationOutput {
+        Self.output(try reader.readAdmitted(target: target, snapshot: snapshot, options: request.options))
+    }
+
+    /// Metadata uses the same admission owner as rendered content.
+    func metadataAdmitted(
+        _ request: ReadFileRequest,
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) async throws -> FileOperationOutput {
+        .metadata(try reader.metadataAdmitted(target: target, snapshot: snapshot))
+    }
+
+    private static func output(_ pages: [RenderedPDFPage]) -> FileOperationOutput {
         var contents: [VaultFileContent] = []
         contents.reserveCapacity(pages.count * 2)
         for page in pages {

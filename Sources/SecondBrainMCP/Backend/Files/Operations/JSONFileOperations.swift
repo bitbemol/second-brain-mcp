@@ -2,8 +2,9 @@ import Foundation
 
 /// Validates general JSON while preserving the caller's exact representation.
 struct JSONFileOperations: Sendable {
-    struct InvalidJSON: Error, CustomStringConvertible, Sendable {
+    struct InvalidJSON: Error, CustomStringConvertible, CallerSafeError, Sendable {
         var description: String { "File is not valid JSON" }
+        var callerSafeDescription: String { description }
     }
 
     func prepareCreate(

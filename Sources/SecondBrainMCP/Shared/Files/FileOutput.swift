@@ -18,24 +18,33 @@ struct FileOperationOutput: Sendable, Codable {
     let textWindow: TextReadWindow?
     /// Content-free format metadata for an explicit metadata read.
     let readMetadata: FileReadMetadata?
+    /// Selected decoded Canvas field, absent for ordinary raw-file reads.
+    let canvasSelection: CanvasReadSelection?
 
     init(
         contents: [VaultFileContent],
         metadata: FileOperationMetadata? = nil,
         textWindow: TextReadWindow? = nil,
-        readMetadata: FileReadMetadata? = nil
+        readMetadata: FileReadMetadata? = nil,
+        canvasSelection: CanvasReadSelection? = nil
     ) {
         self.contents = contents
         self.metadata = metadata
         self.textWindow = textWindow
         self.readMetadata = readMetadata
+        self.canvasSelection = canvasSelection
     }
 
     static func text(
         _ text: String,
-        textWindow: TextReadWindow? = nil
+        textWindow: TextReadWindow? = nil,
+        canvasSelection: CanvasReadSelection? = nil
     ) -> FileOperationOutput {
-        FileOperationOutput(contents: [.text(text)], textWindow: textWindow)
+        FileOperationOutput(
+            contents: [.text(text)],
+            textWindow: textWindow,
+            canvasSelection: canvasSelection
+        )
     }
 
     static func metadata(_ metadata: FileReadMetadata) -> FileOperationOutput {
@@ -47,7 +56,8 @@ struct FileOperationOutput: Sendable, Codable {
             contents: contents,
             metadata: metadata,
             textWindow: textWindow,
-            readMetadata: readMetadata
+            readMetadata: readMetadata,
+            canvasSelection: canvasSelection
         )
     }
 }
@@ -58,7 +68,7 @@ struct TextReadWindow: Sendable, Codable, Equatable {
     let byteOffset: Int
     /// Number of UTF-8 bytes returned.
     let byteCount: Int
-    /// Complete validated document size in UTF-8 bytes.
+    /// Total UTF-8 bytes in the selected representation (raw file or Canvas field).
     let totalBytes: Int
     /// Offset for the next chunk, or nil when this chunk completes the document.
     let nextByteOffset: Int?

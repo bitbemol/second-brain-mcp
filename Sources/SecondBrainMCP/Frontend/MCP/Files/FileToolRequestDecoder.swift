@@ -61,7 +61,7 @@ enum FileToolRequestDecoder {
         let transform: FileCreateTransform?
         if let value = try arguments.string(.transform) {
             guard let parsed = FileCreateTransform(rawValue: value) else {
-                throw DecodingError.invalid("Invalid create transform: \(value)")
+                throw DecodingError.invalid("Invalid create transform: expected video_to_gif")
             }
             transform = parsed
         } else {
@@ -83,12 +83,23 @@ enum FileToolRequestDecoder {
         try arguments.requireOnly([
             .format, .path, .view, .tailLines, .startLine, .maxLines,
             .page, .pages, .pageRange, .byteOffset, .maxBytes,
-            .expectedRevision,
+            .expectedRevision, .canvasNodeID, .canvasField,
         ])
         let (format, path) = try identity(from: arguments)
         let rawView = try arguments.string(.view) ?? ReadFileView.content.rawValue
         guard let view = ReadFileView(rawValue: rawView) else {
-            throw DecodingError.invalid("Invalid read view: \(rawView)")
+            throw DecodingError.invalid("Invalid read view: expected content or metadata")
+        }
+        let canvasField: CanvasReadField?
+        if let rawField = try arguments.string(.canvasField) {
+            guard let field = CanvasReadField(rawValue: rawField) else {
+                throw DecodingError.invalid(
+                    "canvas_field must be text, file, subpath, url, label, or background"
+                )
+            }
+            canvasField = field
+        } else {
+            canvasField = nil
         }
         return ReadFileRequest(
             format: format,
@@ -103,7 +114,9 @@ enum FileToolRequestDecoder {
                 pageRange: try arguments.string(.pageRange),
                 byteOffset: try arguments.integer(.byteOffset),
                 maxBytes: try arguments.integer(.maxBytes),
-                expectedRevision: try optionalExpectedRevision(from: arguments)
+                expectedRevision: try optionalExpectedRevision(from: arguments),
+                canvasNodeID: try arguments.string(.canvasNodeID),
+                canvasField: canvasField
             )
         )
     }
@@ -117,10 +130,25 @@ enum FileToolRequestDecoder {
         let (format, path) = try identity(from: arguments)
         let modeString = try arguments.requiredString(.mode)
         guard let mode = FileUpdateMode(rawValue: modeString) else {
-            throw DecodingError.invalid("Invalid update mode: \(modeString)")
+            throw DecodingError.invalid("Invalid update mode: expected replace, append, or patch")
+        }
+        let content = try arguments.string(.content)
+        let rawReplacements = try arguments.array(.replacements)
+        switch mode {
+        case .patch:
+            guard content == nil else {
+                throw DecodingError.invalid("Patch mode accepts replacements, not content")
+            }
+        case .replace, .append:
+            guard rawReplacements == nil else {
+                throw DecodingError.invalid("Replace and append modes accept content, not replacements")
+            }
         }
         var replacements: [TextReplacement] = []
-        if let values = try arguments.array(.replacements) {
+        if let values = rawReplacements {
+            guard values.count <= FileMutationRequestLimits.maximumReplacements else {
+                throw DecodingError.invalid("Too many replacements: maximum is \(FileMutationRequestLimits.maximumReplacements)")
+            }
             for (index, value) in values.enumerated() {
                 guard let object = value.objectValue,
                       let oldText = object[.oldText]?.stringValue,
@@ -128,6 +156,9 @@ enum FileToolRequestDecoder {
                     throw DecodingError.invalid(
                         "Replacement at index \(index) requires old_text and new_text"
                     )
+                }
+                guard object.keys.allSatisfy({ $0 == "old_text" || $0 == "new_text" }) else {
+                    throw DecodingError.invalid("Replacement at index \(index) contains an unknown parameter")
                 }
                 replacements.append(TextReplacement(
                     oldText: oldText,
@@ -139,7 +170,7 @@ enum FileToolRequestDecoder {
             expectedRevision: try expectedRevision(from: arguments),
             format: format,
             path: path,
-            content: try arguments.string(.content),
+            content: content,
             mode: mode,
             replacements: replacements
         )
@@ -209,7 +240,7 @@ enum FileToolRequestDecoder {
     ) throws -> (format: FileFormat, path: String) {
         let formatString = try arguments.requiredString(.format)
         guard let format = FileFormat(rawValue: formatString) else {
-            throw DecodingError.invalid("Unsupported file format: \(formatString)")
+            throw DecodingError.invalid("Unsupported file format: choose a listed concrete format")
         }
         let path = try arguments.requiredString(.path)
         return (format, path)

@@ -2,6 +2,8 @@
 struct VaultSearchRequest: Sendable {
     /// Structural vault area searched by this request.
     let location: VaultArea
+    let directory: String?
+    let formats: [FileFormat]
     /// Optional text that every matching atom must contain.
     let query: String?
     /// Exact normalized Markdown tags that notes must contain.
@@ -17,6 +19,8 @@ struct VaultSearchRequest: Sendable {
 
     init(
         location: VaultArea,
+        directory: String? = nil,
+        formats: [FileFormat] = [],
         query: String? = nil,
         tags: [String] = [],
         createdFrom: String? = nil,
@@ -25,46 +29,12 @@ struct VaultSearchRequest: Sendable {
         cursor: String? = nil
     ) {
         self.location = location
+        self.directory = directory
+        self.formats = formats
         self.query = query
         self.tags = tags
         self.createdFrom = createdFrom
         self.createdThrough = createdThrough
-        self.limit = limit
-        self.cursor = cursor
-    }
-}
-
-/// Supported semantic directions for the compact vault-link query.
-enum LinkQueryDirection: String, CaseIterable, Codable, Sendable {
-    case resolve
-    case outgoing
-    case backlinks
-}
-
-/// Kind of Obsidian wiki-link syntax observed in Markdown.
-enum VaultWikiLinkKind: String, Codable, Sendable {
-    case link
-    case embed
-}
-
-/// Read-only request for resolving or traversing Obsidian wiki links.
-struct LinkQueryRequest: Sendable {
-    let direction: LinkQueryDirection
-    let target: String
-    let fromPath: String?
-    let limit: Int
-    let cursor: String?
-
-    init(
-        direction: LinkQueryDirection,
-        target: String,
-        fromPath: String? = nil,
-        limit: Int = LinkQueryLimits.defaultResults,
-        cursor: String? = nil
-    ) {
-        self.direction = direction
-        self.target = target
-        self.fromPath = fromPath
         self.limit = limit
         self.cursor = cursor
     }

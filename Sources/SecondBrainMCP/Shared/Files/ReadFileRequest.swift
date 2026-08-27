@@ -6,6 +6,17 @@ enum ReadFileView: String, CaseIterable, Codable, Sendable {
     case metadata
 }
 
+/// A semantic JSON Canvas field addressable by search and selected reads.
+enum CanvasReadField: String, CaseIterable, Codable, Sendable {
+    case text, file, subpath, url, label, background
+}
+
+/// Exact Canvas field projection; its revision still identifies the entire file.
+struct CanvasReadSelection: Codable, Equatable, Sendable {
+    let nodeID: String
+    let field: CanvasReadField
+}
+
 /// Format-specific options accepted by a generic file read.
 struct ReadFileOptions: Sendable {
     /// Explicit content or metadata representation.
@@ -28,6 +39,10 @@ struct ReadFileOptions: Sendable {
     let maxBytes: Int?
     /// Exact-byte revision that a continuation expects to read.
     let expectedRevision: FileRevision?
+    /// Exact node identifier for a decoded Canvas field projection.
+    let canvasNodeID: String?
+    /// Semantic field paired with canvasNodeID; offsets address its decoded UTF-8.
+    let canvasField: CanvasReadField?
 
     /// Options representing each format's default read behavior.
     init(
@@ -40,7 +55,9 @@ struct ReadFileOptions: Sendable {
         pageRange: String? = nil,
         byteOffset: Int? = nil,
         maxBytes: Int? = nil,
-        expectedRevision: FileRevision? = nil
+        expectedRevision: FileRevision? = nil,
+        canvasNodeID: String? = nil,
+        canvasField: CanvasReadField? = nil
     ) {
         self.view = view
         self.tailLines = tailLines
@@ -52,6 +69,8 @@ struct ReadFileOptions: Sendable {
         self.byteOffset = byteOffset
         self.maxBytes = maxBytes
         self.expectedRevision = expectedRevision
+        self.canvasNodeID = canvasNodeID
+        self.canvasField = canvasField
     }
 
     static let `default` = ReadFileOptions()
@@ -77,6 +96,13 @@ struct PDFOutlineMetadataEntry: Equatable, Sendable, Codable {
     let depth: Int
 }
 
+/// Bounded metadata fields whose values were omitted or display-shortened.
+enum FileMetadataField: String, CaseIterable, Sendable, Codable {
+    case title, tags, author, outline
+    case outgoingLinkTargets = "outgoing_link_targets"
+    case pageLabels = "page_labels"
+}
+
 /// Content-free facts returned by read_file with view metadata.
 struct FileReadMetadata: Equatable, Sendable, Codable {
     let format: FileFormat
@@ -92,6 +118,40 @@ struct FileReadMetadata: Equatable, Sendable, Codable {
     let pageLabelsTruncated: Bool?
     let outline: [PDFOutlineMetadataEntry]?
     let outlineTruncated: Bool?
+    /// Exact fields that are not complete; empty when every returned summary field is complete.
+    let incompleteFields: [FileMetadataField]
+
+    init(
+        format: FileFormat,
+        byteCount: Int,
+        modifiedAt: String?,
+        title: String?,
+        tags: [String]?,
+        wordCount: Int?,
+        outgoingLinkTargets: [String]?,
+        author: String?,
+        pageCount: Int?,
+        pageLabels: [String]?,
+        pageLabelsTruncated: Bool?,
+        outline: [PDFOutlineMetadataEntry]?,
+        outlineTruncated: Bool?,
+        incompleteFields: [FileMetadataField] = []
+    ) {
+        self.format = format
+        self.byteCount = byteCount
+        self.modifiedAt = modifiedAt
+        self.title = title
+        self.tags = tags
+        self.wordCount = wordCount
+        self.outgoingLinkTargets = outgoingLinkTargets
+        self.author = author
+        self.pageCount = pageCount
+        self.pageLabels = pageLabels
+        self.pageLabelsTruncated = pageLabelsTruncated
+        self.outline = outline
+        self.outlineTruncated = outlineTruncated
+        self.incompleteFields = incompleteFields
+    }
 }
 
 /// Public response ceilings for content-free metadata.

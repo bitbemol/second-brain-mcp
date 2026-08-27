@@ -4,7 +4,7 @@ import Testing
 
 @Suite
 struct `Vault search engine` {
-    private struct StubSource: VaultSearchAtomSource {
+    private struct StubSource: ArraySearchAtomSource {
         let values: [VaultArea: [SearchAtom]]
         func atoms(in location: VaultArea) async throws -> [SearchAtom] {
             values[location] ?? []
@@ -19,7 +19,7 @@ struct `Vault search engine` {
         }
     }
 
-    private actor MutableSource: VaultSearchAtomSource {
+    private actor MutableSource: ArraySearchAtomSource {
         private var values: [VaultArea: [SearchAtom]]
 
         init(values: [VaultArea: [SearchAtom]]) {
@@ -157,17 +157,22 @@ struct `Vault search engine` {
             note("notes/two.md", text: "anything"),
         ]
         let request = VaultSearchRequest(location: .notes, query: "all", limit: 1)
-        let forged = try SearchCursorCodec.encode(
-            requestHash: SearchCursorCodec.requestHash(request),
-            corpusHash: SearchCursorCodec.corpusHash(atoms),
-            ranked: RankedSearchLocator(
-                locator: VaultSearchResult(path: "notes/zero.md", format: .markdown),
-                rank: SearchRank(exactPhrase: false, occurrenceCount: 1)
-            )
-        )
         let engine = VaultSearchEngine(
             source: StubSource(values: [.notes: atoms]),
             strategy: ControlledMatchingStrategy()
+        )
+        let first = try await engine.search(request)
+        let cursor = try #require(first.nextCursor)
+        let observed = try SearchCursorCodec.decode(
+            cursor, requestHash: SearchCursorCodec.requestHash(request)
+        )
+        let forged = try SearchCursorCodec.encode(
+            requestHash: observed.requestHash,
+            corpusHash: observed.corpusHash,
+            ranked: RankedSearchLocator(
+                locator: VaultSearchResult(path: "notes/zero.md", format: .markdown),
+                rank: observed.rank, ordinal: observed.ordinal
+            )
         )
 
         await #expect(throws: VaultSearchRequestError.self) {

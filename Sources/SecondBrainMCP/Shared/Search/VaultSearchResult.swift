@@ -34,41 +34,17 @@ struct VaultSearchResult: Codable, Equatable, Sendable {
     }
 }
 
-/// One structured link-resolution result without note content or snippets.
-struct LinkQueryResult: Codable, Equatable, Sendable {
-    let sourcePath: String?
-    let target: String
-    let resolvedPath: String?
-    let kind: VaultWikiLinkKind
-    let alias: String?
-    let occurrence: Int?
-    let ambiguous: Bool
-}
-
-/// Bounded response for one link-query page.
-struct LinkQueryResponse: Codable, Equatable, Sendable {
-    let direction: LinkQueryDirection
-    let results: [LinkQueryResult]
-    let nextCursor: String?
-
-    init(
-        direction: LinkQueryDirection,
-        results: [LinkQueryResult],
-        nextCursor: String? = nil
-    ) {
-        self.direction = direction
-        self.results = results
-        self.nextCursor = nextCursor
-    }
-}
-
 /// One bounded page of locators. Absence of `nextCursor` means search is complete.
 struct VaultSearchResponse: Codable, Equatable, Sendable {
     let results: [VaultSearchResult]
     let nextCursor: String?
 
-    init(results: [VaultSearchResult], nextCursor: String? = nil) {
+    let coverage: DiscoveryCoverage
+
+    init(results: [VaultSearchResult], nextCursor: String? = nil,
+         coverage: DiscoveryCoverage = .full) {
         self.results = results
         self.nextCursor = nextCursor
+        self.coverage = coverage
     }
 }

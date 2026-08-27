@@ -90,7 +90,7 @@ enum FileToolDefinitions {
         case .read:
             Tool(
                 name: tool.rawValue,
-                description: "Read one known file after list_files, search_vault, or query_links. Use view=metadata for content-free Markdown title/tags/word count/links or bounded PDF title/author/page labels/outline; do not combine metadata with content selectors. The default content view returns bounded UTF-8 chunks, log lines, images, or physical PDF pages. Continue text with text_window.next_byte_offset and the same revision as expected_revision. Reads under notes/ return the exact revision required before update_file, delete_file, or file-form move_path.",
+                description: "Read one known file after list_files, search_vault, or query_links. Use view=metadata for content-free Markdown title/tags/word count/links or bounded PDF title/author/page labels/outline; do not combine metadata with content selectors. The default content view returns bounded UTF-8 chunks, log lines, images, or physical PDF pages. For a Canvas result from search_vault, pass both canvas_node_id and canvas_field to read only that decoded field instead of paging through the raw JSON; repeat both selectors on every continuation. Continue text with text_window.next_byte_offset and the same revision as expected_revision. Reads under notes/ return the exact revision required before update_file, delete_file, or file-form move_path.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .read),
                     formatDescription: "Concrete file format; must match the path extension and actual content",
@@ -101,6 +101,15 @@ enum FileToolDefinitions {
                             "enum": .array(ReadFileView.allCases.map { .string($0.rawValue) }),
                             "default": .string(ReadFileView.content.rawValue),
                             "description": .string("content returns file data; metadata returns no file content and is supported for markdown and pdf"),
+                        ]),
+                        .canvasNodeID: .object([
+                            "type": .string("string"),
+                            "description": .string("For Canvas content, the exact node ID returned by search_vault. Requires canvas_field and must be repeated for every continuation."),
+                        ]),
+                        .canvasField: .object([
+                            "type": .string("string"),
+                            "enum": .array(CanvasReadField.allCases.map { .string($0.rawValue) }),
+                            "description": .string("For Canvas content, the exact field returned by search_vault. Requires canvas_node_id; reads the decoded field as bounded UTF-8."),
                         ]),
                         .tailLines: .object([
                             "type": .string("integer"), "minimum": .int(1), "maximum": .int(5_000),
@@ -185,6 +194,7 @@ enum FileToolDefinitions {
                         .content: .object(["type": .string("string"), "description": .string("Required for replace or append")]),
                         .replacements: .object([
                             "type": .string("array"),
+                            "maxItems": .int(FileMutationRequestLimits.maximumReplacements),
                             "description": .string(
                                 patchDescription(capabilities)
                             ),
@@ -197,11 +207,13 @@ enum FileToolDefinitions {
                                     ]),
                                     .newText: .object(["type": .string("string")])
                                 ]),
-                                "required": requiredArguments([.oldText, .newText])
+                                "required": requiredArguments([.oldText, .newText]),
+                                "additionalProperties": .bool(false),
                             ])
                         ])
                     ],
-                    additionalRequired: [.expectedRevision, .mode]
+                    additionalRequired: [.expectedRevision, .mode],
+                    alternatives: updateModeVariants
                 ),
                 annotations: .init(
                     readOnlyHint: false,
@@ -284,7 +296,7 @@ enum FileToolDefinitions {
                 ? capability.format.rawValue
                 : nil
         }
-        return "Up to 20 exact, unique replacements for patch-capable formats: "
+        return "Up to \(FileMutationRequestLimits.maximumReplacements) exact, unique replacements for patch-capable formats: "
             + formats.joined(separator: ", ")
     }
 
@@ -316,13 +328,33 @@ enum FileToolDefinitions {
         return "Format-specific update modes: " + entries.joined(separator: ", ")
     }
 
+    private static var updateModeVariants: [Value] {
+        [
+            .object([
+                "properties": .object([
+                    "mode": .object(["enum": .array([.string("replace"), .string("append")])]),
+                    "replacements": .bool(false),
+                ]),
+                "required": .array([.string("content")]),
+            ]),
+            .object([
+                "properties": .object([
+                    "mode": .object(["const": .string("patch")]),
+                    "content": .bool(false),
+                ]),
+                "required": .array([.string("replacements")]),
+            ]),
+        ]
+    }
+
     /// Builds the common format/path contract plus operation-specific fields.
     private static func inputSchema(
         formats: [FileFormat],
         formatDescription: String,
         pathDescription: String,
         additionalProperties: [FileToolArgument: Value] = [:],
-        additionalRequired: [FileToolArgument] = []
+        additionalRequired: [FileToolArgument] = [],
+        alternatives: [Value] = []
     ) -> Value {
         var properties = additionalProperties
         properties[.format] = .object([
@@ -334,12 +366,14 @@ enum FileToolDefinitions {
             "type": .string("string"),
             "description": .string(pathDescription)
         ])
-        return .object([
+        var schema: [String: Value] = [
             "type": .string("object"),
             "properties": argumentObject(properties),
             "required": requiredArguments([.format, .path] + additionalRequired),
-            "additionalProperties": .bool(false)
-        ])
+            "additionalProperties": .bool(false),
+        ]
+        if !alternatives.isEmpty { schema["oneOf"] = .array(alternatives) }
+        return .object(schema)
     }
 
     /// Schema for exact-byte compare-and-swap revision preconditions.
@@ -356,8 +390,18 @@ enum FileToolDefinitions {
     private static var metadataOutputSchema: Value {
         .object([
             "type": .string("object"),
-            "description": .string("Content-free metadata returned by read_file with view=metadata"),
+            "description": .string("Content-free metadata; incomplete_fields names any omitted or display-shortened fields, not an exact omitted-item count"),
             "properties": .object([
+                "incomplete_fields": .object([
+                    "type": .string("array"),
+                    "maxItems": .int(FileMetadataField.allCases.count),
+                    "uniqueItems": .bool(true),
+                    "items": .object([
+                        "type": .string("string"),
+                        "enum": .array(FileMetadataField.allCases.map { .string($0.rawValue) }),
+                    ]),
+                    "description": .string("Fields with omitted identifiers/entries or shortened display text; empty when no summary field is incomplete"),
+                ]),
                 "format": .object([
                     "type": .string("string"),
                     "enum": .array([.string("markdown"), .string("pdf")]),
@@ -374,12 +418,17 @@ enum FileToolDefinitions {
                 ]),
                 "title": .object([
                     "type": .string("string"),
-                    "description": .string("Markdown or PDF document title when available"),
+                    "maxLength": .int(FileMetadataLimits.maximumStringBytes),
+                    "description": .string("Markdown or PDF title, at most 1024 UTF-8 bytes; shortening is disclosed in incomplete_fields"),
                 ]),
                 "tags": .object([
                     "type": .string("array"),
-                    "items": .object(["type": .string("string")]),
-                    "description": .string("Markdown tags normalized without the leading hash"),
+                    "maxItems": .int(FileMetadataLimits.maximumTags),
+                    "items": .object([
+                        "type": .string("string"),
+                        "maxLength": .int(FileMetadataLimits.maximumStringBytes),
+                    ]),
+                    "description": .string("Exact normalized Markdown tags; oversized identifiers are omitted, never shortened, and omissions are disclosed"),
                 ]),
                 "word_count": .object([
                     "type": .string("integer"),
@@ -388,12 +437,17 @@ enum FileToolDefinitions {
                 ]),
                 "outgoing_link_targets": .object([
                     "type": .string("array"),
-                    "items": .object(["type": .string("string")]),
-                    "description": .string("Raw Obsidian wiki-link targets from Markdown without file content"),
+                    "maxItems": .int(FileMetadataLimits.maximumOutgoingLinks),
+                    "items": .object([
+                        "type": .string("string"),
+                        "maxLength": .int(FileMetadataLimits.maximumStringBytes),
+                    ]),
+                    "description": .string("Distinct exact local wiki/inline Markdown targets in source order, at most 64 KiB total; incomplete_fields reports any omission or scan limit"),
                 ]),
                 "author": .object([
                     "type": .string("string"),
-                    "description": .string("PDF document author when available"),
+                    "maxLength": .int(FileMetadataLimits.maximumStringBytes),
+                    "description": .string("PDF author, at most 1024 UTF-8 bytes; shortening is disclosed in incomplete_fields"),
                 ]),
                 "page_count": .object([
                     "type": .string("integer"),
@@ -402,8 +456,12 @@ enum FileToolDefinitions {
                 ]),
                 "page_labels": .object([
                     "type": .string("array"),
-                    "items": .object(["type": .string("string")]),
-                    "description": .string("Bounded PDF page labels in physical order"),
+                    "maxItems": .int(FileMetadataLimits.maximumPDFPageLabels),
+                    "items": .object([
+                        "type": .string("string"),
+                        "maxLength": .int(FileMetadataLimits.maximumStringBytes),
+                    ]),
+                    "description": .string("PDF display labels in physical order, each at most 1024 UTF-8 bytes; shortening or omission is disclosed"),
                 ]),
                 "page_labels_truncated": .object([
                     "type": .string("boolean"),
@@ -411,13 +469,15 @@ enum FileToolDefinitions {
                 ]),
                 "outline": .object([
                     "type": .string("array"),
+                    "maxItems": .int(FileMetadataLimits.maximumPDFOutlineEntries),
                     "description": .string("Bounded flattened PDF outline entries"),
                     "items": .object([
                         "type": .string("object"),
                         "properties": .object([
                             "label": .object([
                                 "type": .string("string"),
-                                "description": .string("Outline entry label"),
+                                "maxLength": .int(FileMetadataLimits.maximumStringBytes),
+                                "description": .string("Display label, at most 1024 UTF-8 bytes; shortening marks outline in incomplete_fields"),
                             ]),
                             "page": .object([
                                 "type": .string("integer"),
@@ -439,7 +499,7 @@ enum FileToolDefinitions {
                     "description": .string("True when additional PDF outline entries were omitted"),
                 ]),
             ]),
-            "required": .array([.string("format"), .string("byte_count")]),
+            "required": .array([.string("format"), .string("byte_count"), .string("incomplete_fields")]),
             "additionalProperties": .bool(false),
         ])
     }
@@ -466,6 +526,15 @@ enum FileToolDefinitions {
                     "description": .string("Exact-byte revision for the current notes content; use it for the next mutation or text continuation"),
                 ]),
                 FileToolOutputField.readMetadata.rawValue: metadataOutputSchema,
+                FileToolOutputField.canvasNodeID.rawValue: .object([
+                    "type": .string("string"),
+                    "description": .string("Exact Canvas node selected for this decoded field read"),
+                ]),
+                FileToolOutputField.canvasField.rawValue: .object([
+                    "type": .string("string"),
+                    "enum": .array(CanvasReadField.allCases.map { .string($0.rawValue) }),
+                    "description": .string("Exact Canvas field selected for this decoded field read"),
+                ]),
                 FileToolOutputField.textWindow.rawValue: .object([
                     "type": .string("object"),
                     "description": .string("UTF-8 byte window returned for a bounded text content read"),
@@ -484,7 +553,7 @@ enum FileToolDefinitions {
                         FileToolOutputField.totalBytes.rawValue: .object([
                             "type": .string("integer"),
                             "minimum": .int(0),
-                            "description": .string("Exact total UTF-8 byte count of the current file"),
+                            "description": .string("Exact total UTF-8 byte count of the current raw file or selected Canvas field"),
                         ]),
                         FileToolOutputField.nextByteOffset.rawValue: .object([
                             "type": .string("integer"),
@@ -505,6 +574,8 @@ enum FileToolDefinitions {
         }
         if !includesReadFields {
             properties.removeValue(forKey: FileToolOutputField.readMetadata.rawValue)
+            properties.removeValue(forKey: FileToolOutputField.canvasNodeID.rawValue)
+            properties.removeValue(forKey: FileToolOutputField.canvasField.rawValue)
             properties.removeValue(forKey: FileToolOutputField.textWindow.rawValue)
         }
         return .object([

@@ -19,7 +19,9 @@ protocol VaultAccessCoordinating: Sendable {
 /// Fair, writer-preferring reader/writer coordination for one complete vault.
 actor VaultAccessCoordinator: VaultAccessCoordinating {
     /// The bounded queue cannot retain another suspended caller.
-    struct CapacityExceeded: Error, CustomStringConvertible, Sendable {
+    struct CapacityExceeded: Error, CustomStringConvertible, CallerSafeError, Sendable {
+        var callerSafeDescription: String { description }
+
         var description: String {
             "Vault operations are at capacity; retry after an active operation finishes"
         }

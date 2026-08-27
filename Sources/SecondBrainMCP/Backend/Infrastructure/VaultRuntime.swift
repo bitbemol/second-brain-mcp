@@ -78,7 +78,7 @@ struct VaultRuntime: Sendable {
             store: store,
             mutations: mutations,
             access: access,
-            metadataReader: FileMetadataReader(pdfReader: pdfReader),
+            metadataReader: FileMetadataReader(),
             readOnly: readOnly
         )
         let paths = VaultPathMoveService(
@@ -90,10 +90,17 @@ struct VaultRuntime: Sendable {
             access: access,
             readOnly: readOnly
         )
+        let searchCapture = SearchCaptureStore(
+            directory: dataDirectory.rootURL.appendingPathComponent("search-capture", isDirectory: true),
+            vaultRoot: URL(fileURLWithPath: vaultPath),
+            processLock: POSIXAdvisoryFileLock(
+                url: dataDirectory.lockDirectoryURL.appendingPathComponent("search-capture.lock")
+            )
+        )
         let searchSource = SearchCorpusBuilder(
             vaultPath: vaultPath,
             capabilities: capabilities,
-            store: store,
+            captureStore: searchCapture,
             access: access,
             customProviders: [
                 .pdf: PDFSearchAtomProvider(

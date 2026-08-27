@@ -35,6 +35,10 @@ enum FileToolArgument: String, Sendable {
     case byteOffset = "byte_offset"
     /// Maximum UTF-8 bytes returned for one text chunk.
     case maxBytes = "max_bytes"
+    /// Exact Canvas node identifier returned by search.
+    case canvasNodeID = "canvas_node_id"
+    /// Semantic Canvas field whose decoded UTF-8 value should be read.
+    case canvasField = "canvas_field"
     /// Format-specific update strategy.
     case mode
     /// Exact text substitutions for patch updates.

@@ -50,70 +50,19 @@ struct SearchToolController: Sendable {
         case let error as PathValidationError:
             detail = error.description
         case let error as FileRoutingError:
-            detail = error.description
+            detail = error.callerSafeDescription
         case let error as VaultFileInspector.InspectionError:
             detail = error.description
         case let error as FileResourcePolicy.Violation:
-            detail = error.description
+            detail = error.callerSafeDescription
+        case PDFReadError.busy:
+            detail = PDFReadError.busy.callerSafeDescription
         case let error as VaultAccessCoordinator.CapacityExceeded:
             detail = error.description
-        case let error as POSIXError:
-            detail = error.localizedDescription
         default:
             detail = "Unexpected vault read error"
         }
         return "Search failed while reading \(location.rawValue)/: \(detail)"
-    }
-}
-
-struct LinkQueryToolController: Sendable {
-    private let links: any VaultLinkQueryService
-
-    init(links: any VaultLinkQueryService) {
-        self.links = links
-    }
-
-    func call(_ params: CallTool.Parameters) async throws -> CallTool.Result {
-        try Task.checkCancellation()
-        guard params.name == LinkQueryToolDefinition.name else {
-            return SearchToolResultMapper.failure("Unknown tool: \(params.name)")
-        }
-        let request: LinkQueryRequest
-        do {
-            request = try LinkQueryToolRequestDecoder.decode(params)
-        } catch let error as LinkQueryToolRequestDecoder.DecodingError {
-            return SearchToolResultMapper.failure(error.description)
-        } catch {
-            return SearchToolResultMapper.failure("Invalid link query")
-        }
-
-        do {
-            let response = try await links.query(request)
-            try Task.checkCancellation()
-            return try SearchToolResultMapper.success(response)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as LinkQueryError {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch let error as PathValidationError {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch let error as FileRoutingError {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch let error as FileResourcePolicy.Violation {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch let error as VaultAccessCoordinator.CapacityExceeded {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(error.description)
-        } catch {
-            try Task.checkCancellation()
-            return SearchToolResultMapper.failure(
-                "Link query failed while reading the vault"
-            )
-        }
     }
 }
 
@@ -150,6 +99,9 @@ struct ListFilesToolController: Sendable {
         } catch let error as PathValidationError {
             try Task.checkCancellation()
             return SearchToolResultMapper.failure(error.description)
+        } catch let error as VaultAccessCoordinator.CapacityExceeded {
+            try Task.checkCancellation()
+            return SearchToolResultMapper.failure(error.callerSafeDescription)
         } catch {
             try Task.checkCancellation()
             return SearchToolResultMapper.failure("List failed while reading \(request.area.rawValue)/")
@@ -171,8 +123,8 @@ struct ListFilesToolController: Sendable {
         let allowed = Set([
             "area", "directory", "recursive", "formats", "limit", "cursor",
         ])
-        if let unknown = values.keys.filter({ !allowed.contains($0) }).sorted().first {
-            throw DecodingError.invalid("Unknown parameter: \(unknown)")
+        if values.keys.contains(where: { !allowed.contains($0) }) {
+            throw DecodingError.invalid("List request contains an unknown parameter")
         }
         guard let areaValue = values["area"] else {
             throw DecodingError.invalid("Missing required parameter: area")

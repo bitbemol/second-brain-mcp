@@ -54,7 +54,7 @@ enum FileMutationResourcePreflight {
             )
         }
         guard !request.replacements.isEmpty else { return }
-        guard request.replacements.count <= 20 else {
+        guard request.replacements.count <= FileMutationRequestLimits.maximumReplacements else {
             throw TextFileSupport.TextError.tooManyPatches(
                 request.replacements.count
             )

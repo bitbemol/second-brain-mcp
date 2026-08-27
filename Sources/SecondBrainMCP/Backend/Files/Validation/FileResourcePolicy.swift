@@ -7,13 +7,17 @@ import Foundation
 /// tests, but their production defaults derive from this type.
 enum FileResourcePolicy {
     /// A managed file or prepared write exceeds its effective byte limit.
-    struct Violation: Error, CustomStringConvertible, Sendable {
+    struct Violation: Error, CustomStringConvertible, CallerSafeError, Sendable {
         /// Vault-relative path or operation description associated with the data.
         let path: String
         /// Observed byte count.
         let bytes: Int
         /// Maximum permitted byte count.
         let limit: Int
+
+        var callerSafeDescription: String {
+            "File is too large: \(bytes) bytes (limit \(limit))"
+        }
 
         /// Human-readable resource-policy failure.
         var description: String {

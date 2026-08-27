@@ -117,6 +117,7 @@ struct `Architecture boundaries` {
         let expectedDeclarations = [
             "CreateFileRequest.swift": ["struct CreateFileRequest"],
             "ReadFileRequest.swift": [
+                "struct CanvasReadSelection",
                 "struct ReadFileOptions",
                 "struct ReadFileRequest",
                 "struct PDFOutlineMetadataEntry",

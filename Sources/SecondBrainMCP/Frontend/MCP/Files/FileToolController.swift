@@ -22,7 +22,7 @@ struct FileToolController: Sendable {
         try Task.checkCancellation()
         guard let tool = FileToolName(rawValue: params.name) else {
             try Task.checkCancellation()
-            return FileToolResultMapper.failure("Unknown tool: \(params.name)")
+            return FileToolResultMapper.failure("Unknown tool: choose a tool returned by tools/list")
         }
 
         if readOnly, tool.operation.isMutation {

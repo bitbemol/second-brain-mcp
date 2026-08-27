@@ -7,7 +7,7 @@ import Foundation
 /// decoding and field-level rules.
 enum CanvasDocumentValidator {
     /// Structural and cross-reference errors in JSON Canvas data.
-    enum ValidationError: Error, CustomStringConvertible {
+    enum ValidationError: Error, CustomStringConvertible, CallerSafeError {
         /// The payload is invalid JSON Canvas or omits a required field.
         case malformed(String)
         /// Two nodes declare the same identifier.
@@ -15,7 +15,18 @@ enum CanvasDocumentValidator {
         /// An edge refers to a node identifier that is not present.
         case danglingEdge(edge: String, missingNode: String)
 
-        /// Human-readable validation failure suitable for an MCP error response.
+        var callerSafeDescription: String {
+            switch self {
+            case .malformed:
+                "Invalid canvas JSON; check node and edge fields and allowed values"
+            case .duplicateNodeID:
+                "Duplicate node identifiers are not allowed"
+            case .danglingEdge:
+                "Canvas edge references a missing node; use an existing node identifier"
+            }
+        }
+
+        /// Internal diagnostic detail; stored identifiers never cross the MCP boundary.
         var description: String {
             switch self {
             case .malformed(let reason):
@@ -34,6 +45,11 @@ enum CanvasDocumentValidator {
     ///   re-encode the input.
     /// - Throws: ``ValidationError`` on a schema or cross-reference violation.
     static func validate(jsonData: Data) throws {
+        _ = try decodeValidated(jsonData: jsonData)
+    }
+
+    /// Returns the same complete document whose syntax and references were validated.
+    static func decodeValidated(jsonData: Data) throws -> CanvasDocument {
         do {
             try JSONSyntaxValidator.validate(
                 jsonData,
@@ -58,6 +74,7 @@ enum CanvasDocumentValidator {
 
         let nodeIDs = try validatedNodeIDs(in: document)
         try validateEdges(in: document, nodeIDs: nodeIDs)
+        return document
     }
 
     /// Collects node identifiers while rejecting duplicates.

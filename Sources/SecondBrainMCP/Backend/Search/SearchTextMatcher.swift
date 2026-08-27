@@ -3,8 +3,11 @@ import Foundation
 /// Deterministic literal matching independent of vault and file representations.
 struct LiteralSearchMatchingStrategy: SearchMatchingStrategy {
     func rank(query: String, in text: String) -> SearchRank? {
+        prepare(query: query)(text)
+    }
+
+    func prepare(query: String) -> @Sendable (String) -> SearchRank? {
         let normalizedQuery = Self.normalize(query)
-        let normalizedText = Self.normalize(text)
         var termFrequencies: [String: Int] = [:]
         var distinctTerms: [String] = []
         for termSlice in normalizedQuery.split(whereSeparator: \.isWhitespace) {
@@ -15,16 +18,17 @@ struct LiteralSearchMatchingStrategy: SearchMatchingStrategy {
                 distinctTerms.append(term)
             }
         }
-        guard !distinctTerms.isEmpty,
-              distinctTerms.allSatisfy({ normalizedText.contains($0) }) else {
-            return nil
+        let terms = distinctTerms.map { (term: $0, frequency: termFrequencies[$0] ?? 0) }
+        return { text in
+            let normalizedText = Self.normalize(text)
+            guard !terms.isEmpty,
+                  terms.allSatisfy({ normalizedText.contains($0.term) }) else { return nil }
+            let phrase = normalizedText.contains(normalizedQuery)
+            let occurrences = terms.reduce(into: 0) { total, entry in
+                total += Self.occurrenceCount(of: entry.term, in: normalizedText) * entry.frequency
+            }
+            return SearchRank(exactPhrase: phrase, occurrenceCount: occurrences)
         }
-        let phrase = normalizedText.contains(normalizedQuery)
-        let occurrences = distinctTerms.reduce(into: 0) { total, term in
-            total += Self.occurrenceCount(of: term, in: normalizedText)
-                * (termFrequencies[term] ?? 0)
-        }
-        return SearchRank(exactPhrase: phrase, occurrenceCount: occurrences)
     }
 
     static func normalize(_ value: String) -> String {

@@ -1,5 +1,5 @@
 /// Failures produced while reading physical PDF pages.
-enum PDFReadError: Error, CustomStringConvertible, Sendable {
+enum PDFReadError: Error, CustomStringConvertible, CallerSafeError, Sendable {
     /// PDFKit could not open a document at the validated path.
     case cannotOpenPDF(String)
     /// The caller supplied invalid or conflicting physical-page selectors.
@@ -13,7 +13,27 @@ enum PDFReadError: Error, CustomStringConvertible, Sendable {
     /// The bounded queue already contains the maximum number of PDF reads.
     case busy
 
-    /// Human-readable PDF read failure.
+    /// Audited recovery guidance. Arbitrary paths and internal details are never exposed.
+    var callerSafeDescription: String {
+        switch self {
+        case .cannotOpenPDF:
+            "Cannot open PDF; check that the file is a valid, readable PDF"
+        case .invalidSelection:
+            "Invalid PDF page selection; use unique positive pages or one inclusive page_range, with at most \(FileReadRequestLimits.maximumPDFPagesPerRead) pages"
+        case .pageOutOfBounds(let page, let totalPages):
+            totalPages > 0
+                ? "PDF page \(page) is outside the document's 1...\(totalPages) range; choose an existing physical page"
+                : "PDF has no pages; check the document before selecting a page"
+        case .cannotRenderPage(let page):
+            "Cannot render PDF page \(page); choose another page or check the PDF"
+        case .responseTooLarge(let maximumBytes):
+            "Selected PDF pages exceed the \(maximumBytes)-byte response limit; request fewer pages or a different page"
+        case .busy:
+            "PDF reader is busy; retry after an active PDF operation finishes"
+        }
+    }
+
+    /// Internal diagnostic detail, distinct from the audited caller projection.
     var description: String {
         switch self {
         case .cannotOpenPDF(let path):

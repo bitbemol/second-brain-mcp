@@ -18,6 +18,11 @@ typealias ReadFileFunction = @Sendable (
     FileSnapshot
 ) async throws -> FileOperationOutput
 
+/// Wraps the complete protected read, including snapshot allocation, in format-local admission.
+typealias ReadOperationAdmission = @Sendable (
+    @escaping @Sendable () async throws -> FileOperationOutput
+) async throws -> FileOperationOutput
+
 /// A persistence-free read resolver that interprets a generic file snapshot.
 typealias StoredReadResolver = @Sendable (ReadFileRequest, ReadableFileTarget, FileSnapshot) throws -> FileOperationOutput
 

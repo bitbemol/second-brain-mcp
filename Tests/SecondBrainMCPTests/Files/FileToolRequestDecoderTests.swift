@@ -231,7 +231,7 @@ struct `MCP file request decoder` {
         )
 
         expectError(
-            "Invalid update mode: merge",
+            "Invalid update mode: expected replace, append, or patch",
             decoding: params,
             for: .update
         )
@@ -264,7 +264,7 @@ struct `MCP file request decoder` {
             for: .read
         )
         expectError(
-            "Unsupported file format: archive",
+            "Unsupported file format: choose a listed concrete format",
             decoding: CallTool.Parameters(
                 name: FileToolName.read.rawValue,
                 arguments: [
@@ -279,7 +279,7 @@ struct `MCP file request decoder` {
     @Test
     func `Removed PDF selectors are rejected instead of ignored`() {
         expectError(
-            "Unknown parameter: book_page",
+            "File request contains an unknown parameter",
             decoding: CallTool.Parameters(
                 name: FileToolName.read.rawValue,
                 arguments: [
@@ -295,7 +295,7 @@ struct `MCP file request decoder` {
     @Test
     func `Invalid create transforms receive a focused diagnostic`() {
         expectError(
-            "Invalid create transform: transcode",
+            "Invalid create transform: expected video_to_gif",
             decoding: CallTool.Parameters(
                 name: FileToolName.create.rawValue,
                 arguments: [

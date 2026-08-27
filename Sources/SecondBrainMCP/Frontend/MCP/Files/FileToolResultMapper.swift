@@ -39,10 +39,7 @@ enum FileToolResultMapper {
 
     /// Creates a failed MCP result containing one diagnostic text block.
     static func failure(_ message: String) -> CallTool.Result {
-        CallTool.Result(
-            content: [.text(text: message, annotations: nil, _meta: nil)],
-            isError: true
-        )
+        ToolErrorResponse.failure(message)
     }
 
     private static func content(
@@ -75,6 +72,10 @@ enum FileToolResultMapper {
         if let window = output.textWindow {
             values[FileToolOutputField.textWindow.rawValue] = textWindowJSON(window)
         }
+        if let selection = output.canvasSelection {
+            values[FileToolOutputField.canvasNodeID.rawValue] = selection.nodeID
+            values[FileToolOutputField.canvasField.rawValue] = selection.field.rawValue
+        }
         guard JSONSerialization.isValidJSONObject(values),
               let data = try? JSONSerialization.data(
                   withJSONObject: values,
@@ -99,6 +100,10 @@ enum FileToolResultMapper {
         }
         if let readMetadata = output.readMetadata {
             values[FileToolOutputField.readMetadata] = readMetadataValue(readMetadata)
+        }
+        if let selection = output.canvasSelection {
+            values[FileToolOutputField.canvasNodeID] = .string(selection.nodeID)
+            values[FileToolOutputField.canvasField] = .string(selection.field.rawValue)
         }
         if let window = output.textWindow {
             var windowValues: [String: Value] = [
@@ -126,6 +131,7 @@ enum FileToolResultMapper {
         var values: [String: Value] = [
             "format": .string(metadata.format.rawValue),
             "byte_count": .int(metadata.byteCount),
+            "incomplete_fields": .array(metadata.incompleteFields.map { .string($0.rawValue) }),
         ]
         if let value = metadata.modifiedAt { values["modified_at"] = .string(value) }
         if let value = metadata.title { values["title"] = .string(value) }

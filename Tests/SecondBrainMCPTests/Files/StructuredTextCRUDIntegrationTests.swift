@@ -165,10 +165,57 @@ struct `Structured text routed CRUD` {
         #expect(try Data(contentsOf: storedURL) == validBytes)
     }
 
+    @Test(arguments: [FileFormat.json, .csv, .patch])
+    func rawTextDiscoveryDoesNotCertifyStoredFormatStructure(_ format: FileFormat) async throws {
+        let context = try await makeContext()
+        defer {
+            removeSearchFixture(context.root)
+            context.cleanup()
+        }
+        let text: String
+        switch format {
+        case .json: text = #"{"needle":}"#
+        case .csv: text = "heading,other\nneedle"
+        case .patch: text = "needle without a unified diff"
+        default: throw OutputError.unexpectedFormat
+        }
+        let path = "notes/invalid.\(format.rawValue)"
+        try Data(text.utf8).write(to: context.root.appendingPathComponent(path))
+        let search = VaultSearchEngine(source: SearchCorpusBuilder(
+            vaultPath: context.root.path,
+            capabilities: context.capabilities,
+            captureStore: searchCaptureFixture(context.root),
+            access: context.access
+        ))
+
+        let found = try await search.search(VaultSearchRequest(location: .notes, query: "needle"))
+        #expect(found.results.map(\.path) == [path])
+        #expect(found.results.first?.format == format)
+        #expect(found.coverage.complete)
+        #expect(found.coverage.failedFiles == nil)
+
+        do {
+            _ = try await context.service.read(ReadFileRequest(
+                format: format, path: path, options: .default
+            ))
+            Issue.record("Text discovery must not bypass strict format validation during read")
+        } catch {
+            switch format {
+            case .json: #expect(error is JSONFileOperations.InvalidJSON)
+            case .csv: #expect(error is CSVDocumentInspector.ValidationError)
+            case .patch: #expect(error is PatchFileOperations.PatchError)
+            default: throw OutputError.unexpectedFormat
+            }
+        }
+        #expect(try Data(contentsOf: context.root.appendingPathComponent(path)) == Data(text.utf8))
+    }
+
     private struct Context {
         let root: URL
         let processDataParent: URL
         let service: VaultFileService
+        let capabilities: FileCapabilities
+        let access: VaultAccessCoordinator
 
         func cleanup() {
             try? FileManager.default.removeItem(at: root)
@@ -227,7 +274,9 @@ struct `Structured text routed CRUD` {
         return Context(
             root: root,
             processDataParent: dataDirectory.rootURL.deletingLastPathComponent(),
-            service: service
+            service: service,
+            capabilities: catalog.capabilities(),
+            access: access
         )
     }
 
@@ -240,5 +289,6 @@ struct `Structured text routed CRUD` {
 
     private enum OutputError: Error {
         case missingText
+        case unexpectedFormat
     }
 }

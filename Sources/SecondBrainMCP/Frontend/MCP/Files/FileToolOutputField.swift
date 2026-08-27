@@ -16,6 +16,10 @@ enum FileToolOutputField: String, Sendable {
     case readMetadata = "metadata"
     /// Explicit byte-window metadata for a paginated text read.
     case textWindow = "text_window"
+    /// Exact node identifier for a decoded Canvas projection.
+    case canvasNodeID = "canvas_node_id"
+    /// Semantic field addressed by the text window rather than raw JSON bytes.
+    case canvasField = "canvas_field"
     /// First UTF-8 byte returned by a text window.
     case byteOffset = "byte_offset"
     /// Number of UTF-8 bytes returned by a text window.

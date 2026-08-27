@@ -10,7 +10,7 @@ struct FileToolArguments: Sendable {
         /// A required argument is absent.
         case missingRequired(FileToolArgument)
         /// A present argument is not part of this operation's schema.
-        case unknown(String)
+        case unknown
         /// A present argument has the wrong JSON type.
         case invalidType(argument: FileToolArgument, expected: String)
 
@@ -19,8 +19,8 @@ struct FileToolArguments: Sendable {
             switch self {
             case .missingRequired(let argument):
                 "Missing required parameter: \(argument.rawValue)"
-            case .unknown(let argument):
-                "Unknown parameter: \(argument)"
+            case .unknown:
+                "File request contains an unknown parameter"
             case .invalidType(let argument, let expected):
                 "Invalid parameter '\(argument.rawValue)': expected \(expected)"
             }
@@ -37,11 +37,8 @@ struct FileToolArguments: Sendable {
     /// Rejects fields outside one operation's explicit schema.
     func requireOnly(_ allowed: Set<FileToolArgument>) throws {
         let allowedNames = Set(allowed.map(\.rawValue))
-        if let unknown = values.keys
-            .filter({ !allowedNames.contains($0) })
-            .sorted()
-            .first {
-            throw ValidationError.unknown(unknown)
+        if values.keys.contains(where: { !allowedNames.contains($0) }) {
+            throw ValidationError.unknown
         }
     }
 

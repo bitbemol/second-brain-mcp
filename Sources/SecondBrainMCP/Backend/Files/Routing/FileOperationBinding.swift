@@ -26,8 +26,25 @@ struct CreateOperationBinding: Sendable {
     }
 }
 
-/// Read-operation specialization of the common binding.
-typealias ReadOperationBinding = FileOperationBinding<ReadFileFunction>
+/// Read behavior and its snapshot-owning admission boundary.
+struct ReadOperationBinding: Sendable {
+    let allowedAreas: Set<VaultArea>
+    let execute: ReadFileFunction
+    let metadata: ReadFileFunction?
+    let admission: ReadOperationAdmission
+
+    init(
+        allowedAreas: Set<VaultArea>,
+        metadata: ReadFileFunction? = nil,
+        admission: @escaping ReadOperationAdmission = { try await $0() },
+        execute: @escaping ReadFileFunction
+    ) {
+        self.allowedAreas = allowedAreas
+        self.execute = execute
+        self.metadata = metadata
+        self.admission = admission
+    }
+}
 
 /// Update binding plus the modes accepted by its shared edit pipeline.
 struct UpdateOperationBinding: Sendable {

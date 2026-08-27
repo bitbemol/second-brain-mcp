@@ -17,7 +17,7 @@ actor VaultFileService: FileCRUDService {
         store: VaultCRUDStore,
         mutations: VaultMutationExecutor,
         access: any VaultAccessCoordinating,
-        metadataReader: FileMetadataReader = FileMetadataReader(pdfReader: PDFReader()),
+        metadataReader: FileMetadataReader = FileMetadataReader(),
         readOnly: Bool = false
     ) {
         self.vaultPath = vaultPath
@@ -73,37 +73,48 @@ actor VaultFileService: FileCRUDService {
     }
 
     func read(_ request: ReadFileRequest) async throws -> FileOperationOutput {
-        try await access.withRead {
-            try ReadFileOptionsValidator.validate(request)
-            let target = try ReadableFileTarget.resolve(
-                path: request.path,
-                format: request.format,
-                vaultPath: self.vaultPath
-            )
-            let binding = try self.catalog.readBinding(
-                for: request.format,
-                in: target.area
-            )
-            let snapshot = try await self.store.snapshot(target)
-            if let expectedRevision = request.options.expectedRevision,
-               snapshot.revision != expectedRevision {
-                throw FileRoutingError.revisionConflict(target.relativePath)
-            }
-            let output: FileOperationOutput
-            if request.options.view == .metadata {
-                output = try await self.metadataReader.read(
-                    request,
-                    target: target,
-                    snapshot: snapshot
-                )
+        try Task.checkCancellation()
+        try ReadFileOptionsValidator.validate(request)
+        let binding = try catalog.readBinding(
+            for: request.format,
+            in: VaultArea.resolve(path: request.path)
+        )
+        let operation: ReadFileFunction
+        if request.options.view == .metadata {
+            if let metadata = binding.metadata {
+                operation = metadata
+            } else if request.format == .markdown {
+                operation = metadataReader.read
             } else {
-                output = try await binding.execute(request, target, snapshot)
+                throw FileRoutingError.invalidReadOptions(
+                    "metadata view is unavailable for this format binding"
+                )
             }
-            return output.withMetadata(FileOperationMetadata(
-                path: target.relativePath,
-                area: target.area,
-                revision: target.area == .notes ? snapshot.revision : nil
-            ))
+        } else {
+            operation = binding.execute
+        }
+
+        // Format-local admission owns both snapshot memory and the subsequent
+        // protected read. Never wait for PDF admission while holding a vault lease.
+        return try await binding.admission {
+            try await self.access.withRead {
+                let target = try ReadableFileTarget.resolve(
+                    path: request.path,
+                    format: request.format,
+                    vaultPath: self.vaultPath
+                )
+                let snapshot = try await self.store.snapshot(target)
+                if let expectedRevision = request.options.expectedRevision,
+                   snapshot.revision != expectedRevision {
+                    throw FileRoutingError.revisionConflict(target.relativePath)
+                }
+                let output = try await operation(request, target, snapshot)
+                return output.withMetadata(FileOperationMetadata(
+                    path: target.relativePath,
+                    area: target.area,
+                    revision: target.area == .notes ? snapshot.revision : nil
+                ))
+            }
         }
     }
 
@@ -220,6 +231,7 @@ actor VaultFileService: FileCRUDService {
 private enum ReadFileOptionsValidator {
     static func validate(_ request: ReadFileRequest) throws {
         let options = request.options
+        try validateCanvasSelectors(request)
         if options.view == .metadata {
             try validateMetadataSelectors(request)
             return
@@ -250,6 +262,19 @@ private enum ReadFileOptionsValidator {
             guard options.expectedRevision == nil else {
                 throw invalid("expected_revision is available only for note text reads")
             }
+        }
+    }
+
+    private static func validateCanvasSelectors(_ request: ReadFileRequest) throws {
+        let options = request.options
+        let hasNode = options.canvasNodeID != nil
+        let hasField = options.canvasField != nil
+        guard hasNode || hasField else { return }
+        guard request.format == .canvas, options.view == .content else {
+            throw invalid("canvas_node_id and canvas_field are available only for Canvas content reads")
+        }
+        guard hasNode && hasField else {
+            throw invalid("canvas_node_id and canvas_field must be supplied together")
         }
     }
 

@@ -3,6 +3,8 @@
 /// Both the public schema and backend preflight derive from these constants so
 /// large metadata cannot consume unbounded work before file-content validation.
 enum FileMutationRequestLimits {
+    /// Maximum number of exact replacements in one update request.
+    static let maximumReplacements = 20
     /// Maximum number of Markdown tags accepted by one creation request.
     static let maximumTagCount = 100
     /// Maximum UTF-8 bytes accepted for one Markdown tag.

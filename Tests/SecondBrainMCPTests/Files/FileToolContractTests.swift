@@ -142,7 +142,7 @@ struct `MCP file consistency contract` {
             "area", "path", "revision",
         ])
         #expect(Set(try outputProperties(of: #require(tools["read_file"])).keys) == [
-            "area", "metadata", "path", "revision", "text_window",
+            "area", "canvas_field", "canvas_node_id", "metadata", "path", "revision", "text_window",
         ])
         #expect(Set(try outputProperties(of: #require(tools["update_file"])).keys) == [
             "area", "path", "revision",

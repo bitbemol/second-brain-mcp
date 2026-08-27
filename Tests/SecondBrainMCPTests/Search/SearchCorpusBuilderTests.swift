@@ -26,7 +26,7 @@ struct `Search corpus resilience` {
             at: notes,
             withIntermediateDirectories: true
         )
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeSearchFixture(root) }
 
         try Data("healthy searchable text".utf8).write(
             to: notes.appendingPathComponent("healthy.md")
@@ -44,13 +44,13 @@ struct `Search corpus resilience` {
         let builder = SearchCorpusBuilder(
             vaultPath: root.path,
             capabilities: capabilities,
-            store: VaultCRUDStore(vaultPath: root.path),
+            captureStore: searchCaptureFixture(root),
             access: VaultAccessCoordinator(
                 lockURL: root.appendingPathComponent(".vault-access.lock")
             )
         )
 
-        let atoms = try await builder.atoms(in: .notes)
+        let atoms = try await SearchDocumentCollector.atoms(from: builder, in: .notes)
 
         #expect(atoms.map(\.locator.path) == ["notes/healthy.md"])
         #expect(atoms.map(\.text) == ["healthy searchable text"])
@@ -65,7 +65,7 @@ struct `Search corpus resilience` {
             at: notes,
             withIntermediateDirectories: true
         )
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeSearchFixture(root) }
 
         let canvas = """
         {
@@ -105,13 +105,13 @@ struct `Search corpus resilience` {
         let builder = SearchCorpusBuilder(
             vaultPath: root.path,
             capabilities: capabilities,
-            store: VaultCRUDStore(vaultPath: root.path),
+            captureStore: searchCaptureFixture(root),
             access: VaultAccessCoordinator(
                 lockURL: root.appendingPathComponent(".vault-access.lock")
             )
         )
 
-        let atoms = try await builder.atoms(in: .notes)
+        let atoms = try await SearchDocumentCollector.atoms(from: builder, in: .notes)
 
         #expect(atoms.map(\.text) == ["alpha needle", "beta needle"])
         let encoded = try JSONEncoder().encode(atoms.map(\.locator))
@@ -131,7 +131,7 @@ struct `Search corpus resilience` {
         let references = root.appendingPathComponent("references", isDirectory: true)
         try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: references, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeSearchFixture(root) }
         try Data("a".utf8).write(to: notes.appendingPathComponent("a.md"))
         try Data("b".utf8).write(to: notes.appendingPathComponent("b.md"))
         try Data("not a pdf".utf8).write(to: references.appendingPathComponent("broken.pdf"))
@@ -176,7 +176,7 @@ struct `Search corpus resilience` {
             .appendingPathComponent("SearchAtomLimitTests-\(UUID().uuidString)")
         let notes = root.appendingPathComponent("notes", isDirectory: true)
         try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeSearchFixture(root) }
         try Data("{}".utf8).write(to: notes.appendingPathComponent("dense.json"))
 
         let builder = SearchCorpusBuilder(
@@ -184,7 +184,7 @@ struct `Search corpus resilience` {
             capabilities: FileCapabilities(formats: [
                 .init(format: .json, operations: [.read: [.notes]]),
             ]),
-            store: VaultCRUDStore(vaultPath: root.path),
+            captureStore: searchCaptureFixture(root),
             access: VaultAccessCoordinator(
                 lockURL: root.appendingPathComponent(".vault-access.lock")
             ),
@@ -192,16 +192,13 @@ struct `Search corpus resilience` {
         )
 
         do {
-            _ = try await builder.atoms(in: .notes)
+            _ = try await SearchDocumentCollector.atoms(from: builder, in: .notes)
             Issue.record("Expected the atom safety ceiling to reject the corpus")
         } catch let error as VaultSearchRequestError {
-            guard case .corpusTooLarge(let files, let bytes, let atoms) = error else {
-                Issue.record("Expected corpusTooLarge, received \(error)")
+            guard case .workBudgetExceeded = error else {
+                Issue.record("Expected workBudgetExceeded, received \(error)")
                 return
             }
-            #expect(files == 1)
-            #expect(bytes == 2)
-            #expect(atoms == 100_001)
         }
     }
 
@@ -211,7 +208,7 @@ struct `Search corpus resilience` {
             .appendingPathComponent("FileListingPrefixTests-\(UUID().uuidString)")
         let nested = root.appendingPathComponent("notes/a", isDirectory: true)
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeSearchFixture(root) }
         try Data("nested".utf8).write(to: nested.appendingPathComponent("nested.md"))
         try Data("sibling".utf8).write(
             to: root.appendingPathComponent("notes/a.md")
@@ -252,7 +249,7 @@ struct `Search corpus resilience` {
             isDirectory: true
         )
         try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeSearchFixture(root) }
         try Data("direct".utf8).write(
             to: projects.deletingLastPathComponent().appendingPathComponent("direct.md")
         )

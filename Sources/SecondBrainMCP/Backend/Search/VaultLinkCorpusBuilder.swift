@@ -7,18 +7,6 @@ struct VaultLinkFile: Codable, Hashable, Sendable {
     let format: FileFormat
 }
 
-struct VaultLinkDocument: Sendable {
-    let file: VaultLinkFile
-    let text: String
-    let revision: String
-}
-
-enum VaultLinkMarkdownScope: Sendable {
-    case none
-    case one(String)
-    case all
-}
-
 struct VaultLinkCorpusBuilder: Sendable {
     private let vaultPath: String
     private let capabilities: FileCapabilities
@@ -42,9 +30,7 @@ struct VaultLinkCorpusBuilder: Sendable {
             let formats = capabilities.supportedFormats(for: .read, in: area)
                 .sorted { $0.rawValue < $1.rawValue }
             guard !formats.isEmpty else { continue }
-            let root = URL(fileURLWithPath: vaultPath, isDirectory: true)
-                .appendingPathComponent(area.rawValue, isDirectory: true)
-            guard FileManager.default.fileExists(atPath: root.path) else { continue }
+            guard let root = try visibleAreaRoot(area) else { continue }
             try collectFiles(
                 below: root,
                 areaRoot: root,
@@ -61,58 +47,47 @@ struct VaultLinkCorpusBuilder: Sendable {
         }
     }
 
-    func markdownDocuments(
-        from files: [VaultLinkFile],
-        scope: VaultLinkMarkdownScope
-    ) async throws -> [VaultLinkDocument] {
-        let selected: [VaultLinkFile]
-        switch scope {
-        case .none:
-            return []
-        case .one(let path):
-            selected = files.filter { $0.path == path && $0.format == .markdown }
-        case .all:
-            selected = files.filter { $0.format == .markdown && $0.path.hasPrefix("notes/") }
+    /// Namespace-only queries still require a real visible structural root.
+    private func visibleAreaRoot(_ area: VaultArea) throws -> URL? {
+        _ = try PathValidator.resolve(relativePath: area.rawValue, root: vaultPath)
+        guard !PathValidator.containsSymbolicLinkComponent(relativePath: area.rawValue, root: vaultPath)
+        else { throw PathValidationError.pathChangedSinceValidation(area.rawValue) }
+        let root = URL(fileURLWithPath: vaultPath, isDirectory: true)
+            .appendingPathComponent(area.rawValue, isDirectory: true)
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: root.path)
+        } catch {
+            let cocoa = error as NSError
+            if cocoa.domain == NSCocoaErrorDomain,
+               [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(cocoa.code) {
+                return nil
+            }
+            throw error
         }
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            throw LinkQueryError.invalidTarget
+        }
+        let values = try root.resourceValues(forKeys: [.isHiddenKey, .isPackageKey])
+        guard values.isHidden != true, values.isPackage != true else {
+            throw LinkQueryError.invalidTarget
+        }
+        return root
+    }
 
-        var documents: [VaultLinkDocument] = []
-        documents.reserveCapacity(selected.count)
-        var totalBytes = 0
-        for file in selected {
-            try Task.checkCancellation()
-            let remaining = LinkQueryLimits.maximumMarkdownBytes - totalBytes
-            guard remaining > 0 else {
-                throw LinkQueryError.corpusTooLarge(files: files.count, bytes: totalBytes)
-            }
-            let target = try ReadableFileTarget.resolve(
-                path: file.path,
-                format: .markdown,
-                vaultPath: vaultPath
-            )
-            let snapshot: FileSnapshot
-            do {
-                snapshot = try await store.snapshot(
-                    target,
-                    maximumBytes: remaining,
-                    rejectHiddenComponents: true
-                )
-            } catch is FileResourcePolicy.Violation {
-                throw LinkQueryError.corpusTooLarge(
-                    files: files.count,
-                    bytes: LinkQueryLimits.maximumMarkdownBytes + 1
-                )
-            }
-            totalBytes += snapshot.data.count
-            guard let text = String(data: snapshot.data, encoding: .utf8) else {
-                throw SearchAtomProviderError.invalidUTF8(file.path)
-            }
-            documents.append(VaultLinkDocument(
-                file: file,
-                text: text,
-                revision: snapshot.revision.description
-            ))
-        }
-        return documents
+    /// Captures one selected source; callers consume and release it before requesting another.
+    func snapshot(
+        _ file: VaultLinkFile,
+        maximumBytes: Int,
+        didReadBytes: BoundedFileReader.ReadObserver? = nil
+    ) async throws -> FileSnapshot {
+        let target = try ReadableFileTarget.resolve(
+            path: file.path, format: .markdown, vaultPath: vaultPath
+        )
+        return try await store.snapshot(
+            target, maximumBytes: maximumBytes, rejectHiddenComponents: true,
+            didReadBytes: didReadBytes
+        )
     }
 
     private func collectFiles(
@@ -124,12 +99,12 @@ struct VaultLinkCorpusBuilder: Sendable {
         result: inout [VaultLinkFile]
     ) throws {
         let keys: Set<URLResourceKey> = [
-            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .isHiddenKey,
+            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .isHiddenKey, .isPackageKey,
         ]
         let children = try BoundedDirectoryChildren.urls(
             below: directory,
             resourceKeys: keys,
-            maximumEntries: SearchRequestLimits.maximumScannedEntries,
+            maximumEntries: LinkQueryExecutionLimits.maximumScannedEntries,
             scannedEntries: &scannedEntries,
             limitError: LinkQueryError.corpusTooLarge(
                 files: result.count,
@@ -139,7 +114,9 @@ struct VaultLinkCorpusBuilder: Sendable {
         for child in children {
             try Task.checkCancellation()
             let values = try child.resourceValues(forKeys: keys)
-            if values.isHidden == true || values.isSymbolicLink == true { continue }
+            if values.isHidden == true || values.isSymbolicLink == true || values.isPackage == true {
+                continue
+            }
             if values.isDirectory == true {
                 try collectFiles(
                     below: child,
@@ -164,7 +141,7 @@ struct VaultLinkCorpusBuilder: Sendable {
                 path: "\(area.rawValue)/\(suffix)",
                 format: format
             ))
-            guard result.count <= LinkQueryLimits.maximumIndexedFiles else {
+            guard result.count <= LinkQueryExecutionLimits.maximumIndexedFiles else {
                 throw LinkQueryError.corpusTooLarge(files: result.count, bytes: 0)
             }
         }

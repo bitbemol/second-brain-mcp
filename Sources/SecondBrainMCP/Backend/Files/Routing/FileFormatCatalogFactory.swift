@@ -63,6 +63,7 @@ enum FileFormatCatalogFactory {
                     validate: { data, _ in
                         try CanvasDocumentValidator.validate(jsonData: data)
                     },
+                    read: canvas.read,
                     updateModes: [.replace]
                 )
             case .har:
@@ -130,7 +131,9 @@ enum FileFormatCatalogFactory {
                         create: nil,
                         read: ReadOperationBinding(
                             allowedAreas: [.references],
-                            execute: pdf.read
+                            metadata: pdf.metadataAdmitted,
+                            admission: { operation in try await pdfReader.withPermit(operation) },
+                            execute: pdf.readAdmitted
                         ),
                         update: nil,
                         delete: nil

@@ -3,7 +3,7 @@ import Foundation
 /// Shared UTF-8 decoding and exact-replacement behavior for text formats.
 enum TextFileSupport {
     /// Errors produced while decoding or patching text content.
-    enum TextError: Error, CustomStringConvertible {
+    enum TextError: Error, CustomStringConvertible, CallerSafeError {
         /// Input bytes are not valid UTF-8.
         case invalidUTF8
         /// A requested text byte offset is outside the document.
@@ -22,6 +22,8 @@ enum TextFileSupport {
         case patchNotFound(index: Int)
         /// A replacement's old text is not unique in the current document.
         case ambiguousPatch(index: Int, occurrences: Int)
+
+        var callerSafeDescription: String { description }
 
         /// Human-readable text decoding or replacement failure.
         var description: String {

@@ -23,13 +23,8 @@ struct MarkdownFileOperations: Sendable {
     }
 }
 
-/// Interprets immutable snapshots as bounded content-free metadata.
+/// Interprets Markdown snapshots as bounded metadata; PDF metadata is catalog-owned.
 struct FileMetadataReader: Sendable {
-    private let pdfReader: PDFReader
-
-    init(pdfReader: PDFReader) {
-        self.pdfReader = pdfReader
-    }
 
     func read(
         _ request: ReadFileRequest,
@@ -42,14 +37,9 @@ struct FileMetadataReader: Sendable {
                 target: target,
                 snapshot: snapshot
             ))
-        case .pdf:
-            return .metadata(try await pdfReader.metadata(
-                target: target,
-                snapshot: snapshot
-            ))
         default:
             throw FileRoutingError.invalidReadOptions(
-                "metadata view is supported only for markdown and pdf"
+                "metadata view is unavailable for this format binding"
             )
         }
     }
@@ -60,12 +50,27 @@ struct FileMetadataReader: Sendable {
     ) throws -> FileReadMetadata {
         let text = try TextFileSupport.string(from: snapshot.data)
         let parsed = MarkdownSupport.metadata(from: text).value
-        let title = bounded(
+        var incomplete = Set<FileMetadataField>()
+        let title = FileMetadataTextBounds.display(
             parsed.title ?? firstHeading(in: parsed.body)
-                ?? MarkdownSupport.titleFromFilename(target.url.lastPathComponent)
+                ?? MarkdownSupport.titleFromFilename(target.url.lastPathComponent),
+            field: .title,
+            incomplete: &incomplete
         )
-        let tags = Array(parsed.tags.sorted().prefix(FileMetadataLimits.maximumTags))
-            .map { bounded($0) }
+        var tags: [String] = []
+        for tag in parsed.tags.sorted() {
+            guard tag.utf8.count <= FileMetadataLimits.maximumStringBytes else {
+                incomplete.insert(.tags)
+                continue
+            }
+            guard tags.count < FileMetadataLimits.maximumTags else {
+                incomplete.insert(.tags)
+                break
+            }
+            tags.append(tag)
+        }
+        let links = try outgoingLinks(in: parsed.body)
+        if links.incomplete { incomplete.insert(.outgoingLinkTargets) }
         return FileReadMetadata(
             format: .markdown,
             byteCount: snapshot.data.count,
@@ -73,13 +78,14 @@ struct FileMetadataReader: Sendable {
             title: title,
             tags: tags,
             wordCount: wordCount(in: parsed.body),
-            outgoingLinkTargets: outgoingLinks(in: parsed.body),
+            outgoingLinkTargets: links.values,
             author: nil,
             pageCount: nil,
             pageLabels: nil,
             pageLabelsTruncated: nil,
             outline: nil,
-            outlineTruncated: nil
+            outlineTruncated: nil,
+            incompleteFields: incomplete.sorted { $0.rawValue < $1.rawValue }
         )
     }
 
@@ -114,81 +120,40 @@ struct FileMetadataReader: Sendable {
         return count
     }
 
-    private func outgoingLinks(in body: String) -> [String] {
-        let patterns = [
-            #"!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]"#,
-            #"!?\[[^\]]*\]\(([^\s\)]+)(?:\s+[^\)]*)?\)"#,
-        ]
-        let range = NSRange(body.startIndex..<body.endIndex, in: body)
-        var candidates: [(offset: Int, target: String)] = []
-        for pattern in patterns {
-            guard let expression = try? NSRegularExpression(pattern: pattern) else {
-                continue
-            }
-            expression.enumerateMatches(
-                in: body,
-                range: range
-            ) { match, _, stop in
-                guard let match,
-                      let capture = Range(match.range(at: 1), in: body) else {
-                    return
-                }
-                candidates.append((
-                    match.range.location,
-                    String(body[capture])
-                ))
-                if candidates.count >= FileMetadataLimits.maximumOutgoingLinks * 2 {
-                    stop.pointee = true
-                }
-            }
-        }
-        candidates.sort {
-            $0.offset == $1.offset ? $0.target < $1.target : $0.offset < $1.offset
-        }
+    private enum LinkSummaryStop: Error {
+        case incomplete
+    }
+
+    private func outgoingLinks(in body: String) throws -> (values: [String], incomplete: Bool) {
+        // Work is independent of the number of distinct targets that fit the response.
+        let maximumOccurrences = 100_000
+        var occurrences = 0
         var seen = Set<String>()
         var result: [String] = []
         var bytes = 0
-        for candidate in candidates {
-            var target = candidate.target
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if target.hasPrefix("<"), target.hasSuffix(">"), target.count >= 2 {
-                target = String(target.dropFirst().dropLast())
+        do {
+            try ObsidianWikiLinkParser.forEach(in: body) { link in
+                try Task.checkCancellation()
+                occurrences += 1
+                guard occurrences <= maximumOccurrences else { throw LinkSummaryStop.incomplete }
+                let target = link.target
+                guard !target.isEmpty, !seen.contains(target) else { return }
+                let targetBytes = target.utf8.count
+                guard targetBytes <= FileMetadataLimits.maximumStringBytes,
+                      result.count < FileMetadataLimits.maximumOutgoingLinks,
+                      targetBytes <= FileMetadataLimits.maximumOutgoingLinkBytes - bytes else {
+                    throw LinkSummaryStop.incomplete
+                }
+                seen.insert(target)
+                result.append(target)
+                bytes += targetBytes
             }
-            let lower = target.lowercased()
-            guard !target.isEmpty,
-                  !target.hasPrefix("#"),
-                  !lower.hasPrefix("http://"),
-                  !lower.hasPrefix("https://"),
-                  !lower.hasPrefix("mailto:"),
-                  !lower.hasPrefix("data:"),
-                  seen.insert(target).inserted else {
-                continue
-            }
-            let boundedTarget = bounded(target)
-            let nextBytes = bytes + boundedTarget.utf8.count
-            guard result.count < FileMetadataLimits.maximumOutgoingLinks,
-                  nextBytes <= FileMetadataLimits.maximumOutgoingLinkBytes else {
-                break
-            }
-            result.append(boundedTarget)
-            bytes = nextBytes
+        } catch LinkQuerySourceError.identifierTooLarge {
+            return (result, true)
+        } catch LinkSummaryStop.incomplete {
+            return (result, true)
         }
-        return result
-    }
-
-    private func bounded(_ value: String) -> String {
-        let data = Data(value.utf8)
-        guard data.count > FileMetadataLimits.maximumStringBytes else {
-            return value
-        }
-        var end = FileMetadataLimits.maximumStringBytes
-        while end > 0 {
-            if let result = String(data: data.prefix(end), encoding: .utf8) {
-                return result
-            }
-            end -= 1
-        }
-        return ""
+        return (result, false)
     }
 
     private static func timestamp(_ date: Date) -> String {

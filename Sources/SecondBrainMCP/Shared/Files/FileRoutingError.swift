@@ -29,10 +29,26 @@ enum FileRoutingError: Error, CustomStringConvertible, CallerSafeError {
     case revisionConflict(String)
 
     var callerSafeDescription: String {
-        description
+        switch self {
+        case .unknownFormat:
+            "Unsupported file format: choose a listed concrete format"
+        case .invalidArea:
+            "Path must be within notes/ or references/"
+        case .areaNotWritable:
+            "Writable file paths must be within notes/"
+        case .extensionMismatch(_, let format):
+            "Path extension does not match format '\(format.rawValue)'. Allowed extensions: "
+                + format.extensions.sorted().joined(separator: ", ")
+        case .contentMismatch(_, let declared, _):
+            "File content does not match declared format '\(declared.rawValue)'"
+        case .revisionConflict:
+            "File changed since it was read: read it again before updating or deleting it."
+        case .readOnly, .operationNotSupported, .invalidReadOptions:
+            description
+        }
     }
 
-    /// Human-readable routing failure suitable for an MCP error response.
+    /// Internal routing diagnostic; caller-facing errors omit arbitrary identity values.
     var description: String {
         switch self {
         case .unknownFormat(let value):

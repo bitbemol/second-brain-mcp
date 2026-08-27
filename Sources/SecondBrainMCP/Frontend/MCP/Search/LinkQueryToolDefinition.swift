@@ -7,7 +7,7 @@ enum LinkQueryToolDefinition {
     static func build() -> Tool {
         Tool(
             name: name,
-            description: "Resolve one Obsidian wiki-link target, enumerate outgoing links from one Markdown note, or find backlinks to a target. Supports aliases, embeds, extensionless Markdown names, explicit paths, and optional from_path proximity. Results are bounded structured locators without snippets or file content. Continue with next_cursor until absent; restart without it if the vault changed.",
+            description: "Resolve one Obsidian wiki-link target, enumerate wiki and inline Markdown links/images from one note (excluding code, escapes, external URLs and unsupported reference-style links), or find backlinks to a target. Backlinks default to one source/target pair with occurrence_count; use group_by=occurrence and source_path for precise drill-down. Results contain locators, not snippets. coverage.complete=false means some sources failed: do not infer absence. next_cursor paginates examined results; keep criteria unchanged, but limit may change. Restart a stale cursor.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -30,6 +30,16 @@ enum LinkQueryToolDefinition {
                         "maxLength": .int(LinkQueryLimits.maximumTargetBytes),
                         "description": .string("Existing Markdown note used only for proximity and ambiguity resolution"),
                     ]),
+                    LinkQueryToolArgument.groupBy.rawValue: .object([
+                        "type": .string("string"),
+                        "enum": .array(LinkQueryGrouping.allCases.map { .string($0.rawValue) }),
+                        "description": .string("Backlinks only: source (default) groups each source/target pair; occurrence preserves individual links. Omit for other directions."),
+                    ]),
+                    LinkQueryToolArgument.sourcePath.rawValue: .object([
+                        "type": .string("string"),
+                        "minLength": .int(1), "maxLength": .int(LinkQueryLimits.maximumTargetBytes),
+                        "description": .string("Backlinks only: examine this one notes/...md source for selected-group drill-down"),
+                    ]),
                     LinkQueryToolArgument.limit.rawValue: .object([
                         "type": .string("integer"),
                         "minimum": .int(1),
@@ -40,7 +50,7 @@ enum LinkQueryToolDefinition {
                     LinkQueryToolArgument.cursor.rawValue: .object([
                         "type": .string("string"),
                         "maxLength": .int(LinkQueryLimits.maximumCursorBytes),
-                        "description": .string("Opaque next_cursor from an identical preceding request; restart without it if stale"),
+                        "description": .string("Opaque next_cursor with unchanged semantic criteria; limit may change. Restart without it if stale"),
                     ]),
                 ]),
                 "required": .array([
@@ -70,6 +80,7 @@ enum LinkQueryToolDefinition {
                     }),
                     "description": .string("Direction executed for these results"),
                 ]),
+                "coverage": DiscoveryCoverageSchema.value,
                 "results": .object([
                     "type": .string("array"),
                     "maxItems": .int(LinkQueryLimits.maximumResults),
@@ -83,11 +94,20 @@ enum LinkQueryToolDefinition {
                             ]),
                             "target": .object([
                                 "type": .string("string"),
-                                "description": .string("Wiki-link target text as written or queried"),
+                                "description": .string("Raw local-link target as written or queried, including its fragment"),
                             ]),
                             "resolved_path": .object([
                                 "type": .string("string"),
-                                "description": .string("Resolved vault-relative Markdown path when resolution succeeded"),
+                                "description": .string("Resolved vault-relative path when resolution succeeded"),
+                            ]),
+                            "resolved_format": .object([
+                                "type": .string("string"),
+                                "enum": .array(FileFormat.allCases.map { .string($0.rawValue) }),
+                                "description": .string("Concrete format for read_file, paired with resolved_path"),
+                            ]),
+                            "occurrence_count": .object([
+                                "type": .string("integer"), "minimum": .int(1),
+                                "description": .string("Source-group count of distinct contributing occurrences"),
                             ]),
                             "kind": .object([
                                 "type": .string("string"),
@@ -98,7 +118,11 @@ enum LinkQueryToolDefinition {
                             ]),
                             "alias": .object([
                                 "type": .string("string"),
-                                "description": .string("Optional display alias from the wiki-link"),
+                                "description": .string("Optional wiki display alias or inline Markdown link label"),
+                            ]),
+                            "fragment": .object([
+                                "type": .string("string"),
+                                "description": .string("Fragment text without its leading # or ^ delimiter"),
                             ]),
                             "occurrence": .object([
                                 "type": .string("integer"),
@@ -110,8 +134,27 @@ enum LinkQueryToolDefinition {
                                 "description": .string("True when the target maps to multiple candidate paths"),
                             ]),
                         ]),
-                        "required": .array([
-                            .string("target"), .string("kind"), .string("ambiguous"),
+                        "required": .array([.string("ambiguous")]),
+                        "dependentRequired": .object([
+                            "resolved_path": .array([.string("resolved_format")]),
+                            "resolved_format": .array([.string("resolved_path")]),
+                        ]),
+                        "oneOf": .array([
+                            .object([
+                                "required": .array([
+                                    .string("source_path"), .string("resolved_path"),
+                                    .string("resolved_format"), .string("occurrence_count"),
+                                ]),
+                                "properties": .object([
+                                    "target": .bool(false), "kind": .bool(false),
+                                    "alias": .bool(false), "occurrence": .bool(false),
+                                    "fragment": .bool(false),
+                                ]),
+                            ]),
+                            .object([
+                                "required": .array([.string("target"), .string("kind")]),
+                                "properties": .object(["occurrence_count": .bool(false)]),
+                            ]),
                         ]),
                         "additionalProperties": .bool(false),
                     ]),
@@ -122,7 +165,7 @@ enum LinkQueryToolDefinition {
                     "description": .string("Opaque continuation cursor; absent only when this query is exhausted"),
                 ]),
             ]),
-            "required": .array([.string("direction"), .string("results")]),
+            "required": .array([.string("direction"), .string("results"), .string("coverage")]),
             "additionalProperties": .bool(false),
         ])
     }

@@ -16,18 +16,20 @@ struct PDFReader: Sendable {
         options: ReadFileOptions = .default
     ) async throws -> [RenderedPDFPage] {
         let pageNumbers = try Self.pageNumbers(from: options)
-        let opened = try VaultFileInspector.snapshot(
-            target,
-            maximumBytes: target.format.maximumFileBytes
-        )
-        return try await read(
-            target: target,
-            snapshot: FileSnapshot(
-                data: opened.data,
-                modifiedDate: opened.metadata.modificationDate
-            ),
-            pageNumbers: pageNumbers
-        )
+        return try await admission.withPermit {
+            let opened = try VaultFileInspector.snapshot(
+                target,
+                maximumBytes: target.format.maximumFileBytes
+            )
+            return try readAdmitted(
+                target: target,
+                snapshot: FileSnapshot(
+                    data: opened.data,
+                    modifiedDate: opened.metadata.modificationDate
+                ),
+                pageNumbers: pageNumbers
+            )
+        }
     }
 
     /// Renders physical pages exclusively from the immutable service snapshot.
@@ -49,55 +51,94 @@ struct PDFReader: Sendable {
         snapshot: FileSnapshot
     ) async throws -> FileReadMetadata {
         try await admission.withPermit {
-            try Task.checkCancellation()
-            guard let document = PDFDocument(data: snapshot.data) else {
-                throw PDFReadError.cannotOpenPDF(target.relativePath)
-            }
-            let attributes = document.documentAttributes
-            let title = Self.bounded(
-                attributes?[PDFDocumentAttribute.titleAttribute] as? String
-            )
-            let author = Self.bounded(
-                attributes?[PDFDocumentAttribute.authorAttribute] as? String
-            )
-            let labelLimit = min(
-                document.pageCount,
-                FileMetadataLimits.maximumPDFPageLabels
-            )
-            var labels: [String] = []
-            labels.reserveCapacity(labelLimit)
-            for index in 0..<labelLimit {
-                try Task.checkCancellation()
-                labels.append(Self.bounded(document.page(at: index)?.label) ?? "")
-            }
+            try metadataAdmitted(target: target, snapshot: snapshot)
+        }
+    }
 
-            var outline: [PDFOutlineMetadataEntry] = []
-            var outlineTruncated = false
-            if let root = document.outlineRoot {
-                try Self.collectOutline(
-                    root,
-                    document: document,
-                    depth: 0,
-                    result: &outline,
-                    truncated: &outlineTruncated
-                )
-            }
-            return FileReadMetadata(
-                format: .pdf,
-                byteCount: snapshot.data.count,
-                modifiedAt: snapshot.modifiedDate.map(Self.timestamp),
-                title: title,
-                tags: nil,
-                wordCount: nil,
-                outgoingLinkTargets: nil,
-                author: author,
-                pageCount: document.pageCount,
-                pageLabels: labels,
-                pageLabelsTruncated: document.pageCount > labelLimit,
-                outline: outline,
-                outlineTruncated: outlineTruncated
+    /// The catalog uses this permit around snapshot capture and its admitted handlers.
+    /// Direct reads acquire PDF admission before the vault lease. Search releases its
+    /// vault read lease before taking this same PDF permit.
+    func withPermit<Result: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Result
+    ) async throws -> Result {
+        try await admission.withPermit(operation)
+    }
+
+    /// Only a catalog binding holding this reader's permit may call this entry point.
+    func readAdmitted(
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot,
+        options: ReadFileOptions
+    ) throws -> [RenderedPDFPage] {
+        try readAdmitted(target: target, snapshot: snapshot, pageNumbers: Self.pageNumbers(from: options))
+    }
+
+    /// Only a catalog binding holding this reader's permit may call this entry point.
+    func metadataAdmitted(
+        target: ReadableFileTarget,
+        snapshot: FileSnapshot
+    ) throws -> FileReadMetadata {
+        try Task.checkCancellation()
+        guard let document = PDFDocument(data: snapshot.data) else {
+            throw PDFReadError.cannotOpenPDF(target.relativePath)
+        }
+        let attributes = document.documentAttributes
+        var incomplete = Set<FileMetadataField>()
+        let title = FileMetadataTextBounds.display(
+            attributes?[PDFDocumentAttribute.titleAttribute] as? String,
+            field: .title,
+            incomplete: &incomplete
+        )
+        let author = FileMetadataTextBounds.display(
+            attributes?[PDFDocumentAttribute.authorAttribute] as? String,
+            field: .author,
+            incomplete: &incomplete
+        )
+        let labelLimit = min(
+            document.pageCount,
+            FileMetadataLimits.maximumPDFPageLabels
+        )
+        var labels: [String] = []
+        labels.reserveCapacity(labelLimit)
+        for index in 0..<labelLimit {
+            try Task.checkCancellation()
+            labels.append(FileMetadataTextBounds.display(
+                document.page(at: index)?.label,
+                field: .pageLabels,
+                incomplete: &incomplete
+            ) ?? "")
+        }
+
+        if document.pageCount > labelLimit { incomplete.insert(.pageLabels) }
+        var outline: [PDFOutlineMetadataEntry] = []
+        var outlineTruncated = false
+        if let root = document.outlineRoot {
+            try Self.collectOutline(
+                root,
+                document: document,
+                depth: 0,
+                result: &outline,
+                truncated: &outlineTruncated,
+                incomplete: &incomplete
             )
         }
+        if outlineTruncated { incomplete.insert(.outline) }
+        return FileReadMetadata(
+            format: .pdf,
+            byteCount: snapshot.data.count,
+            modifiedAt: snapshot.modifiedDate.map(Self.timestamp),
+            title: title,
+            tags: nil,
+            wordCount: nil,
+            outgoingLinkTargets: nil,
+            author: author,
+            pageCount: document.pageCount,
+            pageLabels: labels,
+            pageLabelsTruncated: document.pageCount > labelLimit,
+            outline: outline,
+            outlineTruncated: outlineTruncated,
+            incompleteFields: incomplete.sorted { $0.rawValue < $1.rawValue }
+        )
     }
 
     private static func collectOutline(
@@ -105,7 +146,8 @@ struct PDFReader: Sendable {
         document: PDFDocument,
         depth: Int,
         result: inout [PDFOutlineMetadataEntry],
-        truncated: inout Bool
+        truncated: inout Bool,
+        incomplete: inout Set<FileMetadataField>
     ) throws {
         guard depth < FileMetadataLimits.maximumPDFOutlineDepth else {
             if parent.numberOfChildren > 0 { truncated = true }
@@ -120,7 +162,11 @@ struct PDFReader: Sendable {
             guard let child = parent.child(at: index) else { continue }
             let page = child.destination?.page.map { document.index(for: $0) + 1 }
             result.append(PDFOutlineMetadataEntry(
-                label: bounded(child.label) ?? "",
+                label: FileMetadataTextBounds.display(
+                    child.label,
+                    field: .outline,
+                    incomplete: &incomplete
+                ) ?? "",
                 page: page,
                 depth: depth
             ))
@@ -129,28 +175,13 @@ struct PDFReader: Sendable {
                 document: document,
                 depth: depth + 1,
                 result: &result,
-                truncated: &truncated
+                truncated: &truncated,
+                incomplete: &incomplete
             )
             if truncated && result.count >= FileMetadataLimits.maximumPDFOutlineEntries {
                 return
             }
         }
-    }
-
-    private static func bounded(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let data = Data(value.utf8)
-        guard data.count > FileMetadataLimits.maximumStringBytes else {
-            return value
-        }
-        var end = FileMetadataLimits.maximumStringBytes
-        while end > 0 {
-            if let result = String(data: data.prefix(end), encoding: .utf8) {
-                return result
-            }
-            end -= 1
-        }
-        return ""
     }
 
     private static func timestamp(_ date: Date) -> String {

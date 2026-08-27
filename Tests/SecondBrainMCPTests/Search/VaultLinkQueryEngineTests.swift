@@ -37,6 +37,138 @@ struct `Vault link query engine` {
         #expect(allSourcesAreAbsent)
     }
 
+    @Test
+    func `Exact source and target paths do not collapse diacritic collisions`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write("[[First]]", to: "notes/cafe.md", under: root)
+        try write("[[Second]]", to: "notes/café.md", under: root)
+        try write("# First", to: "notes/First.md", under: root)
+        try write("# Second", to: "notes/Second.md", under: root)
+        let engine = makeEngine(root: root)
+
+        for (path, linkedPath) in [
+            ("notes/cafe.md", "notes/First.md"),
+            ("notes/café.md", "notes/Second.md"),
+        ] {
+            let resolved = try await engine.query(LinkQueryRequest(
+                direction: .resolve,
+                target: path
+            ))
+            #expect(resolved.results.map(\.resolvedPath) == [path])
+            #expect(resolved.results.allSatisfy { !$0.ambiguous })
+
+            let outgoing = try await engine.query(LinkQueryRequest(
+                direction: .outgoing,
+                target: path
+            ))
+            #expect(outgoing.results.map(\.sourcePath) == [path])
+            #expect(outgoing.results.map(\.resolvedPath) == [linkedPath])
+
+            let selfLink = try await engine.query(LinkQueryRequest(
+                direction: .resolve,
+                target: "#Heading",
+                fromPath: path
+            ))
+            #expect(selfLink.results.map(\.resolvedPath) == [path])
+        }
+    }
+
+    @Test
+    func `Folded explicit targets retain ambiguity without choosing a source`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write("# Plain", to: "notes/cafe.md", under: root)
+        try write("# Accent", to: "notes/café.md", under: root)
+        let engine = makeEngine(root: root)
+
+        let resolved = try await engine.query(LinkQueryRequest(
+            direction: .resolve,
+            target: "notes/càfe.md"
+        ))
+        #expect(resolved.results.map(\.resolvedPath) == ["notes/cafe.md", "notes/café.md"])
+        let allAmbiguous = resolved.results.allSatisfy(\.ambiguous)
+        #expect(allAmbiguous)
+
+        var rejectedSource = false
+        do {
+            _ = try await engine.query(LinkQueryRequest(
+                direction: .outgoing,
+                target: "notes/càfe.md"
+            ))
+        } catch LinkQueryError.invalidTarget {
+            rejectedSource = true
+        }
+        #expect(rejectedSource)
+
+        var rejectedContext = false
+        do {
+            _ = try await engine.query(LinkQueryRequest(
+                direction: .resolve,
+                target: "#Heading",
+                fromPath: "notes/càfe.md"
+            ))
+        } catch LinkQueryError.invalidFromPath {
+            rejectedContext = true
+        }
+        #expect(rejectedContext)
+    }
+
+    @Test
+    func `Distinct width and case paths retain exact identity when supported`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for (index, names) in [
+            ("cafe.md", "ｃａｆｅ.md"),
+            ("Source.md", "source.md"),
+        ].enumerated() {
+            let firstPath = "notes/collision-\(index)/\(names.0)"
+            let secondPath = "notes/collision-\(index)/\(names.1)"
+            try write("# First", to: firstPath, under: root)
+            // A case-insensitive filesystem cannot represent both case variants.
+            guard !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(secondPath).path
+            ) else { continue }
+            try write("# Second", to: secondPath, under: root)
+
+            for path in [firstPath, secondPath] {
+                let response = try await makeEngine(root: root).query(LinkQueryRequest(
+                    direction: .resolve,
+                    target: path
+                ))
+                #expect(response.results.map(\.resolvedPath) == [path])
+                #expect(response.results.allSatisfy { !$0.ambiguous })
+            }
+        }
+    }
+
+    @Test
+    func `Unique folded path spellings preserve compatibility`() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write("# Target", to: "notes/Project/Target.md", under: root)
+        try write("[[Target]]", to: "notes/Project/Source.md", under: root)
+        let engine = makeEngine(root: root)
+
+        let resolved = try await engine.query(LinkQueryRequest(
+            direction: .resolve,
+            target: "notes/project/target.md",
+            fromPath: "notes/PROJECT/SOURCE.md"
+        ))
+        #expect(resolved.results.map(\.resolvedPath) == ["notes/Project/Target.md"])
+
+        let outgoing = try await engine.query(LinkQueryRequest(
+            direction: .outgoing,
+            target: "notes/project/source.md"
+        ))
+        #expect(outgoing.results.map(\.sourcePath) == ["notes/Project/Source.md"])
+        #expect(outgoing.results.map(\.resolvedPath) == ["notes/Project/Target.md"])
+    }
+
     private func makeEngine(root: URL) -> VaultLinkQueryEngine {
         let capabilities = FileCapabilities(formats: [
             .init(format: .markdown, operations: [.read: [.notes]]),

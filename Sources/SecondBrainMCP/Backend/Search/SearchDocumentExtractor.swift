@@ -38,8 +38,7 @@ struct CanvasSearchAtomProvider: SearchAtomProvider {
         snapshot: FileSnapshot
     ) async throws -> [SearchAtom] {
         try Task.checkCancellation()
-        try CanvasDocumentValidator.validate(jsonData: snapshot.data)
-        let document = try JSONDecoder().decode(CanvasDocument.self, from: snapshot.data)
+        let document = try CanvasDocumentValidator.decodeValidated(jsonData: snapshot.data)
         var atoms: [SearchAtom] = []
         for node in document.nodes {
             try Task.checkCancellation()

@@ -2,16 +2,19 @@ import Foundation
 
 struct VaultLinkPathIndex {
     private let exact: [String: VaultLinkFile]
+    private let byFoldedPath: [String: [VaultLinkFile]]
     private let byName: [String: [VaultLinkFile]]
     private let byMarkdownStem: [String: [VaultLinkFile]]
 
     init(files: [VaultLinkFile]) throws {
         var exact: [String: VaultLinkFile] = [:]
+        var byFoldedPath: [String: [VaultLinkFile]] = [:]
         var byName: [String: [VaultLinkFile]] = [:]
         var byMarkdownStem: [String: [VaultLinkFile]] = [:]
         for file in files {
             try Task.checkCancellation()
-            exact[Self.key(file.path)] = file
+            exact[file.path] = file
+            byFoldedPath[Self.key(file.path), default: []].append(file)
             let name = (file.path as NSString).lastPathComponent
             byName[Self.key(name), default: []].append(file)
             if file.format == .markdown {
@@ -20,6 +23,7 @@ struct VaultLinkPathIndex {
             }
         }
         self.exact = exact
+        self.byFoldedPath = byFoldedPath.mapValues { $0.sorted { $0.path < $1.path } }
         self.byName = byName.mapValues { $0.sorted { $0.path < $1.path } }
         self.byMarkdownStem = byMarkdownStem.mapValues {
             $0.sorted { $0.path < $1.path }
@@ -27,7 +31,7 @@ struct VaultLinkPathIndex {
     }
 
     func validatedContextPath(_ path: String) throws -> String {
-        guard let file = exact[Self.key(path)],
+        guard let file = uniquePathCandidate(path),
               file.format == .markdown,
               file.path.hasPrefix("notes/") else {
             throw LinkQueryError.invalidFromPath
@@ -36,7 +40,7 @@ struct VaultLinkPathIndex {
     }
 
     func validatedSourcePath(_ path: String) throws -> String {
-        guard let file = exact[Self.key(path)],
+        guard let file = uniquePathCandidate(path),
               file.format == .markdown,
               file.path.hasPrefix("notes/") else {
             throw LinkQueryError.invalidTarget
@@ -54,7 +58,7 @@ struct VaultLinkPathIndex {
             throw LinkQueryError.invalidTarget
         }
         if target.isEmpty {
-            guard let fromPath, let file = exact[Self.key(fromPath)] else {
+            guard let fromPath, let file = uniquePathCandidate(fromPath) else {
                 return []
             }
             return [file]
@@ -74,10 +78,8 @@ struct VaultLinkPathIndex {
             paths.append("notes/" + concrete)
             if hasExtension { paths.append("references/" + concrete) }
             var seen: Set<String> = []
-            return paths.compactMap { path in
-                let key = Self.key(path)
-                guard seen.insert(key).inserted else { return nil }
-                return exact[key]
+            return paths.flatMap { path in
+                pathCandidates(path).filter { seen.insert($0.path).inserted }
             }
         }
 
@@ -94,6 +96,15 @@ struct VaultLinkPathIndex {
         }
     }
 
+    /// Stored Markdown hrefs never reach PathValidator or a filesystem open.
+    func markdownCandidates(_ path: String, fromPath: String) -> [VaultLinkFile]? {
+        switch LocalMarkdownDestination.location(of: path, from: fromPath) {
+        case .external: return nil
+        case .unresolved: return []
+        case .vaultPath(let candidate): return pathCandidates(candidate)
+        }
+    }
+
     func closestCandidates(
         _ target: String,
         fromPath: String
@@ -104,6 +115,17 @@ struct VaultLinkPathIndex {
         return candidates.prefix {
             proximity(of: $0.path, to: fromPath) == closestRank
         }.map { $0 }
+    }
+
+    /// Exact canonical spelling identifies one file; folded spelling can identify several.
+    private func pathCandidates(_ path: String) -> [VaultLinkFile] {
+        if let file = exact[path] { return [file] }
+        return byFoldedPath[Self.key(path)] ?? []
+    }
+
+    private func uniquePathCandidate(_ path: String) -> VaultLinkFile? {
+        let candidates = pathCandidates(path)
+        return candidates.count == 1 ? candidates.first : nil
     }
 
     private func proximity(of candidate: String, to source: String?) -> Int {

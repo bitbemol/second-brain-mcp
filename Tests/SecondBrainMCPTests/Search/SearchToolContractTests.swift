@@ -12,7 +12,7 @@ struct `MCP vault search contract` {
         let required = try #require(input["required"]?.arrayValue).compactMap(\.stringValue)
         #expect(required == ["location"])
         #expect(Set(inputProperties.keys) == Set([
-            "location", "query", "tags", "created_from", "created_through", "limit", "cursor",
+            "location", "directory", "formats", "query", "tags", "created_from", "created_through", "limit", "cursor",
         ]))
         #expect(inputProperties["location"]?.objectValue?["enum"]?.arrayValue?
             .compactMap(\.stringValue) == VaultArea.allCases.map(\.rawValue))
@@ -28,8 +28,8 @@ struct `MCP vault search contract` {
         let output = try #require(tool.outputSchema?.objectValue)
         let outputProperties = try #require(output["properties"]?.objectValue)
         let outputRequired = try #require(output["required"]?.arrayValue).compactMap(\.stringValue)
-        #expect(outputRequired == ["results"])
-        #expect(Set(outputProperties.keys) == Set(["results", "next_cursor"]))
+        #expect(outputRequired == ["results", "coverage"])
+        #expect(Set(outputProperties.keys) == Set(["results", "next_cursor", "coverage"]))
         let resultProperties = try #require(
             outputProperties["results"]?.objectValue?["items"]?
                 .objectValue?["properties"]?.objectValue
@@ -43,6 +43,7 @@ struct `MCP vault search contract` {
     func `Discovery schemas explain selection pagination and every locator field`() throws {
         let search = SearchToolDefinition.build()
         #expect(search.description?.contains("JSON Canvas node") == true)
+        #expect(search.description?.contains("PDF OCR may miss words even with complete coverage") == true)
         let searchInput = try schemaProperties(search.inputSchema)
         let searchOutput = try schemaProperties(try #require(search.outputSchema))
         let searchResults = try itemProperties(searchOutput, key: "results")
@@ -137,7 +138,7 @@ struct `MCP vault search contract` {
             ]
         ))
         let values = try #require(result.structuredContent?.objectValue)
-        #expect(Set(values.keys) == Set(["results"]))
+        #expect(Set(values.keys) == Set(["results", "coverage"]))
         let item = try #require(values["results"]?.arrayValue?.first?.objectValue)
         #expect(Set(item.keys) == Set(["path", "format", "page"]))
         #expect(item["page"]?.intValue == 3)
@@ -154,7 +155,7 @@ struct `MCP vault search contract` {
         let input = try #require(tool.inputSchema.objectValue)
         let properties = try #require(input["properties"]?.objectValue)
         #expect(Set(properties.keys) == Set([
-            "direction", "target", "from_path", "limit", "cursor",
+            "direction", "target", "from_path", "group_by", "source_path", "limit", "cursor",
         ]))
         #expect(input["required"]?.arrayValue?.compactMap(\.stringValue)
             == ["direction", "target"])
@@ -163,15 +164,15 @@ struct `MCP vault search contract` {
         let output = try #require(tool.outputSchema?.objectValue)
         let outputProperties = try #require(output["properties"]?.objectValue)
         #expect(Set(outputProperties.keys) == Set([
-            "direction", "results", "next_cursor",
+            "direction", "results", "next_cursor", "coverage",
         ]))
         let itemProperties = try #require(
             outputProperties["results"]?.objectValue?["items"]?
                 .objectValue?["properties"]?.objectValue
         )
         #expect(Set(itemProperties.keys) == Set([
-            "source_path", "target", "resolved_path", "kind",
-            "alias", "occurrence", "ambiguous",
+            "source_path", "target", "resolved_path", "resolved_format", "kind",
+            "alias", "fragment", "occurrence", "occurrence_count", "ambiguous",
         ]))
         #expect(!itemProperties.keys.contains("content"))
         #expect(!itemProperties.keys.contains("snippet"))
@@ -192,7 +193,8 @@ struct `MCP vault search contract` {
                         kind: .embed,
                         alias: "preview",
                         occurrence: 2,
-                        ambiguous: false
+                        ambiguous: false,
+                        resolvedFormat: .markdown
                     ),
                 ],
                 nextCursor: "continue"
@@ -226,11 +228,11 @@ struct `MCP vault search contract` {
         #expect(request.cursor == "opaque")
 
         let values = try #require(result.structuredContent?.objectValue)
-        #expect(Set(values.keys) == Set(["direction", "results", "next_cursor"]))
+        #expect(Set(values.keys) == Set(["direction", "results", "next_cursor", "coverage"]))
         #expect(values["direction"]?.stringValue == "outgoing")
         let item = try #require(values["results"]?.arrayValue?.first?.objectValue)
         #expect(Set(item.keys) == Set([
-            "source_path", "target", "resolved_path", "kind",
+            "source_path", "target", "resolved_path", "resolved_format", "kind",
             "alias", "occurrence", "ambiguous",
         ]))
         #expect(item["kind"]?.stringValue == "embed")

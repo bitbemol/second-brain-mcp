@@ -6,7 +6,8 @@ enum BoundedDirectoryChildren {
         resourceKeys: Set<URLResourceKey>,
         maximumEntries: Int,
         scannedEntries: inout Int,
-        limitError: @autoclosure () -> any Error
+        limitError: @autoclosure () -> any Error,
+        reserveEntry: (URL) throws -> Void = { _ in }
     ) throws -> [URL] {
         var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
@@ -29,6 +30,7 @@ enum BoundedDirectoryChildren {
             guard scannedEntries <= maximumEntries else {
                 throw limitError()
             }
+            try reserveEntry(child)
             children.append(child)
         }
         if let enumerationError { throw enumerationError }

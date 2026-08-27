@@ -2,8 +2,18 @@
 struct CanvasNode: Decodable {
     /// Stable node identifier used by canvas edges.
     let id: String
+    /// Present semantic fields, including empty strings that remain readable.
+    private let readableFields: [(name: String, value: String)]
+
     /// Searchable semantic node fields in deterministic format order.
-    let searchableFields: [(name: String, value: String)]
+    var searchableFields: [(name: String, value: String)] {
+        readableFields.filter { !$0.value.isEmpty }
+    }
+
+    /// Returns the exact decoded value, distinguishing absence from an empty field.
+    func value(for field: CanvasReadField) -> String? {
+        readableFields.first { $0.name == field.rawValue }?.value
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -77,6 +87,6 @@ struct CanvasNode: Decodable {
                 debugDescription: "unknown node type '\(type)'"
             )
         }
-        searchableFields = fields.filter { !$0.value.isEmpty }
+        readableFields = fields
     }
 }

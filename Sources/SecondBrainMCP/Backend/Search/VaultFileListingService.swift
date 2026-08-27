@@ -35,11 +35,10 @@ struct VaultFileListingService: FileListingService, Sendable {
         let areaRoot = URL(fileURLWithPath: vaultPath, isDirectory: true)
             .appendingPathComponent(normalized.area.rawValue, isDirectory: true)
             .standardizedFileURL
-        let selectedRoot = try selectedRoot(
-            areaRoot: areaRoot,
+        guard let selectedRoot = try selectedRoot(
+            area: normalized.area,
             directory: normalized.directory
-        )
-        guard FileManager.default.fileExists(atPath: selectedRoot.path) else {
+        ) else {
             guard continuation == nil else { throw FileListingError.staleCursor }
             return ListFilesResult(files: [], nextCursor: nil)
         }
@@ -129,21 +128,40 @@ struct VaultFileListingService: FileListingService, Sendable {
         )
     }
 
-    private func selectedRoot(areaRoot: URL, directory: String?) throws -> URL {
-        guard let directory else { return areaRoot }
+    private func selectedRoot(area: VaultArea, directory: String?) throws -> URL? {
+        let relative = directory.map { area.rawValue + "/" + $0 } ?? area.rawValue
+        _ = try PathValidator.resolve(relativePath: relative, root: vaultPath)
         guard !PathValidator.containsSymbolicLinkComponent(
-            relativePath: directory,
-            root: areaRoot.path
+            relativePath: relative, root: vaultPath
         ) else {
-            throw FileListingError.invalidRequest(
-                "directory cannot contain symbolic links"
-            )
+            throw PathValidationError.pathChangedSinceValidation(relative)
         }
-        let resolved = try PathValidator.resolve(
-            relativePath: directory,
-            root: areaRoot.path
-        )
-        return URL(fileURLWithPath: resolved, isDirectory: true)
+        var current = URL(fileURLWithPath: vaultPath, isDirectory: true)
+        for component in relative.split(separator: "/") {
+            guard !component.hasPrefix(".") else {
+                throw FileListingError.invalidRequest("directory must select a visible directory")
+            }
+            current.appendPathComponent(String(component), isDirectory: true)
+            let attributes: [FileAttributeKey: Any]
+            do {
+                attributes = try FileManager.default.attributesOfItem(atPath: current.path)
+            } catch {
+                let cocoa = error as NSError
+                if directory == nil, cocoa.domain == NSCocoaErrorDomain,
+                   [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(cocoa.code) {
+                    return nil
+                }
+                throw error
+            }
+            guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+                throw FileListingError.invalidRequest("directory must select a visible directory")
+            }
+            let values = try current.resourceValues(forKeys: [.isHiddenKey, .isPackageKey])
+            guard values.isHidden != true, values.isPackage != true else {
+                throw FileListingError.invalidRequest("directory must select a visible directory")
+            }
+        }
+        return current
     }
 
     private func collect(
@@ -157,7 +175,7 @@ struct VaultFileListingService: FileListingService, Sendable {
         page: inout [ListedFile]
     ) throws {
         let keys: Set<URLResourceKey> = [
-            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+            .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .isPackageKey,
         ]
         let children = try BoundedDirectoryChildren.urls(
             below: directory,
@@ -170,7 +188,7 @@ struct VaultFileListingService: FileListingService, Sendable {
         for child in children {
             try Task.checkCancellation()
             let values = try child.resourceValues(forKeys: keys)
-            if values.isSymbolicLink == true { continue }
+            if values.isSymbolicLink == true || values.isPackage == true { continue }
             if values.isDirectory == true {
                 if request.recursive {
                     try collect(
@@ -203,19 +221,10 @@ struct VaultFileListingService: FileListingService, Sendable {
                 format: format,
                 vaultPath: vaultPath
             )
-            let metadata: RegularFileMetadata
-            do {
-                metadata = try VaultFileInspector.stableMetadata(
-                    target,
-                    vaultRoot: URL(fileURLWithPath: vaultPath, isDirectory: true)
-                )
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as PathValidationError {
-                throw error
-            } catch {
-                continue
-            }
+            let metadata = try VaultFileInspector.stableMetadata(
+                target,
+                vaultRoot: URL(fileURLWithPath: vaultPath, isDirectory: true)
+            )
 
             let descriptor = [
                 relativePath,
