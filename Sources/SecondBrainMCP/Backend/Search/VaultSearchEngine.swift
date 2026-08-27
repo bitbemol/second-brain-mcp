@@ -27,8 +27,9 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
                 corpusHash: corpusHash
             )
         }
+        let retainedCapacity = validated.limit + 1
         var matches: [RankedSearchLocator] = []
-        matches.reserveCapacity(min(atoms.count, validated.limit + 1))
+        matches.reserveCapacity(min(atoms.count, retainedCapacity))
         for atom in atoms {
             try Task.checkCancellation()
             guard matchesMetadata(atom, request: validated) else { continue }
@@ -43,7 +44,11 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             }
             let ranked = RankedSearchLocator(locator: atom.locator, rank: rank)
             if let cursor, order(ranked, cursor) != .after { continue }
-            matches.append(ranked)
+            retain(
+                ranked,
+                in: &matches,
+                capacity: retainedCapacity
+            )
         }
         matches.sort { order($0, $1) == .before }
 
@@ -62,6 +67,67 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
             results: returned.map(\.locator),
             nextCursor: nextCursor
         )
+    }
+
+    /// Retains only the best bounded page plus one continuation sentinel.
+    ///
+    /// The array is maintained as a worst-first binary heap while scanning, then
+    /// sorted once after it contains at most the requested limit plus one entry.
+    private func retain(
+        _ candidate: RankedSearchLocator,
+        in heap: inout [RankedSearchLocator],
+        capacity: Int
+    ) {
+        if heap.count < capacity {
+            heap.append(candidate)
+            siftUpWorst(in: &heap, from: heap.count - 1)
+            return
+        }
+        guard let worst = heap.first,
+              order(candidate, worst) == .before else {
+            return
+        }
+        heap[0] = candidate
+        siftDownWorst(in: &heap, from: 0)
+    }
+
+    private func siftUpWorst(
+        in heap: inout [RankedSearchLocator],
+        from start: Int
+    ) {
+        var index = start
+        while index > 0 {
+            let parent = (index - 1) / 2
+            guard order(heap[parent], heap[index]) == .before else {
+                return
+            }
+            heap.swapAt(parent, index)
+            index = parent
+        }
+    }
+
+    private func siftDownWorst(
+        in heap: inout [RankedSearchLocator],
+        from start: Int
+    ) {
+        var index = start
+        while true {
+            let left = index * 2 + 1
+            guard left < heap.count else { return }
+            let right = left + 1
+            let worseChild: Int
+            if right < heap.count,
+               order(heap[left], heap[right]) == .before {
+                worseChild = right
+            } else {
+                worseChild = left
+            }
+            guard order(heap[index], heap[worseChild]) == .before else {
+                return
+            }
+            heap.swapAt(index, worseChild)
+            index = worseChild
+        }
     }
 
     private func validate(_ request: VaultSearchRequest) throws -> VaultSearchRequest {

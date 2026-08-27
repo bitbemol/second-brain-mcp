@@ -47,13 +47,16 @@ enum TextFileSupport {
     ///
     /// `String(data:encoding:)` validates UTF-8 but consumes its leading BOM.
     /// JSON and CSV use this variant because their handlers promise byte-faithful
-    /// reads and updates. The second decode cannot repair invalid input because
-    /// the strict validation has already succeeded.
+    /// reads and updates. Ordinary input returns that single strict decode; BOM
+    /// input restores only the consumed marker.
     static func stringPreservingByteOrderMark(from data: Data) throws -> String {
-        guard String(data: data, encoding: .utf8) != nil else {
+        guard let text = String(data: data, encoding: .utf8) else {
             throw TextError.invalidUTF8
         }
-        return String(decoding: data, as: UTF8.self)
+        guard data.starts(with: [0xEF, 0xBB, 0xBF]) else {
+            return text
+        }
+        return "\u{FEFF}" + text
     }
 
     /// Appends text with one line boundary when neither side already supplies one.
@@ -67,9 +70,18 @@ enum TextFileSupport {
     /// - Returns: The combined text with a line break inserted only when required.
     static func appending(_ content: String, to original: String) -> String {
         guard !original.isEmpty, !content.isEmpty else { return original + content }
-        let originalEndsLine = original.unicodeScalars.last.map(CharacterSet.newlines.contains) ?? false
-        let contentStartsLine = content.unicodeScalars.first.map(CharacterSet.newlines.contains) ?? false
-        return original + (originalEndsLine || contentStartsLine ? "" : "\n") + content
+        let originalEndsLine = original.last?.isNewline ?? false
+        let contentStartsLine = content.first?.isNewline ?? false
+        var result = String()
+        result.reserveCapacity(
+            original.utf8.count + content.utf8.count + (originalEndsLine || contentStartsLine ? 0 : 1)
+        )
+        result.append(original)
+        if !originalEndsLine && !contentStartsLine {
+            result.append("\n")
+        }
+        result.append(content)
+        return result
     }
 
     /// Applies ordered, exact replacements to a UTF-8 document.
@@ -92,12 +104,19 @@ enum TextFileSupport {
                 throw TextError.emptyPatchTarget(index: offset + 1)
             }
             var occurrences = 0
+            var firstRange: Range<String.Index>?
             var searchStart = result.startIndex
-            while let range = result.range(of: replacement.oldText, range: searchStart..<result.endIndex) {
+            while let range = result.range(
+                of: replacement.oldText,
+                range: searchStart..<result.endIndex
+            ) {
                 occurrences += 1
+                if firstRange == nil {
+                    firstRange = range
+                }
                 searchStart = range.upperBound
             }
-            guard occurrences > 0 else {
+            guard let firstRange else {
                 throw TextError.patchNotFound(index: offset + 1)
             }
             guard occurrences == 1 else {
@@ -106,10 +125,7 @@ enum TextFileSupport {
                     occurrences: occurrences
                 )
             }
-            guard let range = result.range(of: replacement.oldText) else {
-                throw TextError.patchNotFound(index: offset + 1)
-            }
-            result.replaceSubrange(range, with: replacement.newText)
+            result.replaceSubrange(firstRange, with: replacement.newText)
         }
         return result
     }

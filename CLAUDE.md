@@ -100,7 +100,7 @@ The Shared boundary is intentionally small: `VaultSearchService`, `VaultSearchRe
 
 Readable textual formats automatically use the whole-file atom provider, so adding a globally registered textual format requires no search-specific enum or capability type. Markdown remains one note atom and reuses the shared frontmatter parser for tags and created dates. PDFs register the only custom production provider: one atom per physical page, with revision-keyed extracted text under the private application-support directory and Vision OCR when embedded text is absent. Once a candidate path passes validation, a file-local snapshot or atom-provider failure omits only that file; cancellation and path-validation failures still abort the complete request.
 
-Matching and representation are separate protocols, but the public tool exposes no strategy switch. The default literal strategy requires every normalized query term in the same atom, then uses phrase and occurrence strength only for deterministic order. Duplicate normalized terms preserve their ranking multiplicity but each distinct term is scanned only once; do not reintroduce one full atom scan per raw query token. Cursor pagination is request-bound and keyset-based; the cursor also carries a deterministic fingerprint of the searchable atoms. For an unchanged vault it exposes every match by repeating the same request until `next_cursor` is absent. If the corpus changes, continuation fails as stale and the caller restarts instead of risking a skipped atom.
+Matching and representation are separate protocols, but the public tool exposes no strategy switch. The default literal strategy requires every normalized query term in the same atom, then uses phrase and occurrence strength only for deterministic order. Duplicate normalized terms preserve their ranking multiplicity but each distinct term is scanned only once; do not reintroduce one full atom scan per raw query token. Cursor pagination is request-bound and keyset-based; the cursor also carries a deterministic fingerprint of the searchable atoms. For an unchanged vault it exposes every match by repeating the same request until `next_cursor` is absent. If the corpus changes, continuation fails as stale and the caller restarts instead of risking a skipped atom. During a scan, retain only the best `limit + 1` ranked matches in bounded storage and sort that retained page; sorting every match makes dense queries scale unnecessarily with the complete result set.
 
 
 The generic file pipeline is:
@@ -115,6 +115,11 @@ MCP request
       ├─ read: one immutable snapshot supplies both handler bytes and revision
       └─ mutation: VaultMutationExecutor persists → awaits VaultVersioning.recordSnapshot()
 ```
+
+Stored-text reads and updates can operate on the full 10 MiB file limit. Preserve one strict UTF-8
+decode for ordinary non-BOM content, retain the first exact-patch range while proving uniqueness,
+and assemble appends in one reserved buffer. Re-decoding, re-searching after uniqueness is known,
+or chained whole-string concatenation turns a bounded edit into avoidable duplicate full-file work.
 
 `move_directory` remains outside file CRUD because it changes one tree boundary over a set of
 file atoms rather than one atom's bytes. Its frontend controller decodes the Shared

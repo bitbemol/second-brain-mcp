@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import second_brain_mcp
 
@@ -7,6 +8,14 @@ struct `Vault search engine` {
         let values: [VaultArea: [SearchAtom]]
         func atoms(in location: VaultArea) async throws -> [SearchAtom] {
             values[location] ?? []
+        }
+    }
+
+    private struct ControlledMatchingStrategy: SearchMatchingStrategy {
+        func rank(query: String, in text: String) -> SearchRank? {
+            query == "all"
+                ? SearchRank(exactPhrase: false, occurrenceCount: 1)
+                : nil
         }
     }
 
@@ -188,5 +197,60 @@ struct `Vault search engine` {
                 tags: ["swift"]
             ))
         }
+    }
+
+    @Test
+    func `Records bounded search page cost when every atom matches`() async throws {
+        let atoms = (0..<50_000).map {
+            let value = ($0 * 7_919) % 50_000
+            return note(
+                "notes/\(String(format: "%05d", value)).md",
+                text: "searchable value"
+            )
+        }
+        let engine = VaultSearchEngine(
+            source: StubSource(values: [.notes: atoms]),
+            strategy: ControlledMatchingStrategy()
+        )
+        let clock = ContinuousClock()
+
+        let noMatchStart = clock.now
+        _ = try await engine.search(VaultSearchRequest(
+            location: .notes,
+            query: "none",
+            limit: 20
+        ))
+        let noMatchTime = noMatchStart.duration(to: clock.now)
+
+        let allMatchStart = clock.now
+        let response = try await engine.search(VaultSearchRequest(
+            location: .notes,
+            query: "all",
+            limit: 20
+        ))
+        let allMatchTime = allMatchStart.duration(to: clock.now)
+        #expect(response.results.count == 20)
+        #expect(response.results.first?.path == "notes/00000.md")
+
+        let ratio = milliseconds(allMatchTime) / milliseconds(noMatchTime)
+        print(
+            "SEARCH_PAGE_BASELINE no_match_ms=\(formatted(noMatchTime)) "
+                + "all_match_ms=\(formatted(allMatchTime)) "
+                + "ratio=\(String(format: "%.3f", ratio))"
+        )
+        #expect(
+            ratio < 1.15,
+            "Search sorts every match even though one bounded page needs only limit + 1"
+        )
+    }
+
+    private func milliseconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) * 1_000
+            + Double(components.attoseconds) / 1_000_000_000_000_000
+    }
+
+    private func formatted(_ duration: Duration) -> String {
+        String(format: "%.3f", milliseconds(duration))
     }
 }
