@@ -35,7 +35,7 @@ actor VideoImporter {
     ///
     /// - Parameter source: Path to an external regular file. Symlinks are resolved
     ///   before trust-boundary and size checks.
-    /// - Returns: Animated GIF bytes and source metadata ready for generic storage.
+    /// - Returns: Animated GIF bytes and encoded-artifact metadata ready for generic storage.
     /// - Throws: ``ExternalFileSourceValidator/ValidationError`` for filesystem
     ///   policy failures, or ``VideoImportError`` for invalid video content or output.
     func prepare(source: String) async throws -> PreparedVideoImport {
@@ -76,7 +76,7 @@ actor VideoImporter {
             framesPerSecond: configuration.fps,
             maximumFrames: configuration.maxFrames
         )
-        let gif: Data
+        let gif: PreparedVideoImport
         do {
             gif = try await encoder.makeGIF(
                 url: sourceURL,
@@ -91,21 +91,13 @@ actor VideoImporter {
             throw VideoImportError.conversionFailed("\(error)")
         }
 
-        guard gif.count <= configuration.maxOutputBytes else {
+        guard gif.data.count <= configuration.maxOutputBytes else {
             throw VideoImportError.outputTooLarge(
-                bytes: gif.count,
+                bytes: gif.data.count,
                 limit: configuration.maxOutputBytes
             )
         }
 
-        let frameCount = schedule.times.count
-        return PreparedVideoImport(
-            data: gif,
-            width: inspection.width,
-            height: inspection.height,
-            durationSeconds: inspection.durationSeconds,
-            frameCount: frameCount,
-            effectiveFramesPerSecond: Double(frameCount) / inspection.durationSeconds
-        )
+        return gif
     }
 }

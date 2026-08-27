@@ -88,7 +88,7 @@ struct AVFoundationVideoEncoder: VideoEncoding {
         frameDelay: Double,
         maxLongEdge: Int,
         maximumBytes: Int
-    ) async throws -> Data {
+    ) async throws -> PreparedVideoImport {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true   // honor rotation metadata
@@ -149,10 +149,40 @@ struct AVFoundationVideoEncoder: VideoEncoding {
         guard CGImageDestinationFinalize(dest) else {
             throw EncoderError.encodeFailed(url.lastPathComponent)
         }
-        return try BoundedFileReader.read(
+        let data = try BoundedFileReader.read(
             from: outputURL,
             maximumBytes: max(maximumBytes, 0),
             path: "prepared video GIF"
+        )
+        return try autoreleasepool {
+            try Self.inspectGIF(data, maximumFrames: max(times.count, 1))
+        }
+    }
+
+    /// Properties only: the final GIF owns its dimensions and centisecond timing.
+    /// Read the already bounded bytes without another source read, pixel decode, or encode.
+    private static func inspectGIF(_ data: Data, maximumFrames: Int) throws -> PreparedVideoImport {
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else {
+            throw EncoderError.encodeFailed("prepared video GIF")
+        }
+        let frameCount = CGImageSourceGetCount(source)
+        guard frameCount > 0, frameCount <= maximumFrames else {
+            throw EncoderError.encodeFailed("prepared video GIF")
+        }
+        var duration = 0.0
+        for index in 0..<frameCount {
+            try Task.checkCancellation()
+            duration += CoreGraphicsImageEncoder.gifDelay(source: source, index: index)
+        }
+        return PreparedVideoImport(
+            data: data, width: width, height: height,
+            durationSeconds: duration, frameCount: frameCount,
+            effectiveFramesPerSecond: duration > 0 ? Double(frameCount) / duration : 0
         )
     }
 }

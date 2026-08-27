@@ -187,7 +187,7 @@ struct MediaImportDiagnosticsTests {
             return VideoInspection(durationSeconds: 1, width: 1, height: 1, hasVideoTrack: true)
         }
         func makeGIF(url: URL, atTimes times: [Double], frameDelay: Double,
-                     maxLongEdge: Int, maximumBytes: Int) async throws -> Data { throw error }
+                     maxLongEdge: Int, maximumBytes: Int) async throws -> PreparedVideoImport { throw error }
     }
 }
 
@@ -200,7 +200,8 @@ struct MediaImportBoundaryFixture {
 
     init(maximumImageBytes: Int = 1_048_576,
          imageEncoder: any ImageEncoding = CoreGraphicsImageEncoder(),
-         videoEncoder: any VideoEncoding = AVFoundationVideoEncoder()) throws {
+         videoEncoder: any VideoEncoding = AVFoundationVideoEncoder(),
+         videoConfiguration: VideoImportConfiguration = .default) throws {
         parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("MediaImportBoundary-\(UUID().uuidString)")
         vault = parent.appendingPathComponent("vault")
@@ -214,7 +215,8 @@ struct MediaImportBoundaryFixture {
         let catalog = FileFormatCatalogFactory.build(
             imageReader: ImageReader(encoder: imageEncoder, limits: limits),
             imageImporter: ImageImporter(sourceValidator: sources, encoder: imageEncoder, limits: limits),
-            videoImporter: VideoImporter(sourceValidator: sources, encoder: videoEncoder),
+            videoImporter: VideoImporter(sourceValidator: sources, encoder: videoEncoder,
+                                         configuration: videoConfiguration),
             pdfReader: PDFReader()
         )
         service = VaultFileService(

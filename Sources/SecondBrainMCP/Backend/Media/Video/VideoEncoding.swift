@@ -45,14 +45,15 @@ protocol VideoEncoding: Sendable {
     /// each frame's long edge is at most `maxLongEdge`, and assemble them into a
     /// single animated GIF that loops forever, displaying each frame for
     /// `frameDelay` seconds. Audio is ignored. `async` because AVFoundation renders
-    /// frames asynchronously (`AVAssetImageGenerator.image(at:)`).
+    /// frames asynchronously (`AVAssetImageGenerator.image(at:)`). Returns the encoded
+    /// artifact's measured dimensions, frame count, and stored timing—not source facts.
     func makeGIF(
         url: URL,
         atTimes times: [Double],
         frameDelay: Double,
         maxLongEdge: Int,
         maximumBytes: Int
-    ) async throws -> Data
+    ) async throws -> PreparedVideoImport
 }
 
 extension VideoEncoding {
@@ -62,7 +63,7 @@ extension VideoEncoding {
         atTimes times: [Double],
         frameDelay: Double,
         maxLongEdge: Int
-    ) async throws -> Data {
+    ) async throws -> PreparedVideoImport {
         try await makeGIF(
             url: url,
             atTimes: times,

@@ -57,7 +57,7 @@ struct CoreGraphicsImageEncoder: ImageEncoding {
     /// One frame's display duration (seconds) from the GIF metadata. Prefers the
     /// *unclamped* delay (the file's true value); falls back to the clamped delay
     /// (which browsers floor to ~0.1s), then 0 when neither is present.
-    private static func gifDelay(source: CGImageSource, index: Int) -> Double {
+    static func gifDelay(source: CGImageSource, index: Int) -> Double {
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
               let gif = props[kCGImagePropertyGIFDictionary] as? [CFString: Any] else {
             return 0

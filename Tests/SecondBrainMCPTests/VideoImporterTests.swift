@@ -58,9 +58,13 @@ struct `VideoImporter tests` {
             frameDelay: Double,
             maxLongEdge: Int,
             maximumBytes: Int
-        ) async throws -> Data {
+        ) async throws -> PreparedVideoImport {
             if failMakeGIF { throw FakeError.boom }
-            return gif
+            return PreparedVideoImport(
+                data: gif, width: inspection.width, height: inspection.height,
+                durationSeconds: frameDelay * Double(times.count), frameCount: times.count,
+                effectiveFramesPerSecond: frameDelay > 0 ? 1 / frameDelay : 0
+            )
         }
     }
 
@@ -99,11 +103,15 @@ struct `VideoImporter tests` {
             frameDelay: Double,
             maxLongEdge: Int,
             maximumBytes: Int
-        ) async throws -> Data {
+        ) async throws -> PreparedVideoImport {
             await probe.enter()
             try await Task.sleep(for: .milliseconds(10))
             await probe.leave()
-            return Data("GIF89a".utf8)
+            return PreparedVideoImport(
+                data: Data("GIF89a".utf8), width: 16, height: 16,
+                durationSeconds: frameDelay * Double(times.count), frameCount: times.count,
+                effectiveFramesPerSecond: frameDelay > 0 ? 1 / frameDelay : 0
+            )
         }
     }
 
@@ -126,7 +134,7 @@ struct `VideoImporter tests` {
             frameDelay: Double,
             maxLongEdge: Int,
             maximumBytes: Int
-        ) async throws -> Data {
+        ) async throws -> PreparedVideoImport {
             throw CancellationError()
         }
     }
@@ -401,6 +409,112 @@ struct `VideoImporter tests` {
         #expect(gifFrameCount(stored) > 1)
     }
 
+    @Test("Prepared GIF facts describe encoded dimensions and quantized frame delays",
+          arguments: [1, 3])
+    func preparedGIFMetadataMatchesEncodedArtifact(_ maximumFrames: Int) async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let source = try await makeTinyMOV(width: 64, height: 48, frames: 10, fps: 10)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let original = try Data(contentsOf: source)
+        let prepared = try await VideoImporter(
+            sourceValidator: ExternalFileSourceValidator(vaultPath: root),
+            encoder: AVFoundationVideoEncoder(),
+            configuration: metadataConfiguration(maximumFrames: maximumFrames)
+        ).prepare(source: source.path)
+        let facts = try encodedGIFFacts(prepared.data)
+        #expect(facts.width == 32 && facts.height == 24)
+        #expect(facts.frames == maximumFrames)
+        if maximumFrames == 3 {
+            // ImageIO stores centisecond delays, not the unquantized 1/3-second schedule.
+            #expect(abs(facts.duration - 1) > 0.001)
+        }
+        #expect(prepared.width == facts.width)
+        #expect(prepared.height == facts.height)
+        #expect(prepared.frameCount == facts.frames)
+        #expect(abs(prepared.durationSeconds - facts.duration) < 0.000_001)
+        #expect(abs(prepared.effectiveFramesPerSecond
+            - Double(facts.frames) / facts.duration) < 0.000_001)
+        #expect(try Data(contentsOf: source) == original)
+    }
+
+    @Test("GIF create and read summaries agree after resizing and frame-count capping")
+    func gifCreateAndReadSummariesDescribeSameArtifact() async throws {
+        let fixture = try MediaImportBoundaryFixture(
+            videoConfiguration: metadataConfiguration(maximumFrames: 120)
+        )
+        defer { fixture.cleanup() }
+        // Tiny pixels, but the same 25.9-second / 120-frame timing as the report.
+        let source = try await makeTinyMOV(width: 64, height: 48, frames: 259, fps: 10)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let created = try await fixture.create(source: source, format: .gif)
+        let stored = try await fixture.expectSuccessfulImport(created, source: source, format: .gif)
+        let facts = try encodedGIFFacts(stored)
+        #expect(facts.width == 32 && facts.height == 24)
+        #expect(facts.frames == 120)
+        #expect(abs(facts.duration - 26.4) < 0.000_001)
+        let read = try await FileToolController(readOnly: false, files: fixture.service).call(
+            .init(name: "read_file", arguments: [
+                "format": .string("gif"), "path": .string("notes/import.gif"),
+            ])
+        )
+        #expect(read.isError != true)
+        let createText = created.content.compactMap {
+            if case .text(let text, _, _) = $0 { text } else { nil }
+        }.joined()
+        let readText = read.content.compactMap {
+            if case .text(let text, _, _) = $0 { text } else { nil }
+        }.joined()
+        for expected in [
+            "\(facts.width)×\(facts.height)",
+            String(format: "%.1fs", facts.duration),
+            "\(facts.frames) frames",
+        ] {
+            #expect(createText.contains(expected))
+            #expect(readText.contains(expected))
+        }
+        #expect(!read.content.contains {
+            if case .image = $0 { true } else { false }
+        })
+        let revision = FileSnapshot(data: stored, modifiedDate: nil).revision.rawValue
+        #expect(createText.contains(revision))
+        #expect(readText.contains(revision))
+    }
+
+    private func metadataConfiguration(maximumFrames: Int) -> VideoImportConfiguration {
+        VideoImportConfiguration(
+            fps: 10, maxLongEdge: 32, maxFrames: maximumFrames,
+            maxSourceBytes: 1_048_576, maxDurationSeconds: 30,
+            maxOutputBytes: 1_048_576
+        )
+    }
+
+    /// Independent encoded-property oracle: never infers facts from video metadata or scheduling.
+    private func encodedGIFFacts(_ data: Data) throws
+        -> (width: Int, height: Int, frames: Int, duration: Double) {
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        )
+        let width = try #require(properties[kCGImagePropertyPixelWidth] as? Int)
+        let height = try #require(properties[kCGImagePropertyPixelHeight] as? Int)
+        let frames = CGImageSourceGetCount(source)
+        var duration = 0.0
+        for index in 0..<frames {
+            let frame = try #require(
+                CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+            )
+            let gif = try #require(frame[kCGImagePropertyGIFDictionary] as? [CFString: Any])
+            let delay = try #require(
+                (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+                    ?? (gif[kCGImagePropertyGIFDelayTime] as? Double)
+            )
+            #expect(delay.isFinite && delay > 0)
+            duration += delay
+        }
+        return (width, height, frames, duration)
+    }
+
     // MARK: - End-to-end with the real AVFoundation encoder
 
     @Test
@@ -426,7 +540,8 @@ struct `VideoImporter tests` {
             framesPerSecond: 10,
             maximumFrames: 120
         )
-        let gif = try await enc.makeGIF(url: mov, atTimes: schedule.times, frameDelay: schedule.frameDelay, maxLongEdge: 1080)
+        let encoded = try await enc.makeGIF(url: mov, atTimes: schedule.times, frameDelay: schedule.frameDelay, maxLongEdge: 1080)
+        let gif = encoded.data
 
         #expect(Array(gif.prefix(4)) == Array("GIF8".utf8))
         #expect(gifFrameCount(gif) == schedule.times.count)
