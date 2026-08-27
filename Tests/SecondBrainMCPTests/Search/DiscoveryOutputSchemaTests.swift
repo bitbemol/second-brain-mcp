@@ -24,7 +24,9 @@ struct DiscoveryOutputSchemaTests {
             var required = Set(["failed_files", "samples", "samples_truncated"])
             if tool.name == "search_vault" {
                 required.insert("failed_by_format")
+                required.insert("complete_formats")
                 #expect(complete["failed_by_format"] == .bool(false))
+                #expect(complete["complete_formats"] == .bool(false))
             }
             #expect(Set(incomplete["required"]?.arrayValue?.compactMap(\.stringValue) ?? []) == required)
         }

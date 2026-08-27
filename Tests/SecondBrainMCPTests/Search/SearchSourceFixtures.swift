@@ -29,10 +29,11 @@ extension ArraySearchAtomSource {
     /// Synthetic atom fixtures may supply any concrete format.
     var searchableFormats: [FileFormat] { FileFormat.allCases }
 
+    @discardableResult
     func scan(
         _ request: VaultSearchRequest,
         consume: @escaping @Sendable (SearchDocument) async throws -> Void
-    ) async throws {
+    ) async throws -> Set<FileFormat> {
         let ordered = try await atoms(in: request.location).sorted(by: SearchFingerprint.precedes)
         var start = 0
         while start < ordered.count {
@@ -60,6 +61,11 @@ extension ArraySearchAtomSource {
             ))
             start = end
         }
+        var formats = Set(request.formats.isEmpty ? searchableFormats : request.formats)
+        if !request.tags.isEmpty || request.createdFrom != nil || request.createdThrough != nil {
+            formats.formIntersection([.markdown])
+        }
+        return formats
     }
 }
 

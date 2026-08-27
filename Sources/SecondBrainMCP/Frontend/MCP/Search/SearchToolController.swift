@@ -32,6 +32,9 @@ struct SearchToolController: Sendable {
             throw CancellationError()
         } catch let error as VaultSearchRequestError {
             try Task.checkCancellation()
+            if case .directoryNotFound = error {
+                return ToolFailureProjection.operation(error, state: .readOnly, fallback: error.description)
+            }
             return SearchToolResultMapper.failure(error.description)
         } catch {
             try Task.checkCancellation()

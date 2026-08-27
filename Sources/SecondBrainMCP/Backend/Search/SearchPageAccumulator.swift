@@ -78,7 +78,7 @@ actor SearchPageAccumulator {
         }
     }
 
-    func response() throws -> VaultSearchResponse {
+    func response(searchedFormats: Set<FileFormat>) throws -> VaultSearchResponse {
         let corpusHash = fingerprint.value
         if let cursor, cursor.corpusHash != corpusHash {
             throw VaultSearchRequestError.staleCursor
@@ -90,7 +90,7 @@ actor SearchPageAccumulator {
             try SearchCursorCodec.encode(requestHash: requestHash, corpusHash: corpusHash, ranked: $0)
         } : nil
         return VaultSearchResponse(
-            results: returned.map(\.locator), nextCursor: nextCursor, coverage: coverage.value
+            results: returned.map(\.locator), nextCursor: nextCursor, coverage: coverage.searchValue(formats: searchedFormats)
         )
     }
 

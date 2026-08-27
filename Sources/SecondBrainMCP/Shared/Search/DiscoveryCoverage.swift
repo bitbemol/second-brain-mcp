@@ -18,14 +18,17 @@ struct DiscoveryCoverage: Codable, Equatable, Sendable {
     let samplesTruncated: Bool?
     /// Search-only exact failure counts; keys are stable concrete format names.
     let failedByFormat: [String: Int]?
+    /// On incomplete search, eligible formats whose entire representation was examined.
+    let completeFormats: [String]?
 
     init(complete: Bool, failedFiles: Int?, samples: [Failure]?, samplesTruncated: Bool?,
-         failedByFormat: [String: Int]? = nil) {
+         failedByFormat: [String: Int]? = nil, completeFormats: [String]? = nil) {
         self.complete = complete
         self.failedFiles = failedFiles
         self.samples = samples
         self.samplesTruncated = samplesTruncated
         self.failedByFormat = failedByFormat
+        self.completeFormats = completeFormats
     }
 
     static let full = DiscoveryCoverage(
@@ -36,6 +39,7 @@ struct DiscoveryCoverage: Codable, Equatable, Sendable {
         case complete, samples
         case failedFiles = "failed_files"
         case failedByFormat = "failed_by_format"
+        case completeFormats = "complete_formats"
         case samplesTruncated = "samples_truncated"
     }
 }

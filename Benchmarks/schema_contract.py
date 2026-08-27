@@ -44,6 +44,7 @@ def main():
         report['initialize'] = client.initialize()
         tools, report['discovery'] = discover(client)
         coverage = {'complete': False, 'failed_files': 1, 'failed_by_format': {'markdown': 1},
+                    'complete_formats': ['json'],
                     'samples': [{'path': 'notes/broken.md', 'reason': 'invalid_document'}],
                     'samples_truncated': False}
         cases = [
@@ -52,6 +53,10 @@ def main():
             ('search_vault', 'missing format counts', {'results': [], 'coverage': {key: value for key, value in coverage.items() if key != 'failed_by_format'}}, False),
             ('search_vault', 'unknown coverage format', {'results': [], 'coverage': dict(coverage, failed_by_format={'unknown': 1})}, False),
             ('search_vault', 'zero failed format count', {'results': [], 'coverage': dict(coverage, failed_by_format={'markdown': 0})}, False),
+            ('search_vault', 'missing complete formats', {'results': [], 'coverage': {key: value for key, value in coverage.items() if key != 'complete_formats'}}, False),
+            ('search_vault', 'unknown complete format', {'results': [], 'coverage': dict(coverage, complete_formats=['unknown'])}, False),
+            ('search_vault', 'duplicate complete format', {'results': [], 'coverage': dict(coverage, complete_formats=['json', 'json'])}, False),
+            ('search_vault', 'no certified formats', {'results': [], 'coverage': dict(coverage, complete_formats=[])}, True),
             ('search_vault', 'missing incomplete facts', {'results': [], 'coverage': {'complete': False}}, False),
             ('search_vault', 'complete contradicts failures', {'results': [], 'coverage': dict(coverage, complete=True)}, False),
             ('search_vault', 'Canvas locator without field', {'results': [{'path': 'notes/a.canvas', 'format': 'canvas',

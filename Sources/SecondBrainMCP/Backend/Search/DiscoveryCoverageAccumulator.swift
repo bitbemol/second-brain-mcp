@@ -23,7 +23,8 @@ struct DiscoveryCoverageAccumulator {
         // Reserve enough digits for any future count without growing the response.
         let worstCase = DiscoveryCoverage(
             complete: false, failedFiles: Int.max, samples: proposed, samplesTruncated: false,
-            failedByFormat: failedByFormat.isEmpty ? nil : Self.maximumFormatCounts
+            failedByFormat: failedByFormat.isEmpty ? nil : Self.maximumFormatCounts,
+            completeFormats: failedByFormat.isEmpty ? nil : FileFormat.allCases.map(\.rawValue)
         )
         guard let bytes = try? JSONEncoder().encode(worstCase),
               bytes.count <= Self.maximumEncodedBytes else {
@@ -31,6 +32,15 @@ struct DiscoveryCoverageAccumulator {
             return
         }
         samples = proposed
+    }
+
+    func searchValue(formats: Set<FileFormat>) -> DiscoveryCoverage {
+        guard failedFiles > 0 else { return .full }
+        return DiscoveryCoverage(
+            complete: false, failedFiles: failedFiles, samples: samples, samplesTruncated: truncated,
+            failedByFormat: failedByFormat,
+            completeFormats: formats.map(\.rawValue).filter { failedByFormat[$0] == nil }.sorted()
+        )
     }
 
     var value: DiscoveryCoverage {

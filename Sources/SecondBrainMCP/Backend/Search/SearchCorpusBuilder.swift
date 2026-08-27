@@ -11,10 +11,11 @@ struct SearchDocument: Sendable {
 protocol VaultSearchAtomSource: Sendable {
     var searchableFormats: [FileFormat] { get }
 
+    @discardableResult
     func scan(
         _ request: VaultSearchRequest,
         consume: @escaping @Sendable (SearchDocument) async throws -> Void
-    ) async throws
+    ) async throws -> Set<FileFormat>
 }
 
 /// Enumerates one vault area and delegates file representation to atom providers.
@@ -65,10 +66,11 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
         case failure(SearchDocument)
     }
 
+    @discardableResult
     func scan(
         _ request: VaultSearchRequest,
         consume: @escaping @Sendable (SearchDocument) async throws -> Void
-    ) async throws {
+    ) async throws -> Set<FileFormat> {
         let readable = Set(searchableFormats(in: request.location))
         let unsupported = request.formats.filter { !readable.contains($0) }
         guard unsupported.isEmpty else {
@@ -115,6 +117,7 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
                 }
             }
         }
+        return formats
     }
 
     private func captureProtected(
@@ -192,9 +195,10 @@ struct SearchCorpusBuilder: VaultSearchAtomSource, Sendable {
                 attributes = try FileManager.default.attributesOfItem(atPath: current.path)
             } catch {
                 let cocoa = error as NSError
-                if directory == nil, cocoa.domain == NSCocoaErrorDomain,
+                if cocoa.domain == NSCocoaErrorDomain,
                    [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(cocoa.code) {
-                    return nil
+                    if directory == nil { return nil }
+                    throw VaultSearchRequestError.directoryNotFound
                 }
                 throw error
             }

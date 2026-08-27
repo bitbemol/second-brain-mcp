@@ -22,8 +22,8 @@ struct VaultSearchEngine: VaultSearchService, Sendable {
         let page = SearchPageAccumulator(
             request: validated, requestHash: requestHash, cursor: cursor, strategy: strategy
         )
-        try await source.scan(validated) { try await page.consume($0) }
-        return try await page.response()
+        let formats = try await source.scan(validated) { try await page.consume($0) }
+        return try await page.response(searchedFormats: formats)
     }
 
     private func validate(_ request: VaultSearchRequest) throws -> VaultSearchRequest {

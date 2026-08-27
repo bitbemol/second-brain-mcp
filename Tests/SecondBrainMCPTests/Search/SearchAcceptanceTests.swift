@@ -79,6 +79,9 @@ struct SearchAcceptanceTests {
             #expect(coverage["complete"] == .bool(false))
             #expect(coverage["failed_files"] == .int(5))
             #expect(coverage["failed_by_format"] == .object(["har": .int(4), "json": .int(1)]))
+            let completeFormats = try #require(coverage["complete_formats"]?.arrayValue)
+            #expect(Set(completeFormats.compactMap(\.stringValue)) == ["markdown", "canvas", "patch", "log", "csv"])
+            #expect(broad.structuredContent?.objectValue?["results"] == .array([]))
             #expect(coverage["samples"]?.arrayValue?.count == 3)
             #expect(coverage["samples_truncated"] == .bool(true))
             let fallback = try JSONDecoder().decode(Value.self, from: Data(firstText(broad).utf8))
@@ -125,6 +128,9 @@ struct SearchAcceptanceTests {
             let counts = try #require(coverage["properties"]?.objectValue?["failed_by_format"]?.objectValue)
             #expect(counts["type"] == .string("object"))
             #expect(counts["maxProperties"] == .int(FileFormat.allCases.count))
+            let completeFormats = try #require(coverage["properties"]?.objectValue?["complete_formats"]?.objectValue)
+            #expect(completeFormats["maxItems"] == .int(FileFormat.allCases.count))
+            #expect(completeFormats["uniqueItems"] == .bool(true))
             let description = search.description ?? ""
             #expect(description.contains("failed_by_format"))
             #expect(description.contains("narrowed scope"))
@@ -137,6 +143,48 @@ struct SearchAcceptanceTests {
                 samples: [.init(path: "notes/missing.md", reason: .unreadable)], samplesTruncated: false)
             let encoded = try JSONDecoder().decode(Value.self, from: JSONEncoder().encode(existing))
             #expect(encoded.objectValue?["failed_by_format"] == nil)
+        }
+    }
+
+
+    @Test("Missing search directory is an actionable read-only scope failure")
+    func missingDirectoryIsActionable() async throws {
+        try await withRuntime { runtime, root in
+            let result = try await SearchToolController(search: runtime.search).call(.init(
+                name: "search_vault", arguments: [
+                    "location": .string("notes"), "directory": .string("PRIVATE_ERROR_MARKER/missing"),
+                    "query": .string("needle"),
+                ]
+            ))
+            #expect(result.isError == true)
+            let message = try firstText(result)
+            #expect(message.lowercased().contains("directory not found"))
+            #expect(!message.contains("Unexpected"))
+            #expect(!message.contains("PRIVATE_ERROR_MARKER"))
+            #expect(!message.contains(root.path))
+            let error = try #require(result.structuredContent?.objectValue?["error"]?.objectValue)
+            #expect(error["code"] == .string("DIRECTORY_NOT_FOUND"))
+            #expect(error["state"] == .string("read_only"))
+            #expect(error["retry"] == .string("correct_request"))
+        }
+    }
+
+
+    @Test("Metadata-filtered partial search never certifies unsearched formats")
+    func partialMetadataSearchCertifiesOnlyEligibleFormats() async throws {
+        try await withRuntime { runtime, root in
+            try Data([0xff]).write(to: root.appendingPathComponent("notes/invalid.md"))
+            try Data("{}".utf8).write(to: root.appendingPathComponent("notes/healthy.json"))
+            let result = try await SearchToolController(search: runtime.search).call(.init(
+                name: "search_vault", arguments: [
+                    "location": .string("notes"), "tags": .array([.string("qa")]),
+                ]
+            ))
+            try #require(result.isError != true)
+            let coverage = try #require(result.structuredContent?.objectValue?["coverage"]?.objectValue)
+            #expect(coverage["complete"] == .bool(false))
+            #expect(coverage["failed_by_format"] == .object(["markdown": .int(1)]))
+            #expect(coverage["complete_formats"] == .array([]))
         }
     }
 
@@ -197,7 +245,7 @@ struct SearchAcceptanceTests {
 
     private struct AllFormatsFailureSource: VaultSearchAtomSource {
         let searchableFormats = FileFormat.allCases
-        func scan(_ request: VaultSearchRequest, consume: @escaping @Sendable (SearchDocument) async throws -> Void) async throws {
+        func scan(_ request: VaultSearchRequest, consume: @escaping @Sendable (SearchDocument) async throws -> Void) async throws -> Set<FileFormat> {
             for index in 0..<SearchRequestLimits.maximumIndexedFiles {
                 try await consume(SearchDocument(
                     path: "notes/" + (index == 0 ? String(repeating: "x", count: 1_850)
@@ -206,6 +254,7 @@ struct SearchAcceptanceTests {
                     revision: nil, atoms: [], failure: .fileLimit
                 ))
             }
+            return Set(searchableFormats)
         }
     }
 

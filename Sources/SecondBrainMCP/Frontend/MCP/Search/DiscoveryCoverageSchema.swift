@@ -58,6 +58,14 @@ enum DiscoveryCoverageSchema {
                     "maximum": .int(SearchRequestLimits.maximumIndexedFiles),
                 ]),
             ])
+            properties["complete_formats"] = .object([
+                "type": .string("array"), "uniqueItems": .bool(true),
+                "maxItems": .int(FileFormat.allCases.count),
+                "items": .object(["enum": .array(FileFormat.allCases.map { .string($0.rawValue) })]),
+                "description": .string("Fully examined eligible formats despite failures in other formats. Empty first-page results establish absence only in these formats and the requested scope, never in failed or unsearched formats."),
+            ])
+            completeProperties["complete_formats"] = .bool(false)
+            incompleteRequired.append(.string("complete_formats"))
             completeProperties["failed_by_format"] = .bool(false)
             incompleteRequired.append(.string("failed_by_format"))
         }
