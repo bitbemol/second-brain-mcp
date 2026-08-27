@@ -127,7 +127,16 @@ enum DirectoryMoveSecurityPreflight {
                     path
                 )
             }
-            if values.isHidden == true || url.lastPathComponent.hasPrefix(".") {
+            let format = values.isRegularFile == true
+                ? FileFormat.allCases.first { $0.accepts(path: path) }
+                : nil
+            // A supported dot-named leaf (for example .gitkeep.md) is ordinary
+            // file content. It still passes descriptor, size and credential checks.
+            // Hidden directories and unregistered control files remain excluded.
+            let supportedDotFile = values.isRegularFile == true
+                && url.lastPathComponent.hasPrefix(".") && format != nil
+            if (values.isHidden == true || url.lastPathComponent.hasPrefix("."))
+                && !supportedDotFile {
                 if values.isDirectory == true { enumerator.skipDescendants() }
                 throw DirectoryMoveError.hiddenDirectory(path)
             }
@@ -148,7 +157,6 @@ enum DirectoryMoveSecurityPreflight {
                 throw DirectoryMoveError.unsafeFilesystemOperation("inspect subtree entry")
             }
 
-            let format = FileFormat.allCases.first { $0.accepts(path: path) }
             let maximumBytes = format?.maximumFileBytes
                 ?? FileFormat.log.maximumFileBytes
             let snapshot = try stableSnapshot(
