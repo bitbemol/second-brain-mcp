@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import second_brain_mcp
 
@@ -24,6 +25,78 @@ struct `Bounded file reader` {
         )
 
         #expect(actual == expected)
+    }
+
+    @Test
+    func readableFileBeneathTraverseOnlyAncestorRemainsReadable() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BoundedFileReader-traverse-\(UUID().uuidString)", isDirectory: true)
+        let root = parent.appendingPathComponent("vault", isDirectory: true)
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: notes, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            _ = Darwin.chmod(parent.path, 0o700)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let file = notes.appendingPathComponent("readable.md")
+        let expected = Data("synthetic readable bytes".utf8)
+        try expected.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try #require(Darwin.chmod(parent.path, 0o111) == 0)
+        try #require(Data(contentsOf: file) == expected)
+
+        let snapshot = try BoundedFileReader.snapshot(
+            fromCanonical: file.resolvingSymlinksInPath(),
+            maximumBytes: expected.count,
+            path: "notes/readable.md",
+            rejectHiddenDescendantsOf: root
+        )
+
+        #expect(snapshot.data == expected)
+        #expect(snapshot.metadata.byteCount == expected.count)
+    }
+
+    @Test
+    func ancestorWithoutSearchPermissionRemainsDenied() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BoundedFileReader-no-search-\(UUID().uuidString)", isDirectory: true)
+        let root = parent.appendingPathComponent("vault", isDirectory: true)
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: notes, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            _ = Darwin.chmod(parent.path, 0o700)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let file = notes.appendingPathComponent("readable.md")
+        let expected = Data("synthetic inaccessible bytes".utf8)
+        try expected.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let canonicalFile = file.resolvingSymlinksInPath()
+        let canonicalRoot = root.resolvingSymlinksInPath()
+        try #require(Darwin.chmod(parent.path, 0o400) == 0)
+        let direct = Darwin.open(canonicalFile.path, O_RDONLY | O_CLOEXEC)
+        let directError = errno
+        if direct >= 0 { Darwin.close(direct) }
+        try #require(direct == -1)
+        try #require(directError == EACCES)
+        let observedBytes = Mutex(0)
+
+        #expect(throws: POSIXError(.EACCES)) {
+            _ = try BoundedFileReader.snapshot(
+                fromCanonical: canonicalFile,
+                maximumBytes: expected.count,
+                path: "notes/readable.md",
+                rejectHiddenDescendantsOf: canonicalRoot,
+                didReadBytes: { count in observedBytes.withLock { $0 += count } }
+            )
+        }
+        #expect(observedBytes.withLock { $0 } == 0)
     }
 
     @Test

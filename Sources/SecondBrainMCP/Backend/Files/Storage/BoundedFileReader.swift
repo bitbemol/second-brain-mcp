@@ -204,9 +204,12 @@ enum BoundedFileReader {
             $0.standardized.resolvingSymlinksInPath().pathComponents.count - 1
         }
 
+        // Ancestors need traversal, not permission to list their contents.
+        // Keep the no-follow descriptor walk and require read access only to
+        // the final regular file.
         var descriptor = Darwin.open(
             "/",
-            O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW
+            O_SEARCH | O_CLOEXEC | O_NOFOLLOW
         )
         guard descriptor >= 0 else { throw posixError() }
         // Own the currently open component on every throwing path, including
@@ -224,7 +227,7 @@ enum BoundedFileReader {
             let isFinal = index == components.count - 1
             let flags = isFinal
                 ? O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
-                : O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY
+                : O_SEARCH | O_CLOEXEC | O_NOFOLLOW
             var next = component.withCString {
                 Darwin.openat(descriptor, $0, flags)
             }
@@ -239,7 +242,7 @@ enum BoundedFileReader {
                     Darwin.openat(
                         descriptor,
                         $0,
-                        O_RDONLY | O_CLOEXEC | O_DIRECTORY
+                        O_SEARCH | O_CLOEXEC
                     )
                 }
                 observedErrno = errno

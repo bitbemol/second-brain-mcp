@@ -24,6 +24,37 @@ struct FileListingFailureTests {
     }
 
     @Test
+    func listingDoesNotRequireReadPermissionOnAncestorsOutsideVault() async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FileListingTraverseTests-\(UUID().uuidString)", isDirectory: true)
+        let root = parent.appendingPathComponent("vault", isDirectory: true)
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: notes, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer {
+            _ = Darwin.chmod(parent.path, 0o700)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let file = notes.appendingPathComponent("readable.md")
+        let expected = Data("synthetic readable note".utf8)
+        try expected.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try #require(Darwin.chmod(parent.path, 0o111) == 0)
+        // The fixture allows known-path access, but not listing its unrelated ancestor.
+        try #require(Data(contentsOf: file) == expected)
+
+        let result = try await listing(root).list(
+            ListFilesRequest(area: .notes, recursive: false, limit: 1)
+        )
+
+        #expect(result.files.map(\.path) == ["notes/readable.md"])
+        #expect(result.files.first?.byteCount == expected.count)
+        #expect(result.nextCursor == nil)
+    }
+
+    @Test
     func unreadableRegularFileCannotBecomeCompleteEmptyListing() async throws {
         let root = try vault()
         defer { try? FileManager.default.removeItem(at: root) }
