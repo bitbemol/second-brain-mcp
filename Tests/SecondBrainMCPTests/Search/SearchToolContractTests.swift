@@ -17,13 +17,12 @@ struct `MCP vault search contract` {
         #expect(inputProperties["location"]?.objectValue?["enum"]?.arrayValue?
             .compactMap(\.stringValue) == VaultArea.allCases.map(\.rawValue))
         #expect(inputProperties["tags"]?.objectValue?["minItems"]?.intValue == 1)
-        let criteria = try #require(input["anyOf"]?.arrayValue)
-        let criterionRequirements = Set(criteria.compactMap { criterion -> String? in
-            criterion.objectValue?["required"]?.arrayValue?.first?.stringValue
-        })
-        #expect(criterionRequirements == [
-            "query", "tags", "created_from", "created_through",
-        ])
+        #expect(input["anyOf"] == nil)
+        let selection = try #require(inputProperties["location"]?.objectValue?["description"]?.stringValue)
+        #expect(selection.contains("at least one"))
+        for criterion in ["query", "tags", "created_from", "created_through"] {
+            #expect(selection.contains(criterion))
+        }
 
         let output = try #require(tool.outputSchema?.objectValue)
         let outputProperties = try #require(output["properties"]?.objectValue)

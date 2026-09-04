@@ -180,7 +180,7 @@ enum FileToolDefinitions {
         case .update:
             Tool(
                 name: tool.rawValue,
-                description: "Update a supported file under notes/. Use mode=replace or append with content; mode=patch uses replacements:[{old_text,new_text}] and no content. The mode field lists the catalog-supported modes for each format; unsupported combinations are rejected by the schema and backend. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. The shared edit engine validates the final format-specific content before the persistence, revision, and Git pipeline. No-op results return the unchanged revision without creating a commit.",
+                description: "Update a supported file under notes/. Use mode=replace or append with content; mode=patch uses replacements:[{old_text,new_text}] and no content. The mode field lists the catalog-supported modes for each format; unsupported combinations are rejected by the server. expected_revision must be the opaque revision returned by the read on which this edit is based; a conflict requires reading and reconsidering the file before retrying. The shared edit engine validates the final format-specific content before the persistence, revision, and Git pipeline. No-op results return the unchanged revision without creating a commit.",
                 inputSchema: inputSchema(
                     formats: capabilities.supportedFormats(for: .update),
                     formatDescription: "Concrete file format",
@@ -196,7 +196,7 @@ enum FileToolDefinitions {
                             ),
                             "description": .string(updateModeDescription(capabilities))
                         ]),
-                        .content: .object(["type": .string("string"), "description": .string("Required for replace or append")]),
+                        .content: .object(["type": .string("string"), "description": .string("Required for replace or append; omit for patch")]),
                         .replacements: .object([
                             "type": .string("array"),
                             "minItems": .int(1),
@@ -218,8 +218,7 @@ enum FileToolDefinitions {
                             ])
                         ])
                     ],
-                    additionalRequired: [.expectedRevision, .mode],
-                    requirements: updateRequirements(capabilities)
+                    additionalRequired: [.expectedRevision, .mode]
                 ),
                 annotations: .init(
                     readOnlyHint: false,
@@ -317,7 +316,7 @@ enum FileToolDefinitions {
                 ? capability.format.rawValue
                 : nil
         }
-        return "Up to \(FileMutationRequestLimits.maximumReplacements) exact, unique replacements for patch-capable formats: "
+        return "Required for patch; omit for replace or append. Up to \(FileMutationRequestLimits.maximumReplacements) exact, unique replacements for patch-capable formats: "
             + formats.joined(separator: ", ")
     }
 
@@ -347,36 +346,7 @@ enum FileToolDefinitions {
             return "\(capability.format.rawValue)=\(modes)"
         }
         return "Format-specific update modes: " + entries.joined(separator: ", ")
-    }
-
-    /// Flat callable fields plus catalog-derived conditional validation.
-    private static func updateRequirements(_ capabilities: FileCapabilities) -> [Value] {
-        let formats = Set(capabilities.supportedFormats(for: .update))
-        var requirements: [Value] = capabilities.formats.compactMap { capability in
-            guard formats.contains(capability.format) else { return nil }
-            let modes = capability.updateModes.map(\.rawValue).sorted().map(Value.string)
-            let modeSchema: Value = modes.isEmpty ? .bool(false) : .object(["enum": .array(modes)])
-            return .object([
-                "if": .object(["properties": .object([
-                    "format": .object(["const": .string(capability.format.rawValue)]),
-                ])]),
-                "then": .object(["properties": .object(["mode": modeSchema])]),
-            ])
-        }
-        requirements.append(.object([
-            "if": .object(["properties": .object([
-                "mode": .object(["const": .string("patch")]),
-            ])]),
-            "then": .object([
-                "required": .array([.string("replacements")]),
-                "properties": .object(["content": .bool(false)]),
-            ]),
-            "else": .object([
-                "required": .array([.string("content")]),
-                "properties": .object(["replacements": .bool(false)]),
-            ]),
-        ]))
-        return requirements
+            + ". patch requires replacements and forbids content; replace and append require content and forbid replacements."
     }
 
     /// Builds the common format/path contract plus operation-specific fields.
@@ -385,8 +355,7 @@ enum FileToolDefinitions {
         formatDescription: String,
         pathDescription: String,
         additionalProperties: [FileToolArgument: Value] = [:],
-        additionalRequired: [FileToolArgument] = [],
-        requirements: [Value] = []
+        additionalRequired: [FileToolArgument] = []
     ) -> Value {
         var properties = additionalProperties
         properties[.format] = .object([
@@ -398,13 +367,12 @@ enum FileToolDefinitions {
             "type": .string("string"),
             "description": .string(pathDescription)
         ])
-        var schema: [String: Value] = [
+        let schema: [String: Value] = [
             "type": .string("object"),
             "properties": argumentObject(properties),
             "required": requiredArguments([.format, .path] + additionalRequired),
             "additionalProperties": .bool(false),
         ]
-        if !requirements.isEmpty { schema["allOf"] = .array(requirements) }
         return .object(schema)
     }
 

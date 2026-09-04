@@ -193,6 +193,31 @@ struct RoutineToolErrorTests {
         #expect(valid.isError != true)
     }
 
+    @Test("Missing update payloads remain rejected without changing bytes or snapshots")
+    func missingUpdatePayloadIsNotApplied() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let created = try await fixture.create()
+        let revision = try #require(created.structuredContent?.objectValue?["revision"]?.stringValue)
+        let cases: [[String: Value]] = [
+            ["mode": .string("replace")],
+            ["mode": .string("patch")],
+            ["mode": .string("patch"), "replacements": .array([])],
+        ]
+        for fields in cases {
+            var arguments = fields
+            arguments["format"] = .string("json")
+            arguments["path"] = .string("notes/source.json")
+            arguments["expected_revision"] = .string(revision)
+            let result = try await fixture.controller.call(.init(name: "update_file", arguments: arguments))
+            #expect(result.isError == true)
+            #expect(result.structuredContent?.objectValue?["error"]?.objectValue?["state"]
+                == .string("not_applied"))
+            #expect(try Data(contentsOf: fixture.file) == Data("{}".utf8))
+            #expect(await fixture.versioning.calls == 1)
+        }
+    }
+
     @Test("Repeated path separators are invalid syntax, not alleged symlinks")
     func repeatedSeparatorHasPreciseDiagnosis() async throws {
         let fixture = try Fixture()

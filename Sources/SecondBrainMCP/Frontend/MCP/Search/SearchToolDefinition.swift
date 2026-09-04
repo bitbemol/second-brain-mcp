@@ -15,7 +15,7 @@ enum SearchToolDefinition {
                     SearchToolArgument.location.rawValue: .object([
                         "type": .string("string"),
                         "enum": .array(VaultArea.allCases.map { .string($0.rawValue) }),
-                        "description": .string("Structural vault area to search: notes or references"),
+                        "description": .string("Structural vault area to search: notes or references. Also provide at least one of query, tags, created_from, or created_through; use list_files for browsing without search criteria."),
                     ]),
                     SearchToolArgument.directory.rawValue: .object([
                         "type": .string("string"),
@@ -72,12 +72,6 @@ enum SearchToolDefinition {
                     ]),
                 ]),
                 "required": .array([.string(SearchToolArgument.location.rawValue)]),
-                "anyOf": .array([
-                    .object(["required": .array([.string(SearchToolArgument.query.rawValue)])]),
-                    .object(["required": .array([.string(SearchToolArgument.tags.rawValue)])]),
-                    .object(["required": .array([.string(SearchToolArgument.createdFrom.rawValue)])]),
-                    .object(["required": .array([.string(SearchToolArgument.createdThrough.rawValue)])]),
-                ]),
                 "additionalProperties": .bool(false),
             ]),
             annotations: .init(

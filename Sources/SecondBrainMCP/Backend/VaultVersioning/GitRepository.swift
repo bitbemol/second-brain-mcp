@@ -809,6 +809,10 @@ private extension GitRepository {
         }
     }
 
+}
+
+// Internal scan boundary: deadline tests need neither Git setup nor sleeps.
+extension GitRepository {
     /// Git silently skips sockets, FIFOs, and device nodes. Walk the notes
     /// namespace without following links so an apparently successful command
     /// cannot certify an incomplete snapshot.
@@ -881,7 +885,9 @@ private extension GitRepository {
         }
         return containsRegularFile
     }
+}
 
+private extension GitRepository {
     func executeGit(
         _ arguments: [String],
         index: URL? = nil,

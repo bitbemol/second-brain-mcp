@@ -1625,30 +1625,25 @@ struct `GitRepository snapshots` {
 
     @Test
     func `snapshot deadline is checked before an empty tree returns`() async throws {
-        let vault = try makeVault(createNotesDirectory: false)
-        defer { vault.remove() }
-        let observer = PostStageObserverProbe()
-        let bounded = try GitRepository(
-            vaultURL: vault.root,
-            dataDirectory: vault.dataDirectory,
-            snapshotTimeout: .seconds(2),
-            postStageObserver: {
-                observer.mark()
-                Thread.sleep(forTimeInterval: 2.25)
-            }
-        )
+        // Exercise the actual scan boundary with an expired deadline. Real Git
+        // startup cannot consume a short budget before this checkpoint is reached.
+        for createNotesDirectory in [false, true] {
+            let vault = try makeVault(createNotesDirectory: createNotesDirectory)
+            defer { vault.remove() }
+            let repository = try makeRepository(for: vault)
+            let expired = ContinuousClock.now.advanced(by: .seconds(-1))
 
-        do {
-            try await bounded.recordSnapshot()
-            Issue.record("Expected the complete snapshot deadline to expire")
-        } catch let error as VaultVersioningError {
-            guard case .gitCommandTimedOut(let arguments) = error else {
-                Issue.record("Expected a typed Git deadline, got \(error)")
-                return
+            do {
+                _ = try await repository.validateSupportedNotesEntries(deadline: expired)
+                Issue.record("An expired deadline must not certify an absent or empty notes tree")
+            } catch let error as VaultVersioningError {
+                guard case .gitCommandTimedOut(let arguments) = error else {
+                    Issue.record("Expected a typed scan deadline, got \(error)")
+                    continue
+                }
+                #expect(arguments == ["snapshot-filesystem-scan"])
             }
-            #expect(arguments == ["snapshot-filesystem-scan"])
         }
-        #expect(observer.observed)
     }
 
     /// Exercises separate runtime boundaries sharing the same advisory lock.
@@ -1797,19 +1792,6 @@ struct `GitRepository snapshots` {
                 in: vault
             ).isEmpty
         )
-    }
-}
-
-private final class PostStageObserverProbe: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    var observed: Bool {
-        lock.withLock { value }
-    }
-
-    func mark() {
-        lock.withLock { value = true }
     }
 }
 

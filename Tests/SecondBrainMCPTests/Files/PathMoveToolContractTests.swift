@@ -47,7 +47,7 @@ struct `MCP path move contract` {
     ])
 
     @Test
-    func `Schema discriminates file revision inputs from directory moves`() throws {
+    func `Schema exposes flat file and directory inputs with conditional guidance`() throws {
         let tool = try #require(PathMoveToolDefinition.build(
             readOnly: false,
             capabilities: capabilities
@@ -59,43 +59,55 @@ struct `MCP path move contract` {
         #expect(tool.description?.contains("does not batch") == true)
 
         let input = try #require(tool.inputSchema.objectValue)
-        let variants = try #require(input["oneOf"]?.arrayValue)
-        #expect(variants.count == 2)
-        let file = try #require(variants.first {
-            $0.objectValue?["properties"]?.objectValue?["kind"]?
-                .objectValue?["const"]?.stringValue == "file"
-        }?.objectValue)
-        let directory = try #require(variants.first {
-            $0.objectValue?["properties"]?.objectValue?["kind"]?
-                .objectValue?["const"]?.stringValue == "directory"
-        }?.objectValue)
-
-        let fileRequired = Set(
-            try #require(file["required"]?.arrayValue).compactMap(\.stringValue)
-        )
-        #expect(fileRequired == [
+        #expect(input["oneOf"] == nil)
+        let properties = try #require(input["properties"]?.objectValue)
+        #expect(Set(properties.keys) == [
             "kind", "source_path", "destination_path", "format", "expected_revision",
         ])
-        let fileProperties = try #require(file["properties"]?.objectValue)
-        let formats = try #require(
-            fileProperties["format"]?.objectValue?["enum"]?.arrayValue
-        ).compactMap(\.stringValue)
-        #expect(formats == ["jpeg", "markdown"])
-        #expect(file["additionalProperties"]?.boolValue == false)
-
-        let directoryRequired = Set(
-            try #require(directory["required"]?.arrayValue).compactMap(\.stringValue)
-        )
-        #expect(directoryRequired == ["kind", "source_path", "destination_path"])
-        let directoryProperties = try #require(directory["properties"]?.objectValue)
-        #expect(Set(directoryProperties.keys) == [
-            "kind", "source_path", "destination_path",
+        #expect(properties["kind"]?.objectValue?["enum"]?.arrayValue == [
+            .string("file"), .string("directory"),
         ])
-        #expect(directory["additionalProperties"]?.boolValue == false)
+        let required = Set(try #require(input["required"]?.arrayValue).compactMap(\.stringValue))
+        #expect(required == ["kind", "source_path", "destination_path"])
+        let formats = try #require(properties["format"]?.objectValue?["enum"]?.arrayValue)
+            .compactMap(\.stringValue)
+        #expect(formats == ["jpeg", "markdown"])
+        #expect(input["additionalProperties"]?.boolValue == false)
+        for field in ["format", "expected_revision"] {
+            let description = try #require(properties[field]?.objectValue?["description"]?.stringValue)
+            #expect(description.contains("Required for kind=file"))
+            #expect(description.contains("omit for kind=directory"))
+        }
         #expect(PathMoveToolDefinition.build(
             readOnly: true,
             capabilities: capabilities
         ) == nil)
+    }
+
+    @Test
+    func `Conditional move fields remain enforced before service dispatch`() async throws {
+        let service = ServiceSpy()
+        let controller = PathMoveToolController(readOnly: false, paths: service)
+        let revision = "sha256:" + String(repeating: "a", count: 64)
+        let cases: [[String: Value]] = [
+            ["kind": .string("file")],
+            ["kind": .string("file"), "format": .string("markdown")],
+            ["kind": .string("file"), "expected_revision": .string(revision)],
+            ["kind": .string("directory"), "format": .string("markdown")],
+            ["kind": .string("directory"), "expected_revision": .string(revision)],
+            ["kind": .string("directory"), "format": .null],
+            ["kind": .string("file"), "format": .string("markdown"), "expected_revision": .null],
+        ]
+        for fields in cases {
+            var arguments = fields
+            arguments["source_path"] = .string("notes/source.md")
+            arguments["destination_path"] = .string("notes/destination.md")
+            let result = try await controller.call(.init(name: "move_path", arguments: arguments))
+            #expect(result.isError == true)
+            #expect(result.structuredContent?.objectValue?["error"]?.objectValue?["state"]
+                == .string("not_applied"))
+        }
+        #expect(await service.allRequests().isEmpty)
     }
 
     @Test

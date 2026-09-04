@@ -5,6 +5,53 @@ import Testing
 
 @Suite
 struct SearchAcceptanceTests {
+    @Test("Wire discovery keeps the same tools with provider-compatible input roots", arguments: [false, true])
+    func toolInputCompatibility(readOnly: Bool) async throws {
+        try await withRuntime { runtime, root in
+            let tools = try await discoveredTools(
+                runtime: runtime, root: root, search: runtime.search, readOnly: readOnly
+            )
+            let expected: Set<String> = readOnly
+                ? ["read_file", "list_files", "search_vault", "query_links"]
+                : ["create_file", "read_file", "update_file", "delete_file",
+                   "move_path", "list_files", "search_vault", "query_links"]
+            #expect(Set(tools.map(\.name)) == expected)
+            #expect(tools.count == expected.count)
+            for tool in tools {
+                let input = try #require(tool.inputSchema.objectValue)
+                #expect(input["type"] == .string("object"), "Tool: \(tool.name)")
+                // Validate the advertised wire contract, not just individual builders.
+                // Keep conditional rules in server validation, not root compositions.
+                #expect(Set(input.keys).isSubset(of: [
+                    "type", "properties", "required", "additionalProperties", "description",
+                ]), "Unsupported root keyword in \(tool.name)")
+                #expect(input["properties"]?.objectValue != nil, "Tool: \(tool.name)")
+                #expect(input["additionalProperties"] == .bool(false), "Tool: \(tool.name)")
+            }
+        }
+    }
+
+    @Test("Search still rejects absent or empty criteria without schema conditionals")
+    func searchCriteriaRemainRequired() async throws {
+        try await withRuntime { runtime, _ in
+            let controller = SearchToolController(search: runtime.search)
+            let cases: [[String: Value]] = [
+                [:],
+                ["query": .string("")],
+                ["tags": .array([])],
+                ["directory": .string("project")],
+            ]
+            for criteria in cases {
+                var arguments = criteria
+                arguments["location"] = .string("notes")
+                let result = try await controller.call(.init(name: "search_vault", arguments: arguments))
+                #expect(result.isError == true)
+                let message = try firstText(result)
+                #expect(message.contains("query") || message.contains("tags"))
+            }
+        }
+    }
+
     @Test("Discovery advertises only effective search representations")
     func runtimeDiscoveryFormats() async throws {
         try await withRuntime { runtime, root in
@@ -189,11 +236,18 @@ struct SearchAcceptanceTests {
     }
 
     private func discoveredTool(runtime: VaultRuntime, root: URL, search: any VaultSearchService) async throws -> Tool {
+        let tools = try await discoveredTools(runtime: runtime, root: root, search: search)
+        return try #require(tools.first { $0.name == "search_vault" })
+    }
+
+    private func discoveredTools(
+        runtime: VaultRuntime, root: URL, search: any VaultSearchService, readOnly: Bool = true
+    ) async throws -> [Tool] {
         let transports = await InMemoryTransport.createConnectedPair()
         try await transports.server.connect()
         let server = Task {
             try await MCPServerSetup.start(
-                config: ServerConfig(vaultPath: root.path, readOnly: true),
+                config: ServerConfig(vaultPath: root.path, readOnly: readOnly),
                 files: runtime.files, paths: runtime.paths, search: search,
                 links: runtime.links, listing: runtime.listing,
                 capabilities: runtime.capabilities, transport: transports.server
@@ -205,7 +259,7 @@ struct SearchAcceptanceTests {
             let tools = try await client.listTools().tools
             await client.disconnect()
             try await server.value
-            return try #require(tools.first { $0.name == "search_vault" })
+            return tools
         } catch {
             await client.disconnect()
             server.cancel()

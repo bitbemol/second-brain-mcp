@@ -9,6 +9,7 @@ struct UpdateSchemaDiscoverabilityTests {
         let schema = try schema()
         #expect(schema["oneOf"] == nil)
         #expect(schema["anyOf"] == nil)
+        #expect(schema["allOf"] == nil)
         let properties = try #require(schema["properties"]?.objectValue)
         #expect(Set(properties.keys) == Set(["format", "path", "expected_revision", "mode", "content", "replacements"]))
         let replacements = try #require(properties["replacements"]?.objectValue)
@@ -18,20 +19,18 @@ struct UpdateSchemaDiscoverabilityTests {
                 == ["old_text", "new_text"])
     }
 
-    @Test("Format conditions expose exactly the catalog-supported modes")
+    @Test("Descriptions expose catalog-supported modes and conditional inputs")
     func formatModesFollowCatalog() throws {
         let schema = try schema()
-        let constraints = try #require(schema["allOf"]?.arrayValue)
-        var actual: [String: Set<String>] = [:]
-        for condition in constraints {
-            guard let object = condition.objectValue,
-                  let format = object["if"]?.objectValue?["properties"]?.objectValue?["format"]?
-                    .objectValue?["const"]?.stringValue else { continue }
-            let modes = try #require(object["then"]?.objectValue?["properties"]?.objectValue?["mode"]?
-                .objectValue?["enum"]?.arrayValue)
-            actual[format] = Set(modes.compactMap(\.stringValue))
-        }
-        #expect(actual == ["markdown": ["append"], "json": ["patch"]])
+        let description = try #require(schema["properties"]?.objectValue?["mode"]?
+            .objectValue?["description"]?.stringValue)
+        #expect(description.contains("markdown=append"))
+        #expect(description.contains("json=patch"))
+        #expect(!description.contains("png="))
+        #expect(!description.contains("markdown=append|"))
+        #expect(!description.contains("json=patch|"))
+        #expect(description.contains("patch requires replacements and forbids content"))
+        #expect(description.contains("replace and append require content and forbid replacements"))
         let formats = schema["properties"]?.objectValue?["format"]?.objectValue?["enum"]?
             .arrayValue?.compactMap(\.stringValue)
         #expect(Set(formats ?? []) == ["markdown", "json"])
