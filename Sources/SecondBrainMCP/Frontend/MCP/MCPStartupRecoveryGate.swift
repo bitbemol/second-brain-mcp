@@ -2,8 +2,14 @@ import Foundation
 
 /// Lets discovery and reads use a connected transport while mutations await recovery.
 actor MCPStartupRecoveryGate {
-    private var operation: (@Sendable () async throws -> Void)?
+    struct AttemptFailure: Error {
+        let attempt: Int
+        let cause: any Error
+    }
+
+    private var operation: (@Sendable (Int) async throws -> Void)?
     private var task: Task<Void, Error>?
+    private var nextAttempt = 1
     private var succeeded = false
     private var shuttingDown = false
     private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
@@ -11,21 +17,35 @@ actor MCPStartupRecoveryGate {
     func install(
         _ operation: @escaping @Sendable () async throws -> Void
     ) -> Task<Void, Error> {
+        install { _ in try await operation() }
+    }
+
+    func install(
+        _ operation: @escaping @Sendable (Int) async throws -> Void
+    ) -> Task<Void, Error> {
         precondition(self.operation == nil, "Startup recovery may only be installed once")
         self.operation = operation
         return startAttempt(operation)
     }
 
     private func startAttempt(
-        _ operation: @escaping @Sendable () async throws -> Void
+        _ operation: @escaping @Sendable (Int) async throws -> Void
     ) -> Task<Void, Error> {
         precondition(task == nil, "Startup recovery already has an active attempt")
+        let attempt = nextAttempt
+        if nextAttempt < Int.max {
+            nextAttempt += 1
+        }
         let installed = Task {
             do {
-                try await operation()
+                try await operation(attempt)
                 finish(.success(()))
+            } catch is CancellationError {
+                let cancellation = CancellationError()
+                finish(.failure(cancellation))
+                throw cancellation
             } catch {
-                finish(.failure(error))
+                finish(.failure(AttemptFailure(attempt: attempt, cause: error)))
                 throw error
             }
         }

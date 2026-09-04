@@ -173,4 +173,23 @@ struct `MCP file result mapper` {
         #expect(result.isError == true)
         #expect(result.content.count == 1)
     }
+
+    @Test
+    func `Recovery failures identify a safe retry without claiming persistence`() throws {
+        let result = ToolFailureProjection.recovery(
+            "Recovery attempt 7 failed",
+            attempt: 7,
+            category: "private_git_command_failed"
+        )
+        let structured = try #require(result.structuredContent)
+        let topLevel = try #require(structured.objectValue)
+        let errorValue = try #require(topLevel["error"])
+        let error = try #require(errorValue.objectValue)
+
+        #expect(error["code"] == Value.string("SNAPSHOT_FAILED"))
+        #expect(error["state"] == Value.string("not_applied"))
+        #expect(error["retry"] == Value.string("retry_recovery"))
+        #expect(error["recovery_attempt"] == Value.int(7))
+        #expect(error["recovery_category"] == Value.string("private_git_command_failed"))
+    }
 }

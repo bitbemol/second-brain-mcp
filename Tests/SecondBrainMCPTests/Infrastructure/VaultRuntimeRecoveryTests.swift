@@ -415,6 +415,136 @@ struct `Vault runtime recovery` {
         try await serverTask.value
     }
 
+    @Test
+    func `Repeated mutation failures identify fresh private recovery attempts`() async throws {
+        let root = try makeVault()
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
+        let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
+        let recovery = CountingPrivateSnapshotFailure()
+        let serverTask = Task {
+            try await MCPServerSetup.start(
+                config: ServerConfig(vaultPath: root, readOnly: false),
+                files: runtime.files, paths: runtime.paths, search: runtime.search,
+                links: runtime.links, listing: runtime.listing,
+                capabilities: runtime.capabilities,
+                startupRecovery: { try await recovery.run() },
+                transport: transports.server
+            )
+        }
+        let client = Client(name: "RecoveryAttemptDiagnostics", version: "1.0")
+        _ = try await client.connect(transport: transports.client)
+        await recovery.waitForAttempts(1)
+
+        let secondAttemptMessage = try await recoveryFailureMessage(from: client)
+        let thirdAttemptMessage = try await recoveryFailureMessage(from: client)
+
+        #expect(secondAttemptMessage.contains("Recovery attempt 2 failed"))
+        #expect(thirdAttemptMessage.contains("Recovery attempt 3 failed"))
+        #expect(secondAttemptMessage.contains("private snapshot store"))
+        #expect(thirdAttemptMessage.contains("private snapshot store"))
+        for message in [secondAttemptMessage, thirdAttemptMessage] {
+            #expect(!message.contains(CountingPrivateSnapshotFailure.privateArgument))
+            #expect(!message.contains(CountingPrivateSnapshotFailure.privateStatus))
+            #expect(!message.contains(CountingPrivateSnapshotFailure.privateMessage))
+            #expect(message.utf8.count <= 512)
+        }
+
+        #expect(await recovery.attempts == 3)
+        await client.disconnect()
+        try await serverTask.value
+    }
+
+    @Test
+    func `Restored private pack resumes mutation without restarting server`() async throws {
+        let root = try makeVault()
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let existing = URL(fileURLWithPath: root)
+            .appendingPathComponent("notes/existing.md")
+        try Data("baseline".utf8).write(to: existing, options: .atomic)
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        try await runtime.recoverPendingChanges()
+        _ = try runGit(["repack", "-ad"], at: root)
+        let packDirectory = dataDirectory.snapshotRepositoryURL
+            .appendingPathComponent("objects/pack", isDirectory: true)
+        let packFiles = try FileManager.default.contentsOfDirectory(
+            at: packDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "pack" }
+        let pack = try #require(packFiles.count == 1 ? packFiles[0] : nil)
+        let savedPack = try Data(contentsOf: pack)
+        defer { try? savedPack.write(to: pack, options: .atomic) }
+        try Data("truncated".utf8).write(to: pack, options: .atomic)
+
+        let attempts = RecoveryAttemptCounter()
+        let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
+        let serverTask = Task {
+            try await MCPServerSetup.start(
+                config: ServerConfig(vaultPath: root, readOnly: false),
+                files: runtime.files, paths: runtime.paths, search: runtime.search,
+                links: runtime.links, listing: runtime.listing,
+                capabilities: runtime.capabilities,
+                startupRecovery: {
+                    try await attempts.run { try await runtime.recoverPendingChanges() }
+                },
+                transport: transports.server
+            )
+        }
+        let client = Client(name: "PrivatePackRepair", version: "1.0")
+        _ = try await client.connect(transport: transports.client)
+
+        let read = try await client.callTool(name: "read_file", arguments: [
+            "format": .string("markdown"), "path": .string("notes/existing.md"),
+        ])
+        #expect(read.isError != true)
+        let blocked = try await client.callTool(name: "create_file", arguments: [
+            "format": .string("markdown"), "path": .string("notes/recovered.md"),
+            "content": .string("same session"),
+        ])
+        #expect(blocked.isError == true)
+        #expect(!FileManager.default.fileExists(atPath: root + "/notes/recovered.md"))
+        let failedAttempts = await attempts.count
+
+        try savedPack.write(to: pack, options: .atomic)
+        let recovered = try await client.callTool(name: "create_file", arguments: [
+            "format": .string("markdown"), "path": .string("notes/recovered.md"),
+            "content": .string("same session"),
+        ])
+
+        #expect(recovered.isError != true)
+        #expect(await attempts.count == failedAttempts + 1)
+        let recoveredURL = URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent("notes/recovered.md")
+        try #require(FileManager.default.fileExists(atPath: recoveredURL.path))
+        let recoveredBytes = try Data(contentsOf: recoveredURL)
+        #expect(String(decoding: recoveredBytes, as: UTF8.self).hasSuffix("same session"))
+        let newest = try latestSnapshotReference(at: root)
+        let snapshotted = try runGit(["show", "\(newest):notes/recovered.md"], at: root)
+        #expect(
+            snapshotted == String(decoding: recoveredBytes, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        await client.disconnect()
+        try await serverTask.value
+    }
+
+    private func recoveryFailureMessage(from client: Client) async throws -> String {
+        let response = try await client.callTool(name: "create_file", arguments: [
+            "format": .string("markdown"), "path": .string("notes/blocked.md"),
+            "content": .string("must not persist"),
+        ])
+        #expect(response.isError == true)
+        return response.content.compactMap { content -> String? in
+            if case .text(let text, _, _) = content { return text }
+            return nil
+        }.joined()
+    }
+
     private func makeVault() throws -> String {
         let root = NSTemporaryDirectory()
             + "VaultRuntimeRecoveryTests-\(UUID().uuidString)"
@@ -524,6 +654,43 @@ private actor StartupRecoveryHold {
 }
 
 private struct InjectedStartupRecoveryFailure: Error {}
+
+private actor RecoveryAttemptCounter {
+    private(set) var count = 0
+
+    func run(_ operation: @Sendable () async throws -> Void) async throws {
+        count += 1
+        try await operation()
+    }
+}
+
+private actor CountingPrivateSnapshotFailure {
+    static let privateArgument = "PRIVATE_GIT_ARGUMENT"
+    static let privateStatus = "PRIVATE_GIT_STATUS"
+    static let privateMessage = "PRIVATE_GIT_STDERR"
+
+    private(set) var attempts = 0
+    private var attemptWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    func run() throws {
+        attempts += 1
+        let ready = attemptWaiters.filter { attempts >= $0.0 }
+        attemptWaiters.removeAll { attempts >= $0.0 }
+        ready.forEach { $0.1.resume() }
+        throw VaultVersioningError.gitCommandFailed(
+            arguments: [Self.privateArgument],
+            status: Self.privateStatus,
+            message: Self.privateMessage
+        )
+    }
+
+    func waitForAttempts(_ count: Int) async {
+        guard attempts < count else { return }
+        await withCheckedContinuation { continuation in
+            attemptWaiters.append((count, continuation))
+        }
+    }
+}
 
 private actor FailingStartupRecoveryHold {
     private var entered = false

@@ -83,16 +83,19 @@ struct POSIXAdvisoryFileLock: Sendable {
     }
 
     private let url: URL
+    private let descriptorOpener: (@Sendable () throws -> Int32)?
     private let retryNanoseconds: UInt64
     private let contentionObserver: (@Sendable () -> Void)?
 
     /// Creates a lock adapter for one persistent process-owned file.
     init(
         url: URL,
+        descriptorOpener: (@Sendable () throws -> Int32)? = nil,
         retryNanoseconds: UInt64 = 20_000_000,
         contentionObserver: (@Sendable () -> Void)? = nil
     ) {
         self.url = url
+        self.descriptorOpener = descriptorOpener
         self.retryNanoseconds = retryNanoseconds
         self.contentionObserver = contentionObserver
     }
@@ -104,11 +107,16 @@ struct POSIXAdvisoryFileLock: Sendable {
     ) async throws -> Lease {
         try Task.checkCancellation()
         if let deadline, ContinuousClock.now >= deadline { throw DeadlineExceeded() }
-        let descriptor = Darwin.open(
-            url.path,
-            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
-            mode_t(0o600)
-        )
+        let descriptor: Int32
+        if let descriptorOpener {
+            descriptor = try descriptorOpener()
+        } else {
+            descriptor = Darwin.open(
+                url.path,
+                O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+                mode_t(0o600)
+            )
+        }
         guard descriptor >= 0 else {
             throw LockError(path: url.path, operation: "open", code: errno)
         }

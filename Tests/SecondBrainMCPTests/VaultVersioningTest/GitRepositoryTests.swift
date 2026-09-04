@@ -39,6 +39,111 @@ struct `GitRepository snapshots` {
         #expect(retried == expected)
     }
 
+    @Test
+    func `snapshot retry resolves Git again after selected executable cannot launch`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let trustedGit = try AppleGitExecutable.resolve()
+        let transientGit = vault.cleanupRoot.appendingPathComponent("missing-git")
+        let resolver = GitExecutableResolverProbe(
+            initial: transientGit,
+            fallback: trustedGit
+        )
+        let repository = try GitRepository(
+            vaultURL: vault.root,
+            dataDirectory: vault.dataDirectory,
+            gitExecutableResolver: { try resolver.resolve() }
+        )
+        let note = vault.notes.appendingPathComponent("memory.md")
+        try Data("second".utf8).write(to: note, options: .atomic)
+
+        do {
+            try await repository.recordSnapshot()
+            Issue.record("Expected the selected executable launch to fail")
+        } catch let error as VaultVersioningError {
+            guard case .trustedGitUnavailable = error else {
+                Issue.record("Expected trusted Git to be re-resolved, got \(error)")
+                return
+            }
+        }
+        try await repository.recordSnapshot()
+
+        #expect(resolver.calls == 2)
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(try latestSnapshotReference(in: vault)):notes/memory.md"],
+                in: vault
+            ) == "second"
+        )
+    }
+
+    @Test
+    func `later snapshot revalidates and replaces a cached Git selection`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let trustedGit = try AppleGitExecutable.resolve()
+        let resolver = GitExecutableResolverProbe(
+            initial: trustedGit,
+            fallback: trustedGit
+        )
+        let validator = GitExecutableValidatorProbe()
+        let repository = try GitRepository(
+            vaultURL: vault.root,
+            dataDirectory: vault.dataDirectory,
+            gitExecutableResolver: { try resolver.resolve() },
+            gitExecutableValidator: { validator.validate($0) }
+        )
+        try Data("note".utf8).write(
+            to: vault.notes.appendingPathComponent("memory.md"),
+            options: .atomic
+        )
+
+        try await repository.recordSnapshot()
+        try await repository.recordSnapshot()
+
+        #expect(validator.calls == 1)
+        #expect(resolver.calls == 2)
+    }
+
+    @Test
+    func `retry revalidates Git after an unsuccessful version probe`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let trustedGit = try AppleGitExecutable.resolve()
+        let failingGit = vault.cleanupRoot.appendingPathComponent("failing-git")
+        try Data("#!/bin/sh\nexit 1\n".utf8).write(to: failingGit, options: .atomic)
+        #expect(Darwin.chmod(failingGit.path, 0o700) == 0)
+        let resolver = GitExecutableResolverProbe(
+            initial: failingGit,
+            fallback: trustedGit
+        )
+        let validator = GitExecutableValidatorProbe()
+        let repository = try GitRepository(
+            vaultURL: vault.root,
+            dataDirectory: vault.dataDirectory,
+            gitExecutableResolver: { try resolver.resolve() },
+            gitExecutableValidator: { validator.validate($0) }
+        )
+        try Data("recoverable".utf8).write(
+            to: vault.notes.appendingPathComponent("memory.md"),
+            options: .atomic
+        )
+
+        await #expect(throws: VaultVersioningError.self) {
+            try await repository.recordSnapshot()
+        }
+        try await repository.recordSnapshot()
+
+        #expect(validator.calls == 1)
+        #expect(resolver.calls == 2)
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(try latestSnapshotReference(in: vault)):notes/memory.md"],
+                in: vault
+            ) == "recoverable"
+        )
+    }
+
     /// Automated recovery must never contend with, rewrite, or unlock the
     /// staging index owned by an interactive Git client.
     @Test
@@ -188,6 +293,189 @@ struct `GitRepository snapshots` {
                 in: vault
             ) == "notes/memory.md"
         )
+    }
+
+    @Test
+    func `live retry retightens an owned private repository after repair`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let note = vault.notes.appendingPathComponent("memory.md")
+        try Data("before repair".utf8).write(to: note, options: .atomic)
+        try await repository.recordSnapshot()
+
+        let privateRepository = vault.dataDirectory.snapshotRepositoryURL
+        #expect(Darwin.chmod(privateRepository.path, 0o755) == 0)
+        try Data("after repair".utf8).write(to: note, options: .atomic)
+
+        try await repository.recordSnapshot()
+
+        var metadata = stat()
+        #expect(Darwin.lstat(privateRepository.path, &metadata) == 0)
+        #expect(metadata.st_mode & 0o777 == 0o700)
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(try latestSnapshotReference(in: vault)):notes/memory.md"],
+                in: vault
+            ) == "after repair"
+        )
+    }
+
+    @Test
+    func `live retry refuses a replaced private data root before permission repair`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let note = vault.notes.appendingPathComponent("memory.md")
+        try Data("baseline".utf8).write(to: note, options: .atomic)
+        try await repository.recordSnapshot()
+
+        let installedRoot = vault.dataDirectory.rootURL
+        let preservedRoot = vault.cleanupRoot.appendingPathComponent("preserved-support")
+        let outsideRoot = vault.cleanupRoot.appendingPathComponent("outside-support")
+        try FileManager.default.moveItem(at: installedRoot, to: preservedRoot)
+        try FileManager.default.copyItem(at: preservedRoot, to: outsideRoot)
+        let outsideRepository = outsideRoot.appendingPathComponent("git-snapshots-v1.git")
+        #expect(Darwin.chmod(outsideRepository.path, 0o755) == 0)
+        try FileManager.default.createSymbolicLink(
+            at: installedRoot,
+            withDestinationURL: outsideRoot
+        )
+        try Data("must not escape".utf8).write(to: note, options: .atomic)
+
+        do {
+            try await repository.recordSnapshot()
+            Issue.record("Expected replacement of the private data root to fail closed")
+        } catch let error as VaultVersioningError {
+            guard case .invalidPrivateRepository = error else {
+                Issue.record("Expected invalid private repository, got \(error)")
+                return
+            }
+        }
+
+        var metadata = stat()
+        #expect(Darwin.lstat(outsideRepository.path, &metadata) == 0)
+        #expect(metadata.st_mode & 0o777 == 0o755)
+        #expect(
+            try runGit(
+                ["show", "\(try latestSnapshotReference(in: vault)):notes/memory.md"],
+                in: vault.root,
+                gitDirectory: outsideRepository
+            ) == "baseline"
+        )
+    }
+
+    @Test
+    func `private root replacement cannot create the snapshot lock outside its boundary`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let installedRoot = vault.dataDirectory.rootURL
+        let preservedRoot = vault.cleanupRoot.appendingPathComponent("preserved-lock-root")
+        let outsideRoot = vault.cleanupRoot.appendingPathComponent("outside-lock-root")
+        try FileManager.default.copyItem(at: installedRoot, to: outsideRoot)
+        let outsideLock = outsideRoot.appendingPathComponent("locks/git-snapshot.lock")
+        let repository = try GitRepository(
+            vaultURL: vault.root,
+            dataDirectory: vault.dataDirectory,
+            preSnapshotLockObserver: {
+                try FileManager.default.moveItem(at: installedRoot, to: preservedRoot)
+                try FileManager.default.createSymbolicLink(
+                    at: installedRoot,
+                    withDestinationURL: outsideRoot
+                )
+            }
+        )
+        try Data("must stay inside".utf8).write(
+            to: vault.notes.appendingPathComponent("memory.md"),
+            options: .atomic
+        )
+
+        do {
+            try await repository.recordSnapshot()
+            Issue.record("Expected private root replacement to fail closed")
+        } catch let error as VaultVersioningError {
+            guard case .invalidPrivateRepository = error else {
+                Issue.record("Expected invalid private repository, got \(error)")
+                return
+            }
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: outsideLock.path))
+    }
+
+    @Test
+    func `private root replacement during staging cannot publish an outside snapshot`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let note = vault.notes.appendingPathComponent("memory.md")
+        try Data("baseline".utf8).write(to: note, options: .atomic)
+        try await makeRepository(for: vault).recordSnapshot()
+        let baselineReference = try latestSnapshotReference(in: vault)
+
+        let installedRoot = vault.dataDirectory.rootURL
+        let preservedRoot = vault.cleanupRoot.appendingPathComponent("preserved-stage-root")
+        let outsideRoot = vault.cleanupRoot.appendingPathComponent("outside-stage-root")
+        let outsideRepository = outsideRoot.appendingPathComponent("git-snapshots-v1.git")
+        let repository = try GitRepository(
+            vaultURL: vault.root,
+            dataDirectory: vault.dataDirectory,
+            postStageObserver: {
+                try FileManager.default.copyItem(at: installedRoot, to: outsideRoot)
+                let copiedWorkspaceRoot = outsideRoot.appendingPathComponent(
+                    "git-snapshot-workspaces-v1"
+                )
+                let copiedWorkspaces = try FileManager.default.contentsOfDirectory(
+                    at: copiedWorkspaceRoot,
+                    includingPropertiesForKeys: nil
+                )
+                guard let copiedWorkspace = copiedWorkspaces.first else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                try Data("outside sentinel".utf8).write(
+                    to: copiedWorkspace.appendingPathComponent("outside-sentinel"),
+                    options: .atomic
+                )
+                try FileManager.default.moveItem(at: installedRoot, to: preservedRoot)
+                try FileManager.default.createSymbolicLink(
+                    at: installedRoot,
+                    withDestinationURL: outsideRoot
+                )
+            }
+        )
+        try Data("must not escape".utf8).write(to: note, options: .atomic)
+
+        do {
+            try await repository.recordSnapshot()
+            Issue.record("Expected private root replacement to fail closed")
+        } catch let error as VaultVersioningError {
+            guard case .invalidPrivateRepository = error else {
+                Issue.record("Expected invalid private repository, got \(error)")
+                return
+            }
+        }
+
+        let outsideReference = try runGit(
+            ["for-each-ref", "--format=%(refname)", "refs/second-brain-mcp/snapshots"],
+            in: vault.root,
+            gitDirectory: outsideRepository
+        )
+        #expect(outsideReference == baselineReference)
+        #expect(
+            try runGit(
+                ["show", "\(outsideReference):notes/memory.md"],
+                in: vault.root,
+                gitDirectory: outsideRepository
+            ) == "baseline"
+        )
+        let outsideWorkspaceRoot = outsideRoot.appendingPathComponent(
+            "git-snapshot-workspaces-v1"
+        )
+        let outsideSentinelSurvives = FileManager.default.enumerator(
+            at: outsideWorkspaceRoot,
+            includingPropertiesForKeys: nil
+        )?.compactMap { ($0 as? URL)?.lastPathComponent }
+            .contains("outside-sentinel") ?? false
+        #expect(outsideSentinelSurvives)
     }
 
     /// Proves a snapshot commits only `notes/`, even when another Git client has
@@ -1341,6 +1629,41 @@ private final class PostStageObserverProbe: @unchecked Sendable {
 
     func mark() {
         lock.withLock { value = true }
+    }
+}
+
+private final class GitExecutableResolverProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let initial: URL
+    private let fallback: URL
+    private var callCount = 0
+
+    init(initial: URL, fallback: URL) {
+        self.initial = initial
+        self.fallback = fallback
+    }
+
+    var calls: Int { lock.withLock { callCount } }
+
+    func resolve() throws -> URL {
+        lock.withLock {
+            callCount += 1
+            return callCount == 1 ? initial : fallback
+        }
+    }
+}
+
+private final class GitExecutableValidatorProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCount = 0
+
+    var calls: Int { lock.withLock { callCount } }
+
+    func validate(_ url: URL) -> Bool {
+        lock.withLock {
+            callCount += 1
+            return false
+        }
     }
 }
 

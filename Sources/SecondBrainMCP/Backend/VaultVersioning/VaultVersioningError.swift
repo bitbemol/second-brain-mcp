@@ -48,8 +48,16 @@ enum VaultVersioningError: Error, CallerSafeError, Sendable {
             "The vault directory changed while snapshotting; reopen the installed agent for the current vault, then retry."
         case .unsupportedEntryBelowNotes:
             "Symbolic links and special filesystem entries under notes are unsupported; replace them with regular files or directories, then retry."
-        default:
-            "Required vault snapshot failed; inspect current file state before retrying a mutation."
+        case .gitCommandFailed:
+            "The product-owned private snapshot store rejected a Git operation; the vault's .git repository is not involved."
+        case .gitCommandTimedOut:
+            "The product-owned private snapshot operation exceeded its deadline; the vault's .git repository is not involved."
+        case .invalidRepositoryURL:
+            "The configured private snapshot location is unavailable."
+        case .trustedGitUnavailable:
+            "A validated Apple Git executable is unavailable."
+        case .invalidPrivateRepository:
+            "The product-owned private snapshot store has an invalid or unsafe layout; the vault's .git repository is not involved."
         }
     }
 

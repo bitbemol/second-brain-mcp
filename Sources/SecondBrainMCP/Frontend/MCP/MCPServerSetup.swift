@@ -96,7 +96,12 @@ struct MCPServerSetup {
                         throw CancellationError()
                     } catch {
                         try Task.checkCancellation()
-                        return FileToolResultMapper.failure(recoveryFailureMessage(for: error))
+                        let failure = recoveryFailure(for: error)
+                        return ToolFailureProjection.recovery(
+                            failure.message,
+                            attempt: failure.attempt,
+                            category: failure.category
+                        )
                     }
                 }
                 if params.name == ListFilesToolDefinition.name {
@@ -118,12 +123,12 @@ struct MCPServerSetup {
         try await server.start(transport: transport)
         log("MCP server started, accepting connections")
 
-        _ = await startupRecoveryGate.install {
+        _ = await startupRecoveryGate.install { attempt in
             do {
                 try await startupRecovery()
                 log("startup recovery completed")
             } catch {
-                log(recoveryFailureMessage(for: error))
+                log(recoveryFailure(for: error, fallbackAttempt: attempt).message)
                 throw error
             }
         }
@@ -133,9 +138,51 @@ struct MCPServerSetup {
         log("MCP transport completed; server shutting down")
     }
 
-    private static func recoveryFailureMessage(for error: Error) -> String {
-        let detail = (error as? any CallerSafeError).map { ": " + $0.callerSafeDescription } ?? ""
-        return "Startup recovery failed; mutations remain unavailable" + detail
-            + ". Resolve the recovery failure; the next mutation will retry."
+    private struct RecoveryFailure {
+        let attempt: Int
+        let category: String
+        let message: String
+    }
+
+    private static func recoveryFailure(
+        for error: Error,
+        fallbackAttempt: Int = 1
+    ) -> RecoveryFailure {
+        let attempted = error as? MCPStartupRecoveryGate.AttemptFailure
+        let cause = attempted?.cause ?? error
+        let attempt = attempted?.attempt ?? fallbackAttempt
+        let category = recoveryCategory(for: cause)
+        let detail = (cause as? any CallerSafeError)?.callerSafeDescription
+            ?? "An internal recovery operation failed without caller-safe details."
+        return RecoveryFailure(
+            attempt: attempt,
+            category: category,
+            message: "Recovery attempt \(attempt) failed (\(category)): \(detail) "
+                + "Mutation persistence remains blocked; no gated mutation was applied. "
+                + "Resolve this current recovery failure; "
+                + "the next mutation will start a new recovery attempt."
+        )
+    }
+
+    private static func recoveryCategory(for error: Error) -> String {
+        guard let error = error as? VaultVersioningError else {
+            return "internal_recovery_failure"
+        }
+        switch error {
+        case .gitCommandFailed:
+            return "private_git_command_failed"
+        case .gitCommandTimedOut:
+            return "snapshot_timeout"
+        case .invalidRepositoryURL:
+            return "snapshot_location_invalid"
+        case .embeddedRepositoryBelowNotes, .unsupportedEntryBelowNotes:
+            return "unsupported_notes_content"
+        case .trustedGitUnavailable:
+            return "trusted_git_unavailable"
+        case .vaultRootChanged:
+            return "vault_changed"
+        case .invalidPrivateRepository:
+            return "private_repository_invalid"
+        }
     }
 }

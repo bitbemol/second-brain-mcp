@@ -21,11 +21,16 @@ actor GitRepository: VaultVersioning {
 
     private let vaultURL: URL
     private let vaultRootIdentity: VaultRootIdentity
+    private let privateDataRootURL: URL
+    private let privateDataRootIdentity: VaultRootIdentity
     private let snapshotRepositoryURL: URL
     private let snapshotWorkspaceDirectoryURL: URL
     private let snapshotLock: POSIXAdvisoryFileLock
+    private let gitExecutableResolver: @Sendable () throws -> URL
+    private let gitExecutableValidator: @Sendable (URL) -> Bool
     private var gitExecutableURL: URL?
     private let snapshotTimeout: Duration
+    private let preSnapshotLockObserver: (@Sendable () throws -> Void)?
     private let postStageObserver: (@Sendable () throws -> Void)?
     private var didProbeGitExecutable = false
     private var activeSnapshotLease: POSIXAdvisoryFileLock.Lease?
@@ -34,7 +39,14 @@ actor GitRepository: VaultVersioning {
         vaultURL: URL,
         dataDirectory: VaultDataDirectory,
         snapshotTimeout: Duration = GitRepository.defaultSnapshotTimeout,
-        postStageObserver: (@Sendable () throws -> Void)? = nil
+        preSnapshotLockObserver: (@Sendable () throws -> Void)? = nil,
+        postStageObserver: (@Sendable () throws -> Void)? = nil,
+        gitExecutableResolver: @escaping @Sendable () throws -> URL = {
+            try AppleGitExecutable.resolve()
+        },
+        gitExecutableValidator: @escaping @Sendable (URL) -> Bool = {
+            AppleGitExecutable.isTrusted($0)
+        }
     ) throws {
         guard vaultURL.isFileURL,
               dataDirectory.snapshotRepositoryURL.isFileURL,
@@ -47,23 +59,54 @@ actor GitRepository: VaultVersioning {
         self.vaultRootIdentity = try VaultRootIdentity.capture(
             canonicalVaultURL
         )
+        let canonicalDataRootURL = dataDirectory.rootURL.standardizedFileURL
+            .resolvingSymlinksInPath()
+        self.privateDataRootURL = canonicalDataRootURL
+        let capturedPrivateDataRootIdentity = try VaultRootIdentity.capture(
+            canonicalDataRootURL
+        )
+        self.privateDataRootIdentity = capturedPrivateDataRootIdentity
+        let canonicalLockDirectoryURL = dataDirectory.lockDirectoryURL
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard canonicalLockDirectoryURL.deletingLastPathComponent()
+            == canonicalDataRootURL else {
+            throw VaultVersioningError.invalidRepositoryURL
+        }
+        let lockDirectoryIdentity = try VaultRootIdentity.capture(
+            canonicalLockDirectoryURL
+        )
         self.snapshotRepositoryURL = dataDirectory.snapshotRepositoryURL
             .standardizedFileURL.resolvingSymlinksInPath()
         self.snapshotWorkspaceDirectoryURL = dataDirectory.snapshotWorkspaceDirectoryURL
             .standardizedFileURL.resolvingSymlinksInPath()
-        self.snapshotLock = POSIXAdvisoryFileLock(
-            url: dataDirectory.lockDirectoryURL.appendingPathComponent(
-                "git-snapshot.lock"
-            )
+        let snapshotLockURL = canonicalLockDirectoryURL.appendingPathComponent(
+            "git-snapshot.lock"
         )
+        self.snapshotLock = POSIXAdvisoryFileLock(
+            url: snapshotLockURL,
+            descriptorOpener: {
+                try PrivateSnapshotLockFile.open(
+                    rootURL: canonicalDataRootURL,
+                    rootIdentity: capturedPrivateDataRootIdentity,
+                    directoryName: canonicalLockDirectoryURL.lastPathComponent,
+                    directoryIdentity: lockDirectoryIdentity,
+                    fileName: snapshotLockURL.lastPathComponent
+                )
+            }
+        )
+        self.gitExecutableResolver = gitExecutableResolver
+        self.gitExecutableValidator = gitExecutableValidator
         self.gitExecutableURL = nil
         self.snapshotTimeout = snapshotTimeout
+        self.preSnapshotLockObserver = preSnapshotLockObserver
         self.postStageObserver = postStageObserver
     }
 
     func recordSnapshot() async throws {
+        try validatePrivateDataRoot()
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: snapshotTimeout)
+        try preSnapshotLockObserver?()
         let lease: POSIXAdvisoryFileLock.Lease
         do {
             lease = try await snapshotLock.acquire(.exclusive, deadline: deadline)
@@ -75,8 +118,14 @@ actor GitRepository: VaultVersioning {
             activeSnapshotLease = nil
             lease.release()
         }
+        try validatePrivateDataRoot()
+        if let gitExecutableURL,
+           !gitExecutableValidator(gitExecutableURL) {
+            self.gitExecutableURL = nil
+            didProbeGitExecutable = false
+        }
         if gitExecutableURL == nil {
-            gitExecutableURL = try AppleGitExecutable.resolve()
+            gitExecutableURL = try gitExecutableResolver()
         }
         if !didProbeGitExecutable {
             try await requireSuccess(
@@ -130,14 +179,20 @@ private extension GitRepository {
     /// that no later snapshot reuses.
     func performSnapshot(deadline: ContinuousClock.Instant) async throws {
         try Task.checkCancellation()
-        try validateVaultRoot()
+        try validateSnapshotRoots()
         try await initializeRepository(deadline: deadline)
         let base = try await latestSnapshotBase(deadline: deadline)
+        try validatePrivateDataRoot()
         let workspace = try GitSnapshotIndexWorkspace.create(
             in: snapshotWorkspaceDirectoryURL,
             deadline: deadline
         )
-        defer { workspace.remove() }
+        defer {
+            if privateDataRootIdentity.matches(privateDataRootURL) {
+                workspace.remove()
+            }
+        }
+        try validatePrivateDataRoot()
 
         // Rebuild the narrow notes tree from an empty private index every time.
         // Besides simplifying deletion handling, this makes path identity come
@@ -163,7 +218,7 @@ private extension GitRepository {
         )
         try postStageObserver?()
         // Reject path replacement before traversing whatever now occupies it.
-        try validateVaultRoot()
+        try validateSnapshotRoots()
         if matchedNotes {
             try await validateStagedEntryModes(
                 index: workspace.file,
@@ -174,7 +229,7 @@ private extension GitRepository {
         // Staging and enumeration dereference the work-tree pathname. Recheck
         // the captured root identity before every success path, including
         // empty/no-op paths.
-        try validateVaultRoot()
+        try validateSnapshotRoots()
         if !matchedNotes, base.commit == nil {
             return
         }
@@ -205,7 +260,7 @@ private extension GitRepository {
 
         // This is the durability boundary. Only a newly named ref is required;
         // no user ref or reusable ref-lock path participates.
-        try validateVaultRoot()
+        try validateSnapshotRoots()
         try await requireSuccess(
             ["update-ref", reference, commit],
             deadline: deadline,
@@ -227,7 +282,9 @@ private extension GitRepository {
     /// Once valid, the durable repository is never reinitialized, so a stale
     /// fixed `config.lock` cannot block later snapshots.
     func initializeRepository(deadline: ContinuousClock.Instant) async throws {
+        try validatePrivateDataRoot()
         if repositoryPathExists(snapshotRepositoryURL) {
+            try retightenPrivateRepositoryRoot(snapshotRepositoryURL)
             try validatePrivateRepositoryDirectory(snapshotRepositoryURL)
             let probeArguments = ["rev-parse", "--is-bare-repository"]
             let probe = try await executeGit(
@@ -251,7 +308,13 @@ private extension GitRepository {
                 "git-snapshots-init-\(UUID().uuidString)",
                 isDirectory: true
             )
-        defer { try? FileManager.default.removeItem(at: temporaryRepository) }
+        var temporaryRepositoryIdentity: VaultRootIdentity?
+        defer {
+            if privateDataRootIdentity.matches(privateDataRootURL),
+               temporaryRepositoryIdentity?.matches(temporaryRepository) == true {
+                try? FileManager.default.removeItem(at: temporaryRepository)
+            }
+        }
         try await requireSuccess(
             [
                 "init", "--bare", "--object-format=sha1", "--ref-format=files",
@@ -260,16 +323,73 @@ private extension GitRepository {
             deadline: deadline,
             initialization: true
         )
+        temporaryRepositoryIdentity = try VaultRootIdentity.capture(
+            temporaryRepository
+        )
+        try validatePrivateDataRoot()
         guard Darwin.chmod(temporaryRepository.path, 0o700) == 0 else {
             throw CocoaError(.fileWriteNoPermission)
         }
+        try validatePrivateDataRoot()
         try validatePrivateRepositoryDirectory(temporaryRepository)
         try installAttributePolicy(in: temporaryRepository)
         try Task.checkCancellation()
+        try validatePrivateDataRoot()
         try FileManager.default.moveItem(
             at: temporaryRepository,
             to: snapshotRepositoryURL
         )
+        try validatePrivateDataRoot()
+    }
+
+    /// Repair only permissions on the already-opened, current-user-owned product
+    /// directory. `O_NOFOLLOW` keeps a substituted link outside this boundary.
+    func retightenPrivateRepositoryRoot(_ url: URL) throws {
+        let parent = try openValidatedPrivateDataRoot()
+        defer { Darwin.close(parent) }
+        let descriptor = Darwin.openat(
+            parent,
+            url.lastPathComponent,
+            O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        defer { Darwin.close(descriptor) }
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFDIR,
+              metadata.st_uid == Darwin.geteuid() else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        if metadata.st_mode & 0o777 != 0o700,
+           Darwin.fchmod(descriptor, 0o700) != 0 {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        try validatePrivateDataRoot()
+    }
+
+    func validatePrivateDataRoot() throws {
+        guard privateDataRootIdentity.matches(privateDataRootURL) else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+    }
+
+    func openValidatedPrivateDataRoot() throws -> Int32 {
+        let descriptor = Darwin.open(
+            privateDataRootURL.path,
+            O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0,
+              privateDataRootIdentity.matches(metadata) else {
+            Darwin.close(descriptor)
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        return descriptor
     }
 
     func installAttributePolicy(in repository: URL) throws {
@@ -440,6 +560,7 @@ private extension GitRepository {
         index: URL,
         deadline: ContinuousClock.Instant
     ) async throws {
+        try validatePrivateDataRoot()
         let arguments = [
             "ls-files", "--format=%(objectmode)", "--", "notes",
         ]
@@ -504,7 +625,25 @@ private extension GitRepository {
             }
         } catch is GitCommandDeadlineExceeded {
             throw VaultVersioningError.gitCommandTimedOut(arguments: arguments)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as SubprocessError
+            where error.code == .spawnFailed || error.code == .executableNotFound {
+            // Xcode or Command Line Tools can be replaced while the agent is
+            // running. A later recovery attempt must resolve the trusted binary
+            // again instead of retaining a path that can no longer launch.
+            self.gitExecutableURL = nil
+            didProbeGitExecutable = false
+            throw VaultVersioningError.trustedGitUnavailable
+        } catch {
+            throw VaultVersioningError.gitCommandFailed(
+                arguments: arguments,
+                status: "subprocess execution failed",
+                message: ""
+            )
         }
+
+        try validatePrivateDataRoot()
 
         guard scan.status.isSuccess else {
             throw VaultVersioningError.gitCommandFailed(
@@ -525,6 +664,11 @@ private extension GitRepository {
         guard vaultRootIdentity.matches(vaultURL) else {
             throw VaultVersioningError.vaultRootChanged
         }
+    }
+
+    func validateSnapshotRoots() throws {
+        try validateVaultRoot()
+        try validatePrivateDataRoot()
     }
 
     func validateNotesRoot() throws {
@@ -619,6 +763,7 @@ private extension GitRepository {
         inheritSnapshotLease: Bool = false
     ) async throws -> GitResult {
         try Task.checkCancellation()
+        try validatePrivateDataRoot()
         let clock = ContinuousClock()
         let remaining = clock.now.duration(to: deadline)
         guard remaining > .zero else {
@@ -645,8 +790,9 @@ private extension GitRepository {
             inheritSnapshotLease: inheritSnapshotLease
         )
 
+        let result: GitResult
         do {
-            return try await withThrowingTaskGroup(of: GitResult.self) { group in
+            result = try await withThrowingTaskGroup(of: GitResult.self) { group in
                 group.addTask {
                     let result = try await Subprocess.run(
                         .path(.init(executablePath)),
@@ -674,7 +820,25 @@ private extension GitRepository {
             }
         } catch is GitCommandDeadlineExceeded {
             throw VaultVersioningError.gitCommandTimedOut(arguments: arguments)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as SubprocessError
+            where error.code == .spawnFailed || error.code == .executableNotFound {
+            // Xcode or Command Line Tools can be replaced while the agent is
+            // running. A later recovery attempt must resolve the trusted binary
+            // again instead of retaining a path that can no longer launch.
+            self.gitExecutableURL = nil
+            didProbeGitExecutable = false
+            throw VaultVersioningError.trustedGitUnavailable
+        } catch {
+            throw VaultVersioningError.gitCommandFailed(
+                arguments: arguments,
+                status: "subprocess execution failed",
+                message: ""
+            )
         }
+        try validatePrivateDataRoot()
+        return result
     }
 
     func gitCommandArguments(
@@ -938,9 +1102,66 @@ private struct VaultRootIdentity: Sendable {
     func matches(_ url: URL) -> Bool {
         var metadata = stat()
         return Darwin.lstat(url.path, &metadata) == 0
-            && metadata.st_mode & S_IFMT == S_IFDIR
+            && matches(metadata)
+    }
+
+    func matches(_ metadata: stat) -> Bool {
+        metadata.st_mode & S_IFMT == S_IFDIR
             && metadata.st_dev == device
             && metadata.st_ino == inode
+    }
+}
+
+/// Opens the persistent snapshot lock strictly below the captured private data
+/// root. Every pathname component after the root is descriptor-relative and
+/// no-follow, so replacing an ancestor cannot create a file outside that root.
+private enum PrivateSnapshotLockFile {
+    static func open(
+        rootURL: URL,
+        rootIdentity: VaultRootIdentity,
+        directoryName: String,
+        directoryIdentity: VaultRootIdentity,
+        fileName: String
+    ) throws -> Int32 {
+        let rootDescriptor = Darwin.open(
+            rootURL.path,
+            O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW
+        )
+        guard rootDescriptor >= 0 else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        defer { Darwin.close(rootDescriptor) }
+        var rootMetadata = stat()
+        guard Darwin.fstat(rootDescriptor, &rootMetadata) == 0,
+              rootIdentity.matches(rootMetadata) else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+
+        let directoryDescriptor = Darwin.openat(
+            rootDescriptor,
+            directoryName,
+            O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW
+        )
+        guard directoryDescriptor >= 0 else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        defer { Darwin.close(directoryDescriptor) }
+        var directoryMetadata = stat()
+        guard Darwin.fstat(directoryDescriptor, &directoryMetadata) == 0,
+              directoryIdentity.matches(directoryMetadata) else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+
+        let lockDescriptor = Darwin.openat(
+            directoryDescriptor,
+            fileName,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard lockDescriptor >= 0 else {
+            throw VaultVersioningError.invalidPrivateRepository
+        }
+        return lockDescriptor
     }
 }
 
@@ -954,6 +1175,7 @@ struct GitSnapshotIndexWorkspace {
 
     let directory: URL
     let file: URL
+    private let directoryIdentity: VaultRootIdentity
 
     static func create(
         in root: URL,
@@ -984,10 +1206,22 @@ struct GitSnapshotIndexWorkspace {
             try? FileManager.default.removeItem(at: directory)
             throw CocoaError(.fileWriteNoPermission)
         }
-        return Self(directory: directory, file: directory.appendingPathComponent("index"))
+        let directoryIdentity: VaultRootIdentity
+        do {
+            directoryIdentity = try VaultRootIdentity.capture(directory)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+        return Self(
+            directory: directory,
+            file: directory.appendingPathComponent("index"),
+            directoryIdentity: directoryIdentity
+        )
     }
 
     func remove() {
+        guard directoryIdentity.matches(directory) else { return }
         try? FileManager.default.removeItem(at: directory)
     }
 
