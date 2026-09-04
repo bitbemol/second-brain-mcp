@@ -118,7 +118,7 @@ struct MCPServerSetup {
         try await server.start(transport: transport)
         log("MCP server started, accepting connections")
 
-        let startupRecoveryTask = await startupRecoveryGate.install {
+        _ = await startupRecoveryGate.install {
             do {
                 try await startupRecovery()
                 log("startup recovery completed")
@@ -129,13 +129,13 @@ struct MCPServerSetup {
         }
         await server.waitUntilCompleted()
         await toolCallLifecycle.closeAndDrain()
+        await startupRecoveryGate.shutdown()
         log("MCP transport completed; server shutting down")
-        _ = await startupRecoveryTask.result
     }
 
     private static func recoveryFailureMessage(for error: Error) -> String {
         let detail = (error as? any CallerSafeError).map { ": " + $0.callerSafeDescription } ?? ""
         return "Startup recovery failed; mutations remain unavailable" + detail
-            + ". Resolve the recovery failure and restart the server."
+            + ". Resolve the recovery failure; the next mutation will retry."
     }
 }

@@ -239,7 +239,10 @@ struct `Structured text routed CRUD` {
         )
 
         let dataDirectory = try makeTestDataDirectory(vaultPath: root.path)
-        let versioning = try GitRepository(repositoryURL: root)
+        let versioning = try GitRepository(
+            vaultURL: root,
+            dataDirectory: dataDirectory
+        )
         try await versioning.recordSnapshot()
         let store = VaultCRUDStore(vaultPath: root.path)
         let limits = ImageLimits.default

@@ -19,6 +19,19 @@ struct `Vault runtime recovery` {
     }
 
     @Test
+    func `Startup recovery holds shared vault access so reads remain available`() async throws {
+        let root = try makeVault()
+        let dataDirectory = try productionDataDirectory(for: root)
+        defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let runtime = try await VaultRuntime.bootstrap(
+            vaultPath: root,
+            injectedAccess: RejectingMutationAccess()
+        )
+
+        try await runtime.recoverPendingChanges()
+    }
+
+    @Test
     func `Initialization reports first public v2 version`() async throws {
         let root = try makeVault()
         let dataDirectory = try productionDataDirectory(for: root)
@@ -28,6 +41,7 @@ struct `Vault runtime recovery` {
             readOnly: true
         )
         let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
         let serverTask = Task {
             try await MCPServerSetup.start(
                 config: ServerConfig(vaultPath: root, readOnly: true),
@@ -73,6 +87,7 @@ struct `Vault runtime recovery` {
         defer { cleanup(root: root, dataDirectory: dataDirectory) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
         let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
         let serverTask = Task {
             try await MCPServerSetup.start(
                 config: ServerConfig(vaultPath: root, readOnly: false),
@@ -296,13 +311,16 @@ struct `Vault runtime recovery` {
 
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
         try await runtime.recoverPendingChanges()
+        let snapshotReference = try latestSnapshotReference(at: root)
 
         #expect(
-            try runGit(["status", "--porcelain", "--", "notes"], at: root)
-                .isEmpty
+            try runGit(
+                ["ls-tree", "-r", "--name-only", snapshotReference, "--", "notes"],
+                at: root
+            ).trimmingCharacters(in: .whitespacesAndNewlines) == "notes/pending.md"
         )
         #expect(
-            try runGit(["log", "-1", "--pretty=%s"], at: root)
+            try runGit(["log", "-1", "--pretty=%s", snapshotReference], at: root)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 == "Vault snapshot"
         )
@@ -330,10 +348,14 @@ struct `Vault runtime recovery` {
 
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
         try await runtime.recoverPendingChanges()
+        let snapshotReference = try latestSnapshotReference(at: root)
 
         #expect(
             try runGit(
-                ["ls-tree", "-r", "--name-only", "HEAD", "--", "references"],
+                [
+                    "ls-tree", "-r", "--name-only", snapshotReference,
+                    "--", "references",
+                ],
                 at: root
             ).isEmpty
         )
@@ -346,6 +368,7 @@ struct `Vault runtime recovery` {
         defer { cleanup(root: root, dataDirectory: dataDirectory) }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
         let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
         let marker = "PRIVATE_RECOVERY_MARKER"
         let serverTask = Task {
             try await MCPServerSetup.start(
@@ -416,8 +439,12 @@ struct `Vault runtime recovery` {
     private func runGit(_ arguments: [String], at root: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: root)
+        let dataDirectory = try productionDataDirectory(for: root)
+        process.arguments = [
+            "--git-dir=\(dataDirectory.snapshotRepositoryURL.path)",
+            "--work-tree=\(root)",
+            "-c", "core.bare=false",
+        ] + arguments
         let stdout = Pipe()
         process.standardOutput = stdout
         process.standardError = Pipe()
@@ -430,6 +457,16 @@ struct `Vault runtime recovery` {
             data: stdout.fileHandleForReading.readDataToEndOfFile(),
             encoding: .utf8
         ) ?? ""
+    }
+
+    private func latestSnapshotReference(at root: String) throws -> String {
+        try runGit([
+            "for-each-ref",
+            "--sort=-refname",
+            "--count=1",
+            "--format=%(refname)",
+            GitRepository.snapshotReferencePrefix,
+        ], at: root).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private enum RuntimeRecoveryGitInspectionError: Error {
@@ -491,11 +528,15 @@ private struct InjectedStartupRecoveryFailure: Error {}
 private actor FailingStartupRecoveryHold {
     private var entered = false
     private var finished = false
+    private var released = false
     private var entryWaiters: [CheckedContinuation<Void, Never>] = []
     private var finishWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiter: CheckedContinuation<Void, Never>?
 
     func run() async throws {
+        if released {
+            throw InjectedStartupRecoveryFailure()
+        }
         entered = true
         entryWaiters.forEach { $0.resume() }
         entryWaiters.removeAll()
@@ -517,6 +558,7 @@ private actor FailingStartupRecoveryHold {
     }
 
     func release() {
+        released = true
         releaseWaiter?.resume()
         releaseWaiter = nil
     }

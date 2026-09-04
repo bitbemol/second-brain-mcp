@@ -195,6 +195,7 @@ struct MediaImportDiagnosticsTests {
 struct MediaImportBoundaryFixture {
     let parent: URL
     let vault: URL
+    let snapshotRepository: URL
     let service: VaultFileService
     let versioning: MediaImportVersioning
 
@@ -207,7 +208,17 @@ struct MediaImportBoundaryFixture {
         vault = parent.appendingPathComponent("vault")
         try FileManager.default.createDirectory(at: vault.appendingPathComponent("notes"),
                                                 withIntermediateDirectories: true)
-        versioning = MediaImportVersioning(repository: try GitRepository(repositoryURL: vault))
+        let dataDirectory = try VaultDataDirectory.prepare(
+            vaultPath: vault.path,
+            supportRoot: parent.appendingPathComponent("support", isDirectory: true)
+        )
+        snapshotRepository = dataDirectory.snapshotRepositoryURL
+        versioning = MediaImportVersioning(
+            repository: try GitRepository(
+                vaultURL: vault,
+                dataDirectory: dataDirectory
+            )
+        )
         let sources = ExternalFileSourceValidator(vaultPath: vault.path)
         let limits = ImageLimits(maxLongEdge: 128, maxFileBytes: maximumImageBytes,
                                  maxMegapixels: 50, gifMaxFrames: 8,
@@ -247,7 +258,12 @@ struct MediaImportBoundaryFixture {
         #expect(mediaResultText(result).contains(revision))
         #expect(!mediaResultText(result).contains(source.path))
         #expect(await versioning.snapshots == 1)
-        #expect(FileManager.default.fileExists(atPath: vault.appendingPathComponent(".git/HEAD").path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: snapshotRepository.appendingPathComponent("HEAD").path
+            )
+        )
+        #expect(!FileManager.default.fileExists(atPath: vault.appendingPathComponent(".git").path))
         return stored
     }
 

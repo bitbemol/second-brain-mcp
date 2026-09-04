@@ -26,7 +26,11 @@ struct MCPShutdownMutationTests {
         )
         let target = root.appendingPathComponent("notes/durable.log")
         let expected = Data("durable bytes before shutdown\n".utf8)
-        let versioning = try ShutdownSnapshotHold(root: root, persistedFile: target)
+        let versioning = try ShutdownSnapshotHold(
+            root: root,
+            dataDirectory: dataDirectory,
+            persistedFile: target
+        )
         defer { versioning.release() }
         let sources = ExternalFileSourceValidator(vaultPath: root.path)
         let catalog = FileFormatCatalogFactory.build(
@@ -45,6 +49,10 @@ struct MCPShutdownMutationTests {
             mutations: VaultMutationExecutor(versioning: versioning), access: access
         )
         let transports = await InMemoryTransport.createConnectedPair()
+        // InMemoryTransport drops messages delivered before its peer connects.
+        // Preconnect the server endpoint so Client.connect() cannot lose its
+        // initialize request while the server task is only scheduled.
+        try await transports.server.connect()
         let returned = Mutex(false)
         let serverTask = Task {
             defer { returned.withLock { $0 = true } }
@@ -83,9 +91,57 @@ struct MCPShutdownMutationTests {
         #expect(versioning.succeeded, "Cancellation must not abandon the post-persistence Git transaction")
         #expect(versioning.calls == 1)
         #expect(try Data(contentsOf: target) == expected)
-        let reflog = try String(contentsOf: root.appendingPathComponent(".git/logs/HEAD"), encoding: .utf8)
-        #expect(reflog.contains("Vault snapshot"))
+        let snapshotReference = try latestShutdownSnapshotReference(
+            in: root,
+            dataDirectory: dataDirectory
+        )
+        #expect(
+            try runShutdownGit(
+                ["log", "-1", "--pretty=%s", snapshotReference],
+                in: root,
+                dataDirectory: dataDirectory
+            ) == "Vault snapshot"
+        )
     }
+}
+
+private func latestShutdownSnapshotReference(
+    in root: URL,
+    dataDirectory: VaultDataDirectory
+) throws -> String {
+    try runShutdownGit([
+        "for-each-ref",
+        "--sort=-refname",
+        "--count=1",
+        "--format=%(refname)",
+        GitRepository.snapshotReferencePrefix,
+    ], in: root, dataDirectory: dataDirectory)
+}
+
+private func runShutdownGit(
+    _ arguments: [String],
+    in root: URL,
+    dataDirectory: VaultDataDirectory
+) throws -> String {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = [
+        "--git-dir=\(dataDirectory.snapshotRepositoryURL.path(percentEncoded: false))",
+        "--work-tree=\(root.path(percentEncoded: false))",
+        "-c", "core.bare=false",
+    ] + arguments
+    process.standardOutput = output
+    process.standardError = Pipe()
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw CocoaError(.fileReadUnknown)
+    }
+    return String(
+        decoding: output.fileHandleForReading.readDataToEndOfFile(),
+        as: UTF8.self
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 private func mutationShutdownEventually(
@@ -113,8 +169,12 @@ private final class ShutdownSnapshotHold: VaultVersioning, Sendable {
     private let git: GitRepository
     private let persistedFile: URL
 
-    init(root: URL, persistedFile: URL) throws {
-        self.git = try GitRepository(repositoryURL: root)
+    init(
+        root: URL,
+        dataDirectory: VaultDataDirectory,
+        persistedFile: URL
+    ) throws {
+        self.git = try GitRepository(vaultURL: root, dataDirectory: dataDirectory)
         self.persistedFile = persistedFile
     }
 

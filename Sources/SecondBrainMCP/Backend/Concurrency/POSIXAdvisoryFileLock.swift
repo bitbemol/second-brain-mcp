@@ -30,9 +30,11 @@ struct POSIXAdvisoryFileLock: Sendable {
     /// Held descriptor whose close releases the advisory lock after crashes too.
     final class Lease: @unchecked Sendable {
         private let mutex = NSLock()
+        private let path: String
         private var descriptor: Int32?
 
-        fileprivate init(descriptor: Int32) {
+        fileprivate init(descriptor: Int32, path: String) {
+            self.path = path
             self.descriptor = descriptor
         }
 
@@ -43,11 +45,38 @@ struct POSIXAdvisoryFileLock: Sendable {
             descriptor = nil
             mutex.unlock()
             guard let current else { return }
-            _ = POSIXAdvisoryFileLock.setLock(
-                descriptor: current,
-                type: Int16(F_UNLCK)
-            )
+            // Closing is the release operation for an OFD lock. Do not issue
+            // F_UNLCK: a spawned child may share this open-file description
+            // specifically so the lock survives a killed parent until the
+            // child itself exits.
             _ = Darwin.close(current)
+        }
+
+        /// Descriptor marked as inherited by one protected child process.
+        private func descriptorForChildInheritance() throws -> Int32 {
+            mutex.lock()
+            defer { mutex.unlock() }
+            guard let descriptor else {
+                throw LockError(path: path, operation: "inherit", code: EBADF)
+            }
+            return descriptor
+        }
+
+        /// Adds the held open-file description to one child's spawn actions.
+        func addChildInheritance(
+            to fileActions: inout posix_spawn_file_actions_t?
+        ) throws {
+            let descriptor = try descriptorForChildInheritance()
+            // Unlike dup2 to a magic descriptor, addinherit has no source/
+            // destination collision and clears FD_CLOEXEC for this spawn even
+            // when POSIX_SPAWN_CLOEXEC_DEFAULT is active.
+            let status = posix_spawn_file_actions_addinherit_np(
+                &fileActions,
+                descriptor
+            )
+            guard status == 0 else {
+                throw LockError(path: path, operation: "inherit", code: status)
+            }
         }
 
         deinit { release() }
@@ -110,7 +139,7 @@ struct POSIXAdvisoryFileLock: Sendable {
             }
             try Task.checkCancellation()
             if let deadline, ContinuousClock.now >= deadline { throw DeadlineExceeded() }
-            return Lease(descriptor: descriptor)
+            return Lease(descriptor: descriptor, path: url.path)
         } catch {
             _ = Darwin.close(descriptor)
             throw error

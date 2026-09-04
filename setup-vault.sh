@@ -81,7 +81,7 @@ This vault is managed by **SecondBrainMCP**. Here's how it works:
 ## Tips
 
 - Notes support YAML frontmatter for titles and tags
-- Every edit is automatically committed to git
+- Every successful edit is privately snapshotted for recovery
 - Deleted notes go to `.trash/` — nothing is permanently lost
 - Use tags to organize: `tags: [project, swift, idea]`
 

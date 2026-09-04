@@ -5,7 +5,7 @@ A local MCP server in Swift that gives MCP clients bounded file discovery, locat
 ```
 stdio-capable MCP client ──> SecondBrainMCP
                                   |
-                                  +── notes/       (supported files, read/write, git tracked)
+                                  +── notes/       (supported files, read/write, privately snapshotted)
                                   +── references/  (supported files, read-only)
 ```
 
@@ -17,12 +17,12 @@ stdio-capable MCP client ──> SecondBrainMCP
 - **Concrete format routing** — Markdown, Canvas, JSON, CSV, HAR, patch/diff, log, common images, and PDF, each with explicitly registered operations
 - **Bounded text reads** — UTF-8 documents default to 64 KiB revision-guarded chunks with explicit continuation metadata; no silent truncation or split Unicode scalars
 - **Multi-agent-safe vault access** — concurrent reads overlap, complete mutations are exclusive through their Git snapshot, and exact-byte revisions reject stale updates and deletes
-- **Git snapshots** — note changes request a local `Vault snapshot`; concurrent agents may share one recovery point, and `references/` is never included
+- **Git snapshots without user-repository contention** — note changes are recorded in a private bare repository outside the vault; the user's `.git`, `HEAD`, staging index, refs, configuration, hooks, attributes, and locks are never borrowed or changed
 - **Soft deletes** — deleted files move to `.trash/`, never permanently removed; parent directories and their unrelated contents are preserved
 - **Atomic PDF page reading** — each requested physical page returns bounded extracted text plus a PNG image; single pages, ordered page sets, and inclusive ranges are supported
 - **Read-only mode** — `--read-only` hides write tools and disables vault migration/Git mutation in the backend
 - **Path security** — symlink resolution, traversal prevention, extension allowlists
-- **Works alongside Obsidian, iA Writer, Logseq** — the vault is plain Markdown; app config directories are ignored
+- **Works alongside Obsidian, iA Writer, Logseq** — only `notes/` enters recovery snapshots; root-level editor state such as `.obsidian/` is outside the snapshot scope
 - **Custom instructions** — drop an `INSTRUCTIONS.md` in your vault root to define your own conventions
 
 ## Quick Start
@@ -165,17 +165,26 @@ If new tools still don't appear, confirm the client's `command` points at `.buil
 
 ```
 ~/SecondBrain/
-├── notes/              <- Supported files (editable, git tracked)
+├── notes/              <- Supported files (editable, privately snapshotted)
 │   ├── projects/
 │   ├── journal/
 │   └── artifacts/
 ├── references/         <- PDF/image reference library (read-only)
 ├── INSTRUCTIONS.md     <- Optional: custom rules for the AI (see below)
-├── .git/               <- Auto-created on first run
+├── .git/               <- Optional user-owned repository; never managed by SecondBrainMCP
+├── .obsidian/          <- Optional editor state; outside SecondBrainMCP snapshot scope
 └── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes into Git, so initialization and tool discovery do not wait behind a large or contended snapshot. Mutating tool calls remain gated until that recovery finishes; reads are accepted immediately but may wait on the vault's shared/exclusive access lease while recovery holds it. If recovery fails after connection, the server stays connected for discovery and reads while every mutation reports the recovery error instead of terminating the process; restart after correcting the Git or storage failure. Recovery and transport completion are logged to stderr. On input EOF, the server closes tool admission, cancels outstanding calls and waits for their work to unwind; persistence that has already started still finishes its required Git snapshot. This does not protect against forced process termination. Read-only startup leaves the vault untouched.
+Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes, so initialization and tool discovery do not wait behind a large or contended snapshot. Recovery holds a shared vault lease: reads and discovery remain available while mutations wait for recovery to finish. If recovery fails after connection, the server stays connected for discovery and reads while the current mutation reports the recovery error instead of terminating the process; after the underlying Git or storage condition is corrected, the next mutation retries recovery without requiring a server restart. Recovery and transport completion are logged to stderr. On input EOF, the server closes tool admission, cancels outstanding calls, and waits for their work to unwind; persistence that has already started still finishes its required snapshot. Read-only startup neither initializes snapshots nor resolves Git.
+
+Writable mode stores recovery history in a per-vault bare repository at `~/Library/Application Support/SecondBrainMCP/<vault-path-hash>/git-snapshots-v1.git`, with UUID-isolated transaction indexes beside it. Each transaction rebuilds only the current `notes/` tree and publishes a uniquely named private ref under `refs/second-brain-mcp/snapshots/`. A dedicated cross-process lock serializes that private repository. The complete snapshot attempt, including lock admission, has a cooperative 120-second deadline; an overrunning Git child has its process group terminated and reports snapshot failure instead of waiting indefinitely. As with any local application, an underlying kernel filesystem call that never returns cannot be universally interrupted in user space.
+
+SecondBrainMCP never creates, reads, changes, unlocks, repairs, or waits for a vault `.git` repository or `.git/index.lock`. User ignore rules, sparse-checkout state, hooks, attributes, filters, staged files, branches, and worktrees are not part of the snapshot boundary. Root-level Obsidian/editor files and every other path outside `notes/` are not scanned or snapshotted, and SecondBrainMCP does not add `.gitignore` rules for third-party tools. Consequently, `git status` and Xcode's Changes view continue to show only the user's own repository state; commit or ignore those files according to that repository's policy.
+
+Snapshots force inclusion of the exact regular-file bytes under `notes/`, independent of user ignore and attribute rules. Symbolic links, special filesystem entries, and nested Git repositories under `notes/` fail closed because they cannot be represented as recoverable note bytes. The product accepts only a canonical Apple-signed Git executable found in the selected developer directory, Xcode, Xcode beta, or Command Line Tools; `/usr/bin/git` shims are rejected. Upgrading from the former user-repository snapshot design creates a private baseline from the current `notes/` state and leaves all old user refs/history untouched. Moving or copying a vault to another canonical path creates a separate private baseline because private storage is keyed by that path.
+
+Exact recovery deliberately examines the complete `notes/` corpus rather than trusting cached file metadata, so snapshot work scales with the number and size of notes. This is what lets a mutation coalesce ordinary edits made by another local app without risking stale recovery bytes. Keep editor caches, generated data, and bulky non-note content outside `notes/`; exceptionally large or slow/cloud-backed note trees can reach the cooperative 120-second failure boundary. A retained Git index would be faster but would weaken this exact-current-tree guarantee, so it is not used as a hidden optimization.
 
 ## CLI Flags
 
@@ -325,7 +334,7 @@ The matrix and each format's create input and update modes come from one exhaust
 Format-specific CRUD behavior stays behind the four endpoints:
 
 - HAR input must have a valid, duplicate-key-free HAR `log` structure, including `version`, `creator.name`, and `entries` (an empty entries array is valid). Malformed input returns corrective `INVALID_REQUEST` guidance without internal parser details. Authorization/cookie headers, cookies, URL user information, authentication parameters, and credential fields in JSON/form request bodies are redacted before Git persistence; reads validate the complete sanitized archive before returning a bounded text chunk.
-- Git-tracked text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
+- Privately snapshotted text writes reject high-confidence bearer, session, JWT, and provider-token patterns before persistence. Diagnostics identify the detector and line without repeating the credential; explicit redaction and documentation placeholders remain valid.
 - Patch input must be a unified diff; reads validate the complete diff before returning a bounded text chunk.
 - Logs default to the last 500 records, support bounded line ranges or revision-guarded byte pagination, reject a selected line window above the response ceiling, and can only be appended. A final newline terminates a record rather than adding an empty one; empty logs have zero records, consecutive delimiters preserve intentional blank records, and CRLF counts as one delimiter. Byte-window reads preserve the original bytes and exact revisions.
 - JSON accepts any valid top-level JSON value, preserves its original representation, validates the complete document, and supports revision-guarded chunk reads plus replacement or exact text patches.
@@ -358,7 +367,7 @@ The server appends the file contents to its default instructions during startup.
 ## Security
 
 - **Path traversal prevention** — all paths validated through `PathValidator` with symlink resolution
-- **No caller-selected commands** — only `/usr/bin/git`, with programmatic argument arrays
+- **No caller-selected commands** — only a validated canonical Apple-signed Git executable, with programmatic argument arrays and no shell
 - **Structural write boundaries** — `WritableFileTarget` cannot represent a path under `references/`
 - **Soft deletes only** — files are never permanently deleted
 - **Fixed Git snapshot identity** — callers cannot select commit messages; hooks and signing are disabled
@@ -442,7 +451,7 @@ flowchart TB
     end
 
     Vault[("Vault filesystem<br/>notes / references / .trash")]
-    Git[(".git snapshots")]
+    Git[("Private Application Support<br/>Git snapshots")]
 
     Client --> Server
     FileAdapter --> FilePort --> FileCore
@@ -501,7 +510,7 @@ flowchart TD
     Executor["VaultMutationExecutor<br/>owns mutation sequencing"]
     Versioning["VaultVersioning"]
     Vault[("Vault filesystem")]
-    Git[(".git snapshot")]
+    Git[("Private Git snapshot")]
     Result["Awaited result<br/>mapped back to MCP"]
 
     Tools --> Port --> Service --> Catalog

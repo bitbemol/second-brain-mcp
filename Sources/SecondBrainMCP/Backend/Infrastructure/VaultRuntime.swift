@@ -29,14 +29,18 @@ struct VaultRuntime: Sendable {
                 .appendingPathComponent("vault-access.lock")
         )
         let versioning = try GitRepository(
-            repositoryURL: URL(fileURLWithPath: vaultPath, isDirectory: true)
+            vaultURL: URL(fileURLWithPath: vaultPath, isDirectory: true),
+            dataDirectory: dataDirectory
         )
         let startupRecovery: @Sendable () async throws -> Void
         if readOnly {
             startupRecovery = { @Sendable in }
         } else {
             startupRecovery = { @Sendable in
-                try await access.withMutation {
+                // Startup only observes bytes left by an earlier process. A
+                // shared vault lease keeps reads responsive while the
+                // product-owned snapshot lock serializes Git bookkeeping.
+                try await access.withRead {
                     try await versioning.recordSnapshot()
                 }
             }

@@ -1,4 +1,6 @@
+import Darwin
 import Foundation
+import Subprocess
 import Testing
 @testable import second_brain_mcp
 
@@ -150,6 +152,113 @@ struct `POSIX advisory file lock` {
         next.release()
     }
 
+    /// A child that outlives a killed host must retain the same OFD lease, so a
+    /// replacement host cannot overlap product Git against the same repository.
+    @Test
+    func `An inherited lease excludes a writer after the parent releases`() async throws {
+        let url = try lockURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let lock = POSIXAdvisoryFileLock(url: url, retryNanoseconds: 1_000_000)
+        let holder = try await lock.acquire(.exclusive)
+        let lifetime = ChildProcessLifetimeProbe()
+        var options = PlatformOptions()
+        options.processGroupID = 0
+        options.preSpawnProcessConfigurator = { _, fileActions in
+            try holder.addChildInheritance(to: &fileActions)
+        }
+        let child = Task {
+            try await Subprocess.run(
+                .path("/bin/cat"),
+                platformOptions: options,
+                input: .inputWriter,
+                output: .discarded,
+                error: .discarded
+            ) { execution in
+                await lifetime.markStarted()
+                await lifetime.waitUntilReleased()
+                try await execution.standardInputWriter.finish()
+            }
+        }
+        await lifetime.waitUntilStarted()
+
+        holder.release()
+        await #expect(throws: POSIXAdvisoryFileLock.DeadlineExceeded.self) {
+            _ = try await lock.acquire(
+                .exclusive,
+                deadline: .now.advanced(by: .milliseconds(30))
+            )
+        }
+
+        await lifetime.release()
+        _ = try await child.value
+        let next = try await lock.acquire(
+            .exclusive,
+            deadline: .now.advanced(by: .seconds(1))
+        )
+        next.release()
+    }
+
+    /// Certifies the exact production executable boundary: canonical Apple Git
+    /// must retain the inherited OFD while it is alive, not just a test child.
+    @Test
+    func `Apple Git retains the inherited snapshot lease for its lifetime`() async throws {
+        let url = try lockURL()
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = directory.appendingPathComponent("repo.git")
+        let executable = try AppleGitExecutable.resolve()
+        let initialized = try await Subprocess.run(
+            .path(.init(executable.path)),
+            arguments: ["init", "--bare", repository.path],
+            output: .discarded,
+            error: .string(limit: 8 * 1024)
+        )
+        #expect(initialized.terminationStatus.isSuccess)
+
+        let lock = POSIXAdvisoryFileLock(url: url, retryNanoseconds: 1_000_000)
+        let holder = try await lock.acquire(.exclusive)
+        let lifetime = ChildProcessLifetimeProbe()
+        var options = PlatformOptions()
+        options.processGroupID = 0
+        options.preSpawnProcessConfigurator = { _, fileActions in
+            try holder.addChildInheritance(to: &fileActions)
+        }
+        let child = Task {
+            try await Subprocess.run(
+                .path(.init(executable.path)),
+                arguments: [
+                    "--git-dir=\(repository.path)", "cat-file", "--batch",
+                ],
+                platformOptions: options,
+                input: .inputWriter,
+                output: .discarded,
+                error: .string(limit: 8 * 1024)
+            ) { execution in
+                await lifetime.markStarted()
+                await lifetime.waitUntilReleased()
+                try await execution.standardInputWriter.finish()
+            }
+        }
+        await lifetime.waitUntilStarted()
+
+        holder.release()
+        await #expect(throws: POSIXAdvisoryFileLock.DeadlineExceeded.self) {
+            _ = try await lock.acquire(
+                .exclusive,
+                deadline: .now.advanced(by: .milliseconds(30))
+            )
+        }
+
+        await lifetime.release()
+        let completed = try await child.value
+        #expect(completed.terminationStatus.isSuccess)
+        let next = try await lock.acquire(
+            .exclusive,
+            deadline: .now.advanced(by: .seconds(1))
+        )
+        next.release()
+    }
+
     private func lockURL() throws -> URL {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(
@@ -161,6 +270,52 @@ struct `POSIX advisory file lock` {
             withIntermediateDirectories: true
         )
         return directory.appendingPathComponent("coordination.lock")
+    }
+
+}
+
+private actor ChildProcessStartProbe {
+    private var started = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        started = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
+private actor ChildProcessLifetimeProbe {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        started = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func waitUntilReleased() async {
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
     }
 }
 

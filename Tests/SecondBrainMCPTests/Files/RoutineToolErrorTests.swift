@@ -318,7 +318,17 @@ struct RoutineToolErrorTests {
             try FileManager.default.createDirectory(at: vault.appendingPathComponent("notes"),
                                                     withIntermediateDirectories: true)
             let access = VaultAccessCoordinator(lockURL: parent.appendingPathComponent("vault.lock"))
-            versioning = SnapshotRecorder(repository: try GitRepository(repositoryURL: vault), failure: snapshotFailure)
+            let dataDirectory = try VaultDataDirectory.prepare(
+                vaultPath: vault.path,
+                supportRoot: parent.appendingPathComponent("support", isDirectory: true)
+            )
+            versioning = SnapshotRecorder(
+                repository: try GitRepository(
+                    vaultURL: vault,
+                    dataDirectory: dataDirectory
+                ),
+                failure: snapshotFailure
+            )
             let sources = ExternalFileSourceValidator(vaultPath: vault.path)
             let catalog = FileFormatCatalogFactory.build(
                 imageReader: ImageReader(encoder: CoreGraphicsImageEncoder(), limits: .default),

@@ -12,12 +12,24 @@ struct VaultDataDirectory: Sendable {
     let lockDirectoryURL: URL
     /// Derived persistent search data that never enters the managed vault.
     let searchIndexDirectoryURL: URL
+    /// Product-owned bare repository containing recoverable note snapshots.
+    let snapshotRepositoryURL: URL
+    /// Private transaction indexes used only while publishing one snapshot.
+    let snapshotWorkspaceDirectoryURL: URL
 
     private init(rootURL: URL) {
         self.rootURL = rootURL
         self.lockDirectoryURL = rootURL.appendingPathComponent("locks", isDirectory: true)
         self.searchIndexDirectoryURL = rootURL.appendingPathComponent(
             "search-index",
+            isDirectory: true
+        )
+        self.snapshotRepositoryURL = rootURL.appendingPathComponent(
+            "git-snapshots-v1.git",
+            isDirectory: true
+        )
+        self.snapshotWorkspaceDirectoryURL = rootURL.appendingPathComponent(
+            "git-snapshot-workspaces-v1",
             isDirectory: true
         )
     }
@@ -59,10 +71,15 @@ struct VaultDataDirectory: Sendable {
                 isDirectory: true
             )
         )
-        try prepareDirectory(directory.rootURL, fileManager: fileManager)
-        try prepareDirectory(directory.lockDirectoryURL, fileManager: fileManager)
+        try preparePrivateDirectory(directory.rootURL, fileManager: fileManager)
+        try preparePrivateDirectory(directory.lockDirectoryURL, fileManager: fileManager)
         try preparePrivateDirectory(
             directory.searchIndexDirectoryURL,
+            fileManager: fileManager
+        )
+        try validatePrivateDirectoryIfPresent(directory.snapshotRepositoryURL)
+        try preparePrivateDirectory(
+            directory.snapshotWorkspaceDirectoryURL,
             fileManager: fileManager
         )
         return directory
@@ -75,38 +92,45 @@ struct VaultDataDirectory: Sendable {
             .joined()
     }
 
-    /// Creates one process-owned directory and refuses symlink substitutions.
-    private static func prepareDirectory(
+    /// Process data can contain derived or snapshotted vault bytes. Refuse a
+    /// symlink substitution, require current-user ownership, and repair older
+    /// installations that created a directory with broader permissions.
+    private static func preparePrivateDirectory(
         _ url: URL,
         fileManager: FileManager
     ) throws {
-        if !fileManager.fileExists(atPath: url.path) {
+        var value = stat()
+        if Darwin.lstat(url.path, &value) != 0 {
+            guard errno == ENOENT else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
             try fileManager.createDirectory(
                 at: url,
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
         }
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-    }
-
-    /// Derived search data may contain extracted vault text, so its directory
-    /// must remain private even when an older installation created it loosely.
-    private static func preparePrivateDirectory(
-        _ url: URL,
-        fileManager: FileManager
-    ) throws {
-        try prepareDirectory(url, fileManager: fileManager)
-        var value = stat()
         guard Darwin.lstat(url.path, &value) == 0,
               value.st_mode & S_IFMT == S_IFDIR,
               value.st_uid == geteuid() else {
             throw CocoaError(.fileWriteNoPermission)
         }
         guard Darwin.chmod(url.path, 0o700) == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
+    /// Read-only bootstrap must not initialize Git, but an existing durable
+    /// repository still has to satisfy the same private-storage boundary.
+    private static func validatePrivateDirectoryIfPresent(_ url: URL) throws {
+        var value = stat()
+        guard Darwin.lstat(url.path, &value) == 0 else {
+            guard errno == ENOENT else { throw CocoaError(.fileWriteNoPermission) }
+            return
+        }
+        guard value.st_mode & S_IFMT == S_IFDIR,
+              value.st_uid == geteuid(),
+              Darwin.chmod(url.path, 0o700) == 0 else {
             throw CocoaError(.fileWriteNoPermission)
         }
     }

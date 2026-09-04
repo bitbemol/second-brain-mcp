@@ -190,6 +190,7 @@ struct SearchAcceptanceTests {
 
     private func discoveredTool(runtime: VaultRuntime, root: URL, search: any VaultSearchService) async throws -> Tool {
         let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
         let server = Task {
             try await MCPServerSetup.start(
                 config: ServerConfig(vaultPath: root.path, readOnly: true),

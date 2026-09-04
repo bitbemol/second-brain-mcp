@@ -150,7 +150,16 @@ struct DirectoryMovePlaceholderTests {
                 at: source.appendingPathComponent("attachments"), withIntermediateDirectories: true
             )
             try Data("# Ticket\n".utf8).write(to: source.appendingPathComponent("overview.md"))
-            versioning = RecordingVersioning(repository: try GitRepository(repositoryURL: root))
+            let dataDirectory = try VaultDataDirectory.prepare(
+                vaultPath: root.path,
+                supportRoot: root.appendingPathComponent(".test-support", isDirectory: true)
+            )
+            versioning = RecordingVersioning(
+                repository: try GitRepository(
+                    vaultURL: root,
+                    dataDirectory: dataDirectory
+                )
+            )
             service = VaultPathMoveService(
                 vaultPath: root.path, supportedFileFormats: [.markdown, .json, .har],
                 versioning: versioning,

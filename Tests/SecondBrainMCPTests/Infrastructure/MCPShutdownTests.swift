@@ -63,6 +63,7 @@ struct MCPShutdownTests {
         }
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root.path, readOnly: true)
         let transports = await InMemoryTransport.createConnectedPair()
+        try await transports.server.connect()
         let hold = ShutdownSearchHold()
         defer { hold.release() }
         let completed = Mutex(false)

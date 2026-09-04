@@ -52,8 +52,13 @@ details belong in code and tests.
   descriptor snapshot before decoding.
 - Text prepared through MCP is credential-screened before persistence. HAR redaction is the explicit
   transformation exception. Never include secret values in errors or logs.
-- `GitRepository` invoking fixed `/usr/bin/git` is the only subprocess boundary. Never add
-  caller-selected commands, shells, hooks, signing, or another `Process` site.
+- Validated canonical Apple Git is the only product subprocess. Reject `/usr/bin/git` shims; require
+  a canonical regular executable satisfying `identifier "com.apple.git" and anchor apple`, and probe
+  it inside the sandbox. Snapshots use a product-owned bare repository, UUID-isolated index, unique
+  private ref, and dedicated cross-process lock outside the vault. Never inspect, initialize, change,
+  unlock, repair, or wait for user Git state. Disable inherited configuration, attributes, filters,
+  hooks, signing, and maintenance; bound the complete snapshot attempt and terminate its process group
+  on timeout. Never add caller-selected commands, shells, or another product subprocess site.
 - `VaultMutationExecutor` owns prepared persistence followed by required
   `VaultVersioning.recordSnapshot()` under the global exclusive vault mutation lease. Keep the lease
   through persistence and snapshot; propagate snapshot failure even if bytes already changed.
@@ -65,8 +70,9 @@ details belong in code and tests.
   reintroduce array front-removal or full-queue scans.
 - Capture a readable file once per protected operation and use that immutable snapshot throughout.
   Keep preparation separate from persistence and check cancellation before expensive or queued work.
-- Writable startup connects transport before pending Git recovery. Reads and discovery remain available;
-  mutations await the recovery gate and surface a persistent recovery failure rather than terminating.
+- Writable startup connects transport before pending Git recovery. Recovery holds a shared vault lease
+  plus the dedicated snapshot lock, so reads and discovery remain available while mutations await one
+  shared recovery attempt; a later mutation retries after a failed attempt.
 - Only explicitly audited `CallerSafeError` values may cross the MCP boundary verbatim. Unknown Cocoa,
   POSIX-wrapper, or internal errors receive stable generic messages without absolute paths.
 - Reject malformed or unsupported input; do not silently repair, infer hidden defaults, or weaken a

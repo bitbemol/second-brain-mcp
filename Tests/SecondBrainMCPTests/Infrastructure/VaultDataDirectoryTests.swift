@@ -21,6 +21,12 @@ struct `Vault process-data directory` {
         #expect(prepared.rootURL == repeated.rootURL)
         #expect(FileManager.default.fileExists(atPath: prepared.lockDirectoryURL.path))
         #expect(FileManager.default.fileExists(atPath: prepared.searchIndexDirectoryURL.path))
+        #expect(!FileManager.default.fileExists(atPath: prepared.snapshotRepositoryURL.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: prepared.snapshotWorkspaceDirectoryURL.path
+            )
+        )
         #expect(!FileManager.default.fileExists(
             atPath: prepared.rootURL.appendingPathComponent("audit.log").path
         ))
@@ -30,6 +36,18 @@ struct `Vault process-data directory` {
         #expect(searchIndexStat.st_mode & S_IFMT == S_IFDIR)
         #expect(searchIndexStat.st_uid == geteuid())
         #expect(searchIndexStat.st_mode & 0o077 == 0)
+
+        for privateURL in [
+            prepared.rootURL,
+            prepared.lockDirectoryURL,
+            prepared.snapshotWorkspaceDirectoryURL,
+        ] {
+            var privateStat = stat()
+            #expect(Darwin.lstat(privateURL.path, &privateStat) == 0)
+            #expect(privateStat.st_uid == geteuid())
+            #expect(privateStat.st_mode & S_IFMT == S_IFDIR)
+            #expect(privateStat.st_mode & 0o077 == 0)
+        }
     }
 
     @Test
@@ -52,6 +70,39 @@ struct `Vault process-data directory` {
         #expect(FileManager.default.fileExists(
             atPath: legacyRoot.appendingPathComponent("cache").path
         ))
+    }
+
+    @Test
+    func `Preparation repairs the private root and rejects a symlink replacement`() throws {
+        let roots = try makeRoots()
+        let prepared = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+        #expect(Darwin.chmod(prepared.rootURL.path, 0o755) == 0)
+
+        let repaired = try VaultDataDirectory.prepare(
+            vaultPath: roots.vault.path,
+            supportRoot: roots.support
+        )
+        var repairedStat = stat()
+        #expect(Darwin.lstat(repaired.rootURL.path, &repairedStat) == 0)
+        #expect(repairedStat.st_mode & 0o077 == 0)
+
+        let replacement = roots.support.appendingPathComponent("replacement")
+        try FileManager.default.createDirectory(
+            at: replacement,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.removeItem(at: repaired.rootURL)
+        #expect(symlink(replacement.path, repaired.rootURL.path) == 0)
+
+        #expect(throws: (any Error).self) {
+            _ = try VaultDataDirectory.prepare(
+                vaultPath: roots.vault.path,
+                supportRoot: roots.support
+            )
+        }
     }
 
     @Test

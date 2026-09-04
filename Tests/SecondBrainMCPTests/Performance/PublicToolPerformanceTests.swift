@@ -83,7 +83,10 @@ struct `Public tool performance baselines` {
             to: root.appendingPathComponent("notes/performance.md"),
             options: .atomic
         )
-        let repository = try GitRepository(repositoryURL: root)
+        let repository = try GitRepository(
+            vaultURL: root,
+            dataDirectory: dataDirectory
+        )
         let (_, gitSnapshotTime) = try await measure {
             try await repository.recordSnapshot()
         }
@@ -131,11 +134,45 @@ struct `Public tool performance baselines` {
         print("PUBLIC_TOOL_BASELINE " + values.joined(separator: " "))
 
         for duration in [
-            createTime, readTime, metadataReadTime, updateTime, searchTime, moveTime,
-            deleteTime,
+            createTime, readTime, metadataReadTime, updateTime, searchTime,
+            gitSnapshotTime, moveTime, deleteTime,
         ] {
             #expect(duration < .seconds(5))
         }
+    }
+
+    @Test
+    func `exact snapshot of ten thousand notes stays below the interactive ceiling`() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitCorpusPerformanceTests-\(UUID().uuidString)")
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        let support = root.appendingPathComponent("support", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let payload = Data("bounded note bytes\n".utf8)
+        for index in 0..<10_000 {
+            try payload.write(
+                to: notes.appendingPathComponent(String(format: "%05d.md", index))
+            )
+        }
+        let dataDirectory = try VaultDataDirectory.prepare(
+            vaultPath: root.path,
+            supportRoot: support
+        )
+        let repository = try GitRepository(
+            vaultURL: root,
+            dataDirectory: dataDirectory
+        )
+
+        let (_, elapsed) = try await measure {
+            try await repository.recordSnapshot()
+        }
+        print("GIT_10K_CORPUS_SNAPSHOT_MS \(milliseconds(elapsed))")
+        #expect(
+            elapsed < .seconds(10),
+            "Exact notes snapshots must remain interactive for a representative large file count"
+        )
     }
 
     @Test

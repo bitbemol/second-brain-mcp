@@ -51,8 +51,12 @@ struct `Vault path move service` {
     private func git(_ arguments: [String], root: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: root)
+        let dataDirectory = try VaultDataDirectory.prepare(vaultPath: root)
+        process.arguments = [
+            "--git-dir=\(dataDirectory.snapshotRepositoryURL.path)",
+            "--work-tree=\(root)",
+            "-c", "core.bare=false",
+        ] + arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()
@@ -60,6 +64,32 @@ struct `Vault path move service` {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw TestFailure.git }
         return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    }
+
+    private func userGit(_ arguments: [String], root: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", root] + arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw TestFailure.git }
+        return String(
+            decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+    }
+
+    private func snapshotReference(root: String) throws -> String {
+        try git([
+            "for-each-ref",
+            "--sort=-refname",
+            "--count=1",
+            "--format=%(refname)",
+            GitRepository.snapshotReferencePrefix,
+        ], root: root).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @Test
@@ -168,9 +198,12 @@ struct `Vault path move service` {
         #expect(search.results.map(\.path) == [
             "notes/completed/ticket-123/overview.md",
         ])
-        #expect(try git(["status", "--porcelain"], root: root).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root + "/.git"))
 
-        let commitCount = try git(["rev-list", "--count", "HEAD"], root: root)
+        let commitCount = try git(
+            ["rev-list", "--count", try snapshotReference(root: root)],
+            root: root
+        )
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "2")
     }
@@ -196,7 +229,7 @@ struct `Vault path move service` {
             contentsOf: URL(fileURLWithPath: root + "/notes/completed/overview.md")
         ) == original)
         #expect(output.metadata?.revision == revision)
-        #expect(try git(["status", "--porcelain"], root: root).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root + "/.git"))
     }
 
     @Test
@@ -374,7 +407,7 @@ struct `Vault path move service` {
             withIntermediateDirectories: true
         )
         let runtime = try await makeRecoveredRuntime(vaultPath: root)
-        let before = try git(["rev-list", "--count", "HEAD"], root: root)
+        let before = try snapshotReference(root: root)
 
         _ = try await runtime.paths.move(MovePathRequest.directory(
 
@@ -388,7 +421,7 @@ struct `Vault path move service` {
         #expect(FileManager.default.fileExists(
             atPath: root + "/notes/completed/empty"
         ))
-        #expect(try git(["rev-list", "--count", "HEAD"], root: root) == before)
+        #expect(try snapshotReference(root: root) == before)
     }
 
     @Test
@@ -501,7 +534,9 @@ struct `Vault path move service` {
         #expect(!FileManager.default.fileExists(
             atPath: root + "/notes/completed/ticket-123"
         ))
-        #expect(try git(["log", "-1", "--pretty=%s"], root: root)
+        #expect(try git([
+            "log", "-1", "--pretty=%s", try snapshotReference(root: root),
+        ], root: root)
             .contains("Vault snapshot"))
     }
 
@@ -529,7 +564,9 @@ struct `Vault path move service` {
         #expect(!FileManager.default.fileExists(
             atPath: root + "/notes/completed/ticket-123"
         ))
-        #expect(try git(["rev-list", "--count", "HEAD"], root: root)
+        #expect(try git([
+            "rev-list", "--count", try snapshotReference(root: root),
+        ], root: root)
             .trimmingCharacters(in: .whitespacesAndNewlines) == "1")
     }
 
@@ -558,7 +595,9 @@ struct `Vault path move service` {
         #expect(!FileManager.default.fileExists(
             atPath: root + "/notes/completed/ticket-123"
         ))
-        #expect(try git(["rev-list", "--count", "HEAD"], root: root)
+        #expect(try git([
+            "rev-list", "--count", try snapshotReference(root: root),
+        ], root: root)
             .trimmingCharacters(in: .whitespacesAndNewlines) == "1")
     }
 
@@ -589,10 +628,12 @@ struct `Vault path move service` {
 
         for value in modes {
             let path = "notes/completed/ticket-123/" + value.name
-            #expect(try git(["ls-tree", "HEAD", "--", path], root: root)
+            #expect(try git([
+                "ls-tree", try snapshotReference(root: root), "--", path,
+            ], root: root)
                 .hasPrefix("100644 blob "))
         }
-        #expect(try git(["status", "--porcelain"], root: root).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root + "/.git"))
     }
 
     @Test
@@ -605,17 +646,24 @@ struct `Vault path move service` {
             atomically: true,
             encoding: .utf8
         )
-        _ = try git(["add", "--", "notes/unrelated.md"], root: root)
+        _ = try userGit(["init"], root: root)
+        _ = try userGit(["add", "--", "notes/unrelated.md"], root: root)
 
         _ = try await runtime.paths.move(MovePathRequest.directory(
 
             sourcePath: "notes/in-progress/ticket-123",
             destinationPath: "notes/completed/ticket-123"
         ))
-        let staged = try git(["diff", "--cached", "--name-only"], root: root)
-        #expect(staged.isEmpty)
+        let staged = try userGit(["diff", "--cached", "--name-only"], root: root)
+        #expect(
+            staged.trimmingCharacters(in: .whitespacesAndNewlines)
+                == "notes/unrelated.md"
+        )
         let snapshot = try git(
-            ["show", "--name-only", "--pretty=format:", "HEAD"],
+            [
+                "show", "--name-only", "--pretty=format:",
+                try snapshotReference(root: root),
+            ],
             root: root
         )
         #expect(snapshot.contains("notes/completed/ticket-123/overview.md"))

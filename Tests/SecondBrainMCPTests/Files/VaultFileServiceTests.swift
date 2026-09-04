@@ -7,8 +7,12 @@ struct `Generic files — routed service` {
     private func runGit(_ arguments: [String], at root: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: root)
+        let dataDirectory = try VaultDataDirectory.prepare(vaultPath: root)
+        process.arguments = [
+            "--git-dir=\(dataDirectory.snapshotRepositoryURL.path)",
+            "--work-tree=\(root)",
+            "-c", "core.bare=false",
+        ] + arguments
         let output = Pipe()
         process.standardOutput = output
         process.standardError = Pipe()
@@ -21,6 +25,16 @@ struct `Generic files — routed service` {
             data: output.fileHandleForReading.readDataToEndOfFile(),
             encoding: .utf8
         ) ?? ""
+    }
+
+    private func latestSnapshotReference(at root: String) throws -> String {
+        try runGit([
+            "for-each-ref",
+            "--sort=-refname",
+            "--count=1",
+            "--format=%(refname)",
+            GitRepository.snapshotReferencePrefix,
+        ], at: root).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func makeRuntime() async throws -> (String, VaultRuntime) {
@@ -52,8 +66,14 @@ struct `Generic files — routed service` {
             vaultPath: root,
             readOnly: true
         )
+        let dataDirectory = try VaultDataDirectory.prepare(vaultPath: root)
 
         #expect(!FileManager.default.fileExists(atPath: root + "/.git"))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: dataDirectory.snapshotRepositoryURL.path
+            )
+        )
         #expect(FileManager.default.fileExists(atPath: legacyCache))
         await #expect(throws: FileRoutingError.self) {
             _ = try await runtime.files.create(CreateFileRequest(
@@ -303,7 +323,11 @@ struct `Generic files — routed service` {
         let updatedRevision = try #require(updateOutput.metadata?.revision)
         #expect(try String(contentsOfFile: root + "/" + path, encoding: .utf8).hasSuffix("Updated"))
 
-        let commitCount = try runGit(["rev-list", "--count", "HEAD", "--", path], at: root)
+        let snapshotReference = try latestSnapshotReference(at: root)
+        let commitCount = try runGit(
+            ["rev-list", "--count", snapshotReference, "--", path],
+            at: root
+        )
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "2")
 
@@ -314,7 +338,13 @@ struct `Generic files — routed service` {
             path: path
         ))
         #expect(!FileManager.default.fileExists(atPath: root + "/" + path))
-        #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
+        let deletionSnapshot = try latestSnapshotReference(at: root)
+        #expect(
+            try runGit(
+                ["ls-tree", "-r", "--name-only", deletionSnapshot, "--", path],
+                at: root
+            ).isEmpty
+        )
     }
 
     @Test
@@ -347,7 +377,11 @@ struct `Generic files — routed service` {
         }
 
         #expect(message.contains("No changes"))
-        let commitCount = try runGit(["rev-list", "--count", "HEAD", "--", path], at: root)
+        let snapshotReference = try latestSnapshotReference(at: root)
+        let commitCount = try runGit(
+            ["rev-list", "--count", snapshotReference, "--", path],
+            at: root
+        )
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "1")
     }
@@ -398,7 +432,7 @@ struct `Generic files — routed service` {
             contentsOfFile: root + "/" + safePath,
             encoding: .utf8
         ).hasSuffix("safe content"))
-        #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root + "/.git"))
     }
 
     @Test
@@ -504,7 +538,8 @@ struct `Generic files — routed service` {
             store: store,
             mutations: VaultMutationExecutor(
                 versioning: try GitRepository(
-                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true)
+                    vaultURL: URL(fileURLWithPath: root, isDirectory: true),
+                    dataDirectory: dataDirectory
                 )
             ),
             access: VaultAccessCoordinator(
@@ -678,11 +713,14 @@ struct `Generic files — routed service` {
         )
         #expect(stored == "agent-a" || stored == "agent-b")
         let commitCount = try runGit(
-            ["rev-list", "--count", "HEAD", "--", path],
+            [
+                "rev-list", "--count",
+                try latestSnapshotReference(at: root), "--", path,
+            ],
             at: root
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(commitCount == "2")
-        #expect(try runGit(["status", "--porcelain", "--", "notes"], at: root).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root + "/.git"))
     }
 
     @Test
@@ -918,7 +956,8 @@ struct `Generic files — routed service` {
             store: store,
             mutations: VaultMutationExecutor(
                 versioning: try GitRepository(
-                    repositoryURL: URL(fileURLWithPath: root, isDirectory: true)
+                    vaultURL: URL(fileURLWithPath: root, isDirectory: true),
+                    dataDirectory: dataDirectory
                 )
             ),
             access: VaultAccessCoordinator(
