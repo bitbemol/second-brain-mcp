@@ -353,6 +353,37 @@ struct `GitRepository snapshots` {
     }
 
     @Test
+    func `scoped snapshot rejects a special target whose name resembles Git diagnostics`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let path = "notes/did not match any files.pipe"
+        let pipe = vault.root.appendingPathComponent(path)
+
+        #expect(Darwin.mkfifo(pipe.path, 0o600) == 0)
+
+        await #expect(throws: VaultVersioningError.self) {
+            try await repository.prepareForMutation(changing: [path])
+        }
+    }
+
+    @Test
+    func `scoped snapshot does not mistake caller-influenced Git diagnostics for absence`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let path = "notes/failure did not match any files.md"
+        let note = vault.root.appendingPathComponent(path)
+        try Data("unreadable".utf8).write(to: note, options: .atomic)
+        #expect(Darwin.chmod(note.path, 0o000) == 0)
+        defer { _ = Darwin.chmod(note.path, 0o600) }
+
+        await #expect(throws: VaultVersioningError.self) {
+            try await repository.prepareForMutation(changing: [path])
+        }
+    }
+
+    @Test
     func `scoped deletion and file move update only their declared paths`() async throws {
         let vault = try makeVault()
         defer { vault.remove() }

@@ -200,18 +200,22 @@ struct `Public tool performance baselines` {
         )
         try await repository.recordSnapshot()
 
-        try Data("changed once\n".utf8).write(
-            to: notes.appendingPathComponent("05000.md"),
-            options: .atomic
-        )
+        let target = notes.appendingPathComponent("05000.md")
+        try Data("pending external change\n".utf8).write(to: target, options: .atomic)
         let (_, elapsed) = try await measure {
-            try await repository.recordSnapshot(changing: ["notes/05000.md"])
+            try await repository.prepareForMutation(
+                changing: ["notes/05000.md"]
+            )
+            try Data("changed by agent\n".utf8).write(to: target, options: .atomic)
+            try await repository.recordSnapshot(
+                changing: ["notes/05000.md"]
+            )
         }
 
-        print("GIT_10K_SCOPED_MUTATION_MS \(milliseconds(elapsed))")
+        print("GIT_10K_PROTECTED_MUTATION_MS \(milliseconds(elapsed))")
         #expect(
-            elapsed < .seconds(1),
-            "One-file mutation must stay interactive without reading unrelated note bytes"
+            elapsed < .seconds(2),
+            "Two scoped snapshots must stay interactive without scanning unrelated notes"
         )
     }
 

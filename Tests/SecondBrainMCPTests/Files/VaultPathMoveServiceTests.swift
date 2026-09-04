@@ -9,6 +9,8 @@ struct `Vault path move service` {
         private var started = false
         private var finished = false
 
+        func prepareForMutation(changing paths: [String]?) async throws {}
+
         func recordSnapshot() async throws {
             started = true
             try await Task.sleep(for: .milliseconds(100))
@@ -637,7 +639,7 @@ struct `Vault path move service` {
     }
 
     @Test
-    func `A move snapshot coalesces unrelated pending note work`() async throws {
+    func `A directory move preflight captures unrelated pending note work`() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let runtime = try await makeRecoveredRuntime(vaultPath: root)
@@ -659,15 +661,16 @@ struct `Vault path move service` {
             staged.trimmingCharacters(in: .whitespacesAndNewlines)
                 == "notes/unrelated.md"
         )
+        let reference = try snapshotReference(root: root)
         let snapshot = try git(
-            [
-                "show", "--name-only", "--pretty=format:",
-                try snapshotReference(root: root),
-            ],
+            ["show", "--name-only", "--pretty=format:", reference],
             root: root
         )
         #expect(snapshot.contains("notes/completed/ticket-123/overview.md"))
-        #expect(snapshot.contains("notes/unrelated.md"))
+        #expect(
+            try git(["show", "\(reference):notes/unrelated.md"], root: root)
+                == "unrelated"
+        )
     }
 
     @Test

@@ -18,6 +18,10 @@ protocol VaultVersioning: Sendable {
     /// that this particular call created a new version.
     func recordSnapshot() async throws
 
+    /// Records the current mutation footprint before persistence so the exact
+    /// pre-change state remains recoverable.
+    func prepareForMutation(changing paths: [String]?) async throws
+
     /// Records only the named notes paths after a validated MCP mutation.
     /// Implementations that do not optimize this scope may fall back to a full snapshot.
     func recordSnapshot(changing paths: [String]) async throws

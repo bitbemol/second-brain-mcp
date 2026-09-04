@@ -70,9 +70,11 @@ details belong in code and tests.
   reintroduce array front-removal or full-queue scans.
 - Capture a readable file once per protected operation and use that immutable snapshot throughout.
   Keep preparation separate from persistence and check cancellation before expensive or queued work.
-- Writable startup connects transport before pending Git recovery. Recovery holds a shared vault lease
-  plus the dedicated snapshot lock, so reads and discovery remain available while mutations await one
-  shared recovery attempt; a later mutation retries after a failed attempt.
+- Writable startup connects transport before one-shot pending Git recovery. Recovery holds a shared
+  vault lease plus the dedicated snapshot lock, so reads and discovery remain available while a
+  mutation waits at the exclusive vault boundary for the active attempt. Every snapshot-requiring
+  mutation must durably snapshot its validated pre-change footprint before persistence; preflight
+  failure is not applied. Never restart full recovery from a tool call.
 - Only explicitly audited `CallerSafeError` values may cross the MCP boundary verbatim. Unknown Cocoa,
   POSIX-wrapper, or internal errors receive stable generic messages without absolute paths.
 - Reject malformed or unsupported input; do not silently repair, infer hidden defaults, or weaken a

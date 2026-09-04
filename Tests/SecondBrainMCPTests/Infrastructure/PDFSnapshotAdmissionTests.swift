@@ -250,6 +250,10 @@ actor PDFSnapshotAdmissionHold {
 }
 
 private struct UnusedPDFVersioning: VaultVersioning {
+    func prepareForMutation(changing paths: [String]?) async throws {
+        Issue.record("Read-only PDF fixtures must never prepare persistence")
+    }
+
     func recordSnapshot() async throws {
         Issue.record("Read-only PDF fixtures must never request persistence")
     }

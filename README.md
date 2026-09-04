@@ -176,7 +176,7 @@ If new tools still don't appear, confirm the client's `command` points at `.buil
 └── .trash/             <- Soft-deleted files land here
 ```
 
-Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes, so initialization and tool discovery do not wait behind a large or contended snapshot. Recovery holds a shared vault lease: reads and discovery remain available while mutations wait for recovery to finish. If recovery fails after connection, the server stays connected for discovery and reads while the current mutation reports the safe current failure category and recovery-attempt number instead of terminating the process. Recovery-gated mutations return `SNAPSHOT_FAILED`, `state: not_applied`, and `retry: retry_recovery`; after the underlying private Git or storage condition is corrected, the next mutation starts a new recovery attempt without requiring a server restart. Recovery and transport completion are logged to stderr without Git arguments, paths, status text, or stderr. On input EOF, the server closes tool admission, cancels outstanding calls, and waits for their work to unwind; persistence that has already started still finishes its required snapshot. Read-only startup neither initializes snapshots nor resolves Git.
+Only `notes/` and `references/` need to exist. Writable startup connects the MCP transport before recovering pending note changes, so initialization and tool discovery do not wait behind a large or contended snapshot. Recovery holds a shared vault lease: reads and discovery remain available, and a mutation arriving during the one in-flight recovery attempt waits at the normal exclusive vault boundary. Startup recovery is attempted once and is never restarted by tool calls. Every mutation first snapshots its validated one- or two-path pre-change footprint under the exclusive lease; failure leaves persistence untouched and returns `SNAPSHOT_FAILED` with `state: not_applied`. A successful preflight is followed by persistence and the required post-change snapshot; only a failure after persistence starts has an unconfirmed outcome. Recursive directory moves preflight and reconcile the complete notes tree. Recovery and transport completion are logged to stderr without Git arguments, paths, status text, or stderr. On input EOF, the server closes tool admission, cancels outstanding calls, and waits for their work to unwind; persistence that has already started still finishes its required snapshot. Read-only startup neither initializes snapshots nor resolves Git.
 
 Writable mode stores recovery history in a per-vault bare repository at `~/Library/Application Support/SecondBrainMCP/<vault-path-hash>/git-snapshots-v1.git`, with UUID-isolated transaction indexes beside it. Startup recovery rebuilds the complete current `notes/` tree. Interactive create, update, delete, and file-move snapshots seed a fresh index from the latest private commit and stage only the one or two validated paths changed by that operation; recursive directory moves retain complete reconciliation. Every durable change publishes a uniquely named private ref under `refs/second-brain-mcp/snapshots/`. A dedicated cross-process lock serializes that private repository. The complete snapshot attempt, including lock admission, has a cooperative 120-second deadline; an overrunning Git child has its process group terminated and reports snapshot failure instead of waiting indefinitely. As with any local application, an underlying kernel filesystem call that never returns cannot be universally interrupted in user space.
 
@@ -533,8 +533,10 @@ flowchart TD
     Update --> MutationLease
     Delete --> MutationLease
     MutationLease --> Executor
-    Executor -->|"1. persist prepared bytes"| Store --> Vault
-    Executor -->|"2. await required snapshot"| Versioning --> Git
+    Executor -->|"1. snapshot selected pre-change paths"| Versioning
+    Executor -->|"2. persist prepared bytes"| Store --> Vault
+    Executor -->|"3. snapshot selected post-change paths"| Versioning
+    Versioning --> Git
     Versioning --> Result
 ```
 

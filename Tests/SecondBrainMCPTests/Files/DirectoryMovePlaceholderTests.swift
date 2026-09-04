@@ -184,6 +184,9 @@ struct DirectoryMovePlaceholderTests {
         let repository: GitRepository
         private(set) var completedSnapshots = 0
         init(repository: GitRepository) { self.repository = repository }
+        func prepareForMutation(changing paths: [String]?) async throws {
+            try await repository.prepareForMutation(changing: paths)
+        }
         func recordSnapshot() async throws {
             try await repository.recordSnapshot()
             completedSnapshots += 1

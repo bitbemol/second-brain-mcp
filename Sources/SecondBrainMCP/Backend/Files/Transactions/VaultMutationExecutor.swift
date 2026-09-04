@@ -29,6 +29,18 @@ struct VaultMutationExecutor: Sendable {
     ) async throws -> FileOperationOutput {
         try Task.checkCancellation()
         let versioning = self.versioning
+        if mutation.requiresSnapshot {
+            do {
+                try await versioning.prepareForMutation(
+                    changing: mutation.snapshotPaths
+                )
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw MutationFailure.beforePersistence(error)
+            }
+        }
         return try await Task.detached {
             do {
                 let output = try await mutation.perform()

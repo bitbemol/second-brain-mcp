@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Logging
 import MCP
@@ -230,11 +231,38 @@ struct `Vault runtime recovery` {
     }
 
     @Test
-    func `Startup recovery failure does not disconnect an initialized client`() async throws {
+    func `Mutation after failed recovery preserves the pending target before replacing it`() async throws {
         let root = try makeVault()
         let dataDirectory = try productionDataDirectory(for: root)
         defer { cleanup(root: root, dataDirectory: dataDirectory) }
+        let targetURL = URL(fileURLWithPath: root)
+            .appendingPathComponent("notes/pending.md")
+        try Data("baseline".utf8).write(to: targetURL, options: .atomic)
+        let repository = try GitRepository(
+            vaultURL: URL(fileURLWithPath: root, isDirectory: true),
+            dataDirectory: dataDirectory
+        )
+        try await repository.recordSnapshot()
+        let pendingBytes = Data("externally modified".utf8)
+        try pendingBytes.write(to: targetURL, options: .atomic)
+        let pendingRevision = FileSnapshot(
+            data: pendingBytes,
+            modifiedDate: nil
+        ).revision.rawValue
+        let unrelatedFIFO = URL(fileURLWithPath: root)
+            .appendingPathComponent("notes/unrelated.pipe")
+        #expect(Darwin.mkfifo(unrelatedFIFO.path, 0o600) == 0)
+
         let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
+        do {
+            try await runtime.recoverPendingChanges()
+            Issue.record("Expected full recovery to reject the unrelated FIFO")
+        } catch let error as VaultVersioningError {
+            guard case .unsupportedEntryBelowNotes = error else {
+                Issue.record("Expected unsupported notes content, got \(error)")
+                return
+            }
+        }
         let transports = await InMemoryTransport.createConnectedPair()
         let recovery = FailingStartupRecoveryHold()
         let completion = ServerCompletionProbe()
@@ -276,22 +304,28 @@ struct `Vault runtime recovery` {
             "Recovery failure stopped the connected MCP server"
         )
 
-        var mutationReportedRecoveryFailure = false
-        do {
-            let response: (content: [Tool.Content], isError: Bool?) =
-                try await client.callTool(
-                    name: "create_file",
-                    arguments: [
-                        "format": "markdown",
-                        "path": "notes/blocked.md",
-                        "content": "must not persist",
-                    ]
-                )
-            mutationReportedRecoveryFailure = response.isError == true
-        } catch {
-            Issue.record("Recovery failure escaped the tool result: \(error)")
-        }
-        #expect(mutationReportedRecoveryFailure)
+        let mutation: (content: [Tool.Content], isError: Bool?) =
+            try await client.callTool(
+                name: "update_file",
+                arguments: [
+                    "format": .string("markdown"),
+                    "path": .string("notes/pending.md"),
+                    "expected_revision": .string(pendingRevision),
+                    "mode": .string("replace"),
+                    "content": .string("agent update"),
+                ]
+            )
+        #expect(mutation.isError != true)
+        #expect(
+            try String(contentsOf: targetURL, encoding: .utf8)
+                .contains("agent update")
+        )
+        let newest = try latestSnapshotReference(at: root)
+        let preservedPending = try runGit(
+            ["show", "\(newest)^:notes/pending.md"],
+            at: root
+        )
+        #expect(preservedPending == "externally modified")
         #expect(try await client.listTools().tools.count == toolsBeforeFailure.count)
 
         await client.disconnect()
@@ -362,65 +396,32 @@ struct `Vault runtime recovery` {
     }
 
     @Test
-    func recoveryFailureDoesNotLeakPrivateDetails() async throws {
-        let root = try makeVault()
-        let dataDirectory = try productionDataDirectory(for: root)
-        defer { cleanup(root: root, dataDirectory: dataDirectory) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
-        let transports = await InMemoryTransport.createConnectedPair()
-        try await transports.server.connect()
+    func `Recovery log projection does not leak private details`() {
         let marker = "PRIVATE_RECOVERY_MARKER"
-        let serverTask = Task {
-            try await MCPServerSetup.start(
-                config: ServerConfig(vaultPath: root, readOnly: false),
-                files: runtime.files, paths: runtime.paths, search: runtime.search,
-                links: runtime.links, listing: runtime.listing,
-                capabilities: runtime.capabilities,
-                startupRecovery: {
-                    throw NSError(
-                        domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
-                        userInfo: [
-                            NSLocalizedDescriptionKey: "/private/recovery/" + marker +
-                                String(repeating: "x", count: 1_024),
-                        ]
-                    )
-                },
-                transport: transports.server
+        let projected = MCPServerSetup.recoveryFailure(
+            for: NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadNoPermissionError,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "/private/recovery/" + marker
+                        + String(repeating: "x", count: 1_024),
+                ]
             )
-        }
-        let client = Client(name: "RecoveryFailureBoundary", version: "1.0")
-        _ = try await client.connect(transport: transports.client)
-        var returnedToolFailure = false
-        let message: String
-        do {
-            let response = try await client.callTool(name: "create_file", arguments: [
-                "format": .string("markdown"), "path": .string("notes/blocked.md"),
-                "content": .string("must not persist"),
-            ])
-            returnedToolFailure = response.isError == true
-            message = response.content.compactMap { content -> String? in
-                if case .text(let text, _, _) = content { return text }
-                return nil
-            }.joined()
-        } catch {
-            message = String(describing: error)
-        }
-        #expect(returnedToolFailure)
-        #expect(message.utf8.count <= 512)
-        #expect(!message.contains(marker))
-        #expect(!message.contains("/private/recovery/"))
-        #expect(try await client.listTools().tools.count == 8)
-        #expect(!FileManager.default.fileExists(atPath: root + "/notes/blocked.md"))
-        await client.disconnect()
-        try await serverTask.value
+        )
+
+        #expect(projected.attempt == 1)
+        #expect(projected.category == "internal_recovery_failure")
+        #expect(projected.message.utf8.count <= 512)
+        #expect(!projected.message.contains(marker))
+        #expect(!projected.message.contains("/private/recovery/"))
     }
 
     @Test
-    func `Repeated mutation failures identify fresh private recovery attempts`() async throws {
+    func `Independent mutations do not rerun failed whole-vault recovery`() async throws {
         let root = try makeVault()
         let dataDirectory = try productionDataDirectory(for: root)
         defer { cleanup(root: root, dataDirectory: dataDirectory) }
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root, readOnly: true)
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
         let transports = await InMemoryTransport.createConnectedPair()
         try await transports.server.connect()
         let recovery = CountingPrivateSnapshotFailure()
@@ -434,25 +435,20 @@ struct `Vault runtime recovery` {
                 transport: transports.server
             )
         }
-        let client = Client(name: "RecoveryAttemptDiagnostics", version: "1.0")
+        let client = Client(name: "RecoveryAttemptIsolation", version: "1.0")
         _ = try await client.connect(transport: transports.client)
         await recovery.waitForAttempts(1)
 
-        let secondAttemptMessage = try await recoveryFailureMessage(from: client)
-        let thirdAttemptMessage = try await recoveryFailureMessage(from: client)
-
-        #expect(secondAttemptMessage.contains("Recovery attempt 2 failed"))
-        #expect(thirdAttemptMessage.contains("Recovery attempt 3 failed"))
-        #expect(secondAttemptMessage.contains("private snapshot store"))
-        #expect(thirdAttemptMessage.contains("private snapshot store"))
-        for message in [secondAttemptMessage, thirdAttemptMessage] {
-            #expect(!message.contains(CountingPrivateSnapshotFailure.privateArgument))
-            #expect(!message.contains(CountingPrivateSnapshotFailure.privateStatus))
-            #expect(!message.contains(CountingPrivateSnapshotFailure.privateMessage))
-            #expect(message.utf8.count <= 512)
+        for index in 1...2 {
+            let response = try await client.callTool(name: "create_file", arguments: [
+                "format": .string("markdown"),
+                "path": .string("notes/scoped-\(index).md"),
+                "content": .string("independent"),
+            ])
+            #expect(response.isError != true)
         }
 
-        #expect(await recovery.attempts == 3)
+        #expect(await recovery.attempts == 1)
         await client.disconnect()
         try await serverTask.value
     }
@@ -465,8 +461,8 @@ struct `Vault runtime recovery` {
         let existing = URL(fileURLWithPath: root)
             .appendingPathComponent("notes/existing.md")
         try Data("baseline".utf8).write(to: existing, options: .atomic)
-        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
-        try await runtime.recoverPendingChanges()
+        let seedingRuntime = try await VaultRuntime.bootstrap(vaultPath: root)
+        try await seedingRuntime.recoverPendingChanges()
         _ = try runGit(["repack", "-ad"], at: root)
         let packDirectory = dataDirectory.snapshotRepositoryURL
             .appendingPathComponent("objects/pack", isDirectory: true)
@@ -479,6 +475,7 @@ struct `Vault runtime recovery` {
         defer { try? savedPack.write(to: pack, options: .atomic) }
         try Data("truncated".utf8).write(to: pack, options: .atomic)
 
+        let runtime = try await VaultRuntime.bootstrap(vaultPath: root)
         let attempts = RecoveryAttemptCounter()
         let transports = await InMemoryTransport.createConnectedPair()
         try await transports.server.connect()
@@ -503,23 +500,23 @@ struct `Vault runtime recovery` {
         #expect(read.isError != true)
         let blocked = try await client.callTool(name: "create_file", arguments: [
             "format": .string("markdown"), "path": .string("notes/recovered.md"),
-            "content": .string("same session"),
+            "content": .string("must not persist"),
         ])
         #expect(blocked.isError == true)
-        #expect(!FileManager.default.fileExists(atPath: root + "/notes/recovered.md"))
+        let recoveredURL = URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent("notes/recovered.md")
+        #expect(!FileManager.default.fileExists(atPath: recoveredURL.path))
         let failedAttempts = await attempts.count
 
         try savedPack.write(to: pack, options: .atomic)
         let recovered = try await client.callTool(name: "create_file", arguments: [
-            "format": .string("markdown"), "path": .string("notes/recovered.md"),
+            "format": .string("markdown"),
+            "path": .string("notes/recovered.md"),
             "content": .string("same session"),
         ])
 
         #expect(recovered.isError != true)
-        #expect(await attempts.count == failedAttempts + 1)
-        let recoveredURL = URL(fileURLWithPath: root, isDirectory: true)
-            .appendingPathComponent("notes/recovered.md")
-        try #require(FileManager.default.fileExists(atPath: recoveredURL.path))
+        #expect(await attempts.count == failedAttempts)
         let recoveredBytes = try Data(contentsOf: recoveredURL)
         #expect(String(decoding: recoveredBytes, as: UTF8.self).hasSuffix("same session"))
         let newest = try latestSnapshotReference(at: root)
@@ -531,18 +528,6 @@ struct `Vault runtime recovery` {
 
         await client.disconnect()
         try await serverTask.value
-    }
-
-    private func recoveryFailureMessage(from client: Client) async throws -> String {
-        let response = try await client.callTool(name: "create_file", arguments: [
-            "format": .string("markdown"), "path": .string("notes/blocked.md"),
-            "content": .string("must not persist"),
-        ])
-        #expect(response.isError == true)
-        return response.content.compactMap { content -> String? in
-            if case .text(let text, _, _) = content { return text }
-            return nil
-        }.joined()
     }
 
     private func makeVault() throws -> String {

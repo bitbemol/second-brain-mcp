@@ -15,8 +15,8 @@ struct MCPServerSetup {
     ///   - capabilities: Immutable format capability manifest.
     ///   - startupRecovery: Writable-startup snapshot recovery.
     ///   - transport: MCP transport, injectable for lifecycle tests.
-    /// - Throws: Transport or handler-registration errors. Recovery failures stay attached
-    ///   to the mutation gate so reads and discovery remain available.
+    /// - Throws: Transport or handler-registration errors. Startup recovery failures are logged;
+    ///   independently snapshotted file mutations remain available.
     static func start(
         config: ServerConfig,
         files: any FileCRUDService,
@@ -42,7 +42,7 @@ struct MCPServerSetup {
         let customInstructions = CustomInstructionsLoader.load(
             vaultPath: config.vaultPath
         )
-        let startupRecoveryGate = MCPStartupRecoveryGate()
+        let startupRecoveryTask: MCPStartupRecoveryTask = .init()
         let toolCallLifecycle = MCPToolCallLifecycle()
         let server = Server(
             name: "SecondBrainMCP",
@@ -88,22 +88,6 @@ struct MCPServerSetup {
 
         await server.withMethodHandler(CallTool.self) { params in
             try await toolCallLifecycle.run {
-                if params.name == PathMoveToolDefinition.name
-                    || FileToolName(rawValue: params.name)?.operation.isMutation == true {
-                    do {
-                        try await startupRecoveryGate.wait()
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        try Task.checkCancellation()
-                        let failure = recoveryFailure(for: error)
-                        return ToolFailureProjection.recovery(
-                            failure.message,
-                            attempt: failure.attempt,
-                            category: failure.category
-                        )
-                    }
-                }
                 if params.name == ListFilesToolDefinition.name {
                     return try await listFilesTool.call(params)
                 }
@@ -123,44 +107,37 @@ struct MCPServerSetup {
         try await server.start(transport: transport)
         log("MCP server started, accepting connections")
 
-        _ = await startupRecoveryGate.install { attempt in
+        _ = await startupRecoveryTask.install {
             do {
                 try await startupRecovery()
                 log("startup recovery completed")
             } catch {
-                log(recoveryFailure(for: error, fallbackAttempt: attempt).message)
+                log(recoveryFailure(for: error).message)
                 throw error
             }
         }
         await server.waitUntilCompleted()
         await toolCallLifecycle.closeAndDrain()
-        await startupRecoveryGate.shutdown()
+        await startupRecoveryTask.shutdown()
         log("MCP transport completed; server shutting down")
     }
 
-    private struct RecoveryFailure {
+    struct RecoveryFailure {
         let attempt: Int
         let category: String
         let message: String
     }
 
-    private static func recoveryFailure(
-        for error: Error,
-        fallbackAttempt: Int = 1
-    ) -> RecoveryFailure {
-        let attempted = error as? MCPStartupRecoveryGate.AttemptFailure
-        let cause = attempted?.cause ?? error
-        let attempt = attempted?.attempt ?? fallbackAttempt
-        let category = recoveryCategory(for: cause)
-        let detail = (cause as? any CallerSafeError)?.callerSafeDescription
+    static func recoveryFailure(for error: Error) -> RecoveryFailure {
+        let category = recoveryCategory(for: error)
+        let detail = (error as? any CallerSafeError)?.callerSafeDescription
             ?? "An internal recovery operation failed without caller-safe details."
         return RecoveryFailure(
-            attempt: attempt,
+            attempt: 1,
             category: category,
-            message: "Recovery attempt \(attempt) failed (\(category)): \(detail) "
-                + "Mutation persistence remains blocked; no gated mutation was applied. "
-                + "Resolve this current recovery failure; "
-                + "the next mutation will start a new recovery attempt."
+            message: "Recovery attempt 1 failed (\(category)): \(detail) "
+                + "Whole-vault startup reconciliation remains incomplete. "
+                + "Each mutation must snapshot its selected pre-change state before persistence."
         )
     }
 
@@ -184,5 +161,34 @@ struct MCPServerSetup {
         case .invalidPrivateRepository:
             return "private_repository_invalid"
         }
+    }
+}
+
+/// Owns the one best-effort startup recovery task through server shutdown.
+actor MCPStartupRecoveryTask {
+    private var task: Task<Void, Never>?
+
+    func install(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) -> Task<Void, Never> {
+        precondition(task == nil, "Startup recovery may only be installed once")
+        let installed = Task {
+            do {
+                try await operation()
+            } catch {
+                // The installed operation owns safe diagnostics. Recovery is
+                // intentionally one-shot; mutations never restart it.
+            }
+        }
+        task = installed
+        return installed
+    }
+
+    /// Cancels and joins the active recovery attempt during server teardown.
+    func shutdown() async {
+        let active = task
+        active?.cancel()
+        _ = await active?.result
+        task = nil
     }
 }

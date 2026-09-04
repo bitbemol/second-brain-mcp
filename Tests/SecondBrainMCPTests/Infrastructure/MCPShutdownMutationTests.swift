@@ -184,6 +184,8 @@ private final class ShutdownSnapshotHold: VaultVersioning, Sendable {
     var finished: Bool { state.withLock { $0.finished } }
     var succeeded: Bool { state.withLock { $0.succeeded } }
 
+    func prepareForMutation(changing paths: [String]?) async throws {}
+
     func recordSnapshot() async throws {
         defer { state.withLock { $0.finished = true } }
         let persisted = try Data(contentsOf: persistedFile)

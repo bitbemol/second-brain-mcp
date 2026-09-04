@@ -106,6 +106,14 @@ actor GitRepository: VaultVersioning {
         try await recordSnapshot(scope: nil)
     }
 
+    func prepareForMutation(changing paths: [String]?) async throws {
+        if let paths {
+            try await recordSnapshot(scope: normalizedSnapshotPaths(paths))
+        } else {
+            try await recordSnapshot()
+        }
+    }
+
     func recordSnapshot(changing paths: [String]) async throws {
         try await recordSnapshot(scope: normalizedSnapshotPaths(paths))
     }
@@ -229,9 +237,9 @@ private extension GitRepository {
         defer { workspace.remove() }
         try validatePrivateDataRoot()
 
-        // Startup recovery reconciles the complete notes tree. Once that baseline
-        // exists, an interactive MCP mutation starts from it and stages only the
-        // one or two paths that the protected operation actually changed.
+        // Startup recovery reconciles the complete notes tree. Interactive MCP
+        // mutations seed from the latest snapshot when one exists, then stage
+        // only the one or two paths protected by that operation.
         let scopedPaths = requestedPaths
         if let commit = base.commit, scopedPaths != nil {
             try await requireSuccess(
@@ -271,7 +279,7 @@ private extension GitRepository {
             )
         }
         if scopedPaths == nil {
-            try validateSupportedNotesEntries(deadline: deadline)
+            _ = try validateSupportedNotesEntries(deadline: deadline)
         }
         // Staging and enumeration dereference the work-tree pathname. Recheck
         // the captured root identity before every success path, including
@@ -566,8 +574,8 @@ private extension GitRepository {
     }
 
     /// Stages creations, updates, moves, and deletions below the one fixed notes
-    /// scope. A brand-new empty vault is a successful no-op; deletion of notes
-    /// already present in the product index remains a real state transition.
+    /// scope. Absence is established from the private index and lstat, never
+    /// from caller-influenced Git diagnostics.
     func stageNotes(
         index: URL,
         paths: [String]?,
@@ -577,21 +585,91 @@ private extension GitRepository {
         // Ignore and sparse-checkout policy belong to interactive Git. The
         // empty attribute source prevents root or nested worktree attributes
         // from running filters or transforming recovery bytes.
-        let pathspecs = paths ?? ["notes"]
-        let arguments = ["add", "--all", "--force", "--sparse", "--"] + pathspecs
+        if let paths {
+            var stagedPath = false
+            for path in paths {
+                guard try await scopedPathNeedsStaging(
+                    path,
+                    index: index,
+                    deadline: deadline
+                ) else {
+                    continue
+                }
+                let arguments = [
+                    "add", "--all", "--force", "--sparse", "--", path,
+                ]
+                let staged = try await executeGit(
+                    arguments,
+                    index: index,
+                    deadline: deadline,
+                    isolatedAttributes: true
+                )
+                guard staged.status.isSuccess else {
+                    throw commandFailure(arguments: arguments, result: staged)
+                }
+                stagedPath = true
+            }
+            return stagedPath
+        }
+
+        let arguments = [
+            "add", "--all", "--force", "--sparse", "--", "notes",
+        ]
         let staged = try await executeGit(
             arguments,
             index: index,
             deadline: deadline,
             isolatedAttributes: true
         )
-        guard staged.status.isSuccess else {
-            if staged.standardError.contains("pathspec 'notes' did not match any files") {
-                return false
-            }
+        guard !staged.status.isSuccess else { return true }
+
+        // Git reports an empty pathspec as failure. Accept that one state only
+        // after independently proving both the work tree and seeded index have
+        // no representable note.
+        let trackedNotes = try await indexTracks(
+            "notes",
+            index: index,
+            deadline: deadline
+        )
+        let storedNotes = try validateSupportedNotesEntries(deadline: deadline)
+        guard !trackedNotes, !storedNotes else {
             throw commandFailure(arguments: arguments, result: staged)
         }
-        return true
+        return false
+    }
+
+    func scopedPathNeedsStaging(
+        _ path: String,
+        index: URL,
+        deadline: ContinuousClock.Instant
+    ) async throws -> Bool {
+        let target = vaultURL.appendingPathComponent(path)
+        var metadata = stat()
+        if Darwin.lstat(target.path, &metadata) == 0 {
+            guard metadata.st_mode & S_IFMT == S_IFREG else {
+                throw VaultVersioningError.unsupportedEntryBelowNotes
+            }
+            return true
+        }
+
+        let failure = errno
+        guard failure == ENOENT || failure == ENOTDIR else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return try await indexTracks(path, index: index, deadline: deadline)
+    }
+
+    func indexTracks(
+        _ path: String,
+        index: URL,
+        deadline: ContinuousClock.Instant
+    ) async throws -> Bool {
+        let entries = try await requireOutput(
+            ["ls-files", "--cached", "-z", "--", path],
+            index: index,
+            deadline: deadline
+        )
+        return !entries.isEmpty
     }
 
     func snapshotReference(sequence: UInt64) -> String {
@@ -736,7 +814,7 @@ private extension GitRepository {
     /// cannot certify an incomplete snapshot.
     func validateSupportedNotesEntries(
         deadline: ContinuousClock.Instant
-    ) throws {
+    ) throws -> Bool {
         let deadlineArguments = ["snapshot-filesystem-scan"]
         let clock = ContinuousClock()
         guard clock.now < deadline else {
@@ -747,7 +825,7 @@ private extension GitRepository {
         let notesURL = vaultURL.appendingPathComponent("notes")
         var rootMetadata = stat()
         if Darwin.lstat(notesURL.path, &rootMetadata) != 0 {
-            if errno == ENOENT { return }
+            if errno == ENOENT { return false }
             throw CocoaError(.fileReadUnknown)
         }
         guard rootMetadata.st_mode & S_IFMT == S_IFDIR else {
@@ -766,6 +844,7 @@ private extension GitRepository {
         ) else {
             throw VaultVersioningError.unsupportedEntryBelowNotes
         }
+        var containsRegularFile = false
         while true {
             try Task.checkCancellation()
             guard clock.now < deadline else {
@@ -788,8 +867,10 @@ private extension GitRepository {
                 throw CocoaError(.fileReadUnknown)
             }
             switch metadata.st_mode & S_IFMT {
-            case S_IFDIR, S_IFREG:
+            case S_IFDIR:
                 continue
+            case S_IFREG:
+                containsRegularFile = true
             default:
                 enumerator.skipDescendants()
                 throw VaultVersioningError.unsupportedEntryBelowNotes
@@ -798,6 +879,7 @@ private extension GitRepository {
         guard !errors.encountered else {
             throw VaultVersioningError.unsupportedEntryBelowNotes
         }
+        return containsRegularFile
     }
 
     func executeGit(

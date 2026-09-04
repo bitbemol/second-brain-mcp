@@ -368,6 +368,9 @@ struct RoutineToolErrorTests {
             self.repository = repository
             self.failure = failure
         }
+        func prepareForMutation(changing paths: [String]?) async throws {
+            try await repository.prepareForMutation(changing: paths)
+        }
         func recordSnapshot() async throws {
             calls += 1
             if let failure { throw failure }

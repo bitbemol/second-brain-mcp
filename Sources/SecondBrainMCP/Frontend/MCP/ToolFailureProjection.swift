@@ -26,24 +26,6 @@ enum ToolFailureProjection {
         failure(message, code: .invalidRequest, state: .notApplied)
     }
 
-    /// Recovery gate failures happen before a mutation reaches persistence.
-    static func recovery(
-        _ message: String,
-        attempt: Int,
-        category: String
-    ) -> CallTool.Result {
-        failure(
-            message,
-            code: .snapshotFailed,
-            state: .notApplied,
-            retry: "retry_recovery",
-            metadata: [
-                "recovery_attempt": .int(attempt),
-                "recovery_category": .string(category),
-            ]
-        )
-    }
-
     static func operation(
         _ error: Error,
         state: State,
@@ -77,9 +59,7 @@ enum ToolFailureProjection {
     private static func failure(
         _ message: String,
         code: Code,
-        state: State,
-        retry: String? = nil,
-        metadata: [String: Value] = [:]
+        state: State
     ) -> CallTool.Result {
         let suffix = state == .unknown
             ? " Outcome unconfirmed; inspect current state before retrying."
@@ -87,14 +67,13 @@ enum ToolFailureProjection {
         let bounded = message.utf8.count + suffix.utf8.count <= ToolErrorResponse.maximumMessageBytes
             ? message + suffix
             : "Operation failed; diagnostic details exceed the safe response limit." + suffix
-        var error: [String: Value] = [
+        let error: [String: Value] = [
             "code": .string(code.rawValue),
             "state": .string(state.rawValue),
             "retry": .string(
-                retry ?? (state == .unknown ? "inspect_state" : "correct_request")
+                state == .unknown ? "inspect_state" : "correct_request"
             ),
         ]
-        error.merge(metadata) { current, _ in current }
         return CallTool.Result(
             content: [.text(text: bounded, annotations: nil, _meta: nil)],
             structuredContent: .object(["error": .object(error)]),
