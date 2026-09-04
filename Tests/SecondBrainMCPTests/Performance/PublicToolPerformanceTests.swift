@@ -176,6 +176,46 @@ struct `Public tool performance baselines` {
     }
 
     @Test
+    func `single note mutation stays interactive in a ten thousand note vault`() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitScopedPerformanceTests-\(UUID().uuidString)")
+        let notes = root.appendingPathComponent("notes", isDirectory: true)
+        let support = root.appendingPathComponent("support", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let payload = Data("bounded note bytes\n".utf8)
+        for index in 0..<10_000 {
+            try payload.write(
+                to: notes.appendingPathComponent(String(format: "%05d.md", index))
+            )
+        }
+        let dataDirectory = try VaultDataDirectory.prepare(
+            vaultPath: root.path,
+            supportRoot: support
+        )
+        let repository = try GitRepository(
+            vaultURL: root,
+            dataDirectory: dataDirectory
+        )
+        try await repository.recordSnapshot()
+
+        try Data("changed once\n".utf8).write(
+            to: notes.appendingPathComponent("05000.md"),
+            options: .atomic
+        )
+        let (_, elapsed) = try await measure {
+            try await repository.recordSnapshot(changing: ["notes/05000.md"])
+        }
+
+        print("GIT_10K_SCOPED_MUTATION_MS \(milliseconds(elapsed))")
+        #expect(
+            elapsed < .seconds(1),
+            "One-file mutation must stay interactive without reading unrelated note bytes"
+        )
+    }
+
+    @Test
     func `list files one item page avoids corpus-wide presentation formatting`() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ListFilesPerformanceTests-\(UUID().uuidString)")

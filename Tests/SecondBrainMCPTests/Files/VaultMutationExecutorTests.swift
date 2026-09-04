@@ -20,7 +20,15 @@ struct `Vault mutation executor` {
         var shouldFail = false
 
         func recordSnapshot() async throws {
-            await events.append("snapshot")
+            try await record("snapshot")
+        }
+
+        func recordSnapshot(changing paths: [String]) async throws {
+            try await record("snapshot:" + paths.joined(separator: ","))
+        }
+
+        private func record(_ event: String) async throws {
+            await events.append(event)
             if shouldFail {
                 throw TestFailure.snapshot
             }
@@ -52,6 +60,28 @@ struct `Vault mutation executor` {
             return
         }
         #expect(text == "saved")
+    }
+
+    @Test
+    func `Validated mutation paths select the scoped snapshot path`() async throws {
+        let events = EventLog()
+        let executor = VaultMutationExecutor(
+            versioning: VersioningSpy(events: events)
+        )
+
+        _ = try await executor.execute(PreparedVaultMutation(
+            requiresSnapshot: true,
+            snapshotPaths: ["notes/old.md", "notes/new.md"],
+            perform: {
+                await events.append("persistence")
+                return .text("moved")
+            }
+        ))
+
+        #expect(
+            await events.snapshot()
+                == ["persistence", "snapshot:notes/old.md,notes/new.md"]
+        )
     }
 
     @Test

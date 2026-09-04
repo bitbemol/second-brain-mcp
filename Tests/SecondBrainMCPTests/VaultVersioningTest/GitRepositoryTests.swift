@@ -295,6 +295,156 @@ struct `GitRepository snapshots` {
         )
     }
 
+    /// Interactive mutations must not rescan or absorb unrelated vault changes.
+    /// Startup recovery remains responsible for whole-vault reconciliation.
+    @Test
+    func `scoped snapshot records only the paths changed by the mutation`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let target = vault.notes.appendingPathComponent("target.md")
+        let unrelated = vault.notes.appendingPathComponent("unrelated.md")
+        try Data("target before".utf8).write(to: target, options: .atomic)
+        try Data("unrelated before".utf8).write(to: unrelated, options: .atomic)
+        try await repository.recordSnapshot()
+
+        try Data("target after".utf8).write(to: target, options: .atomic)
+        try Data("unrelated after".utf8).write(to: unrelated, options: .atomic)
+        try await repository.recordSnapshot(changing: ["notes/target.md"])
+        let snapshotReference = try latestSnapshotReference(in: vault)
+
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(snapshotReference):notes/target.md"],
+                in: vault
+            ) == "target after"
+        )
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(snapshotReference):notes/unrelated.md"],
+                in: vault
+            ) == "unrelated before"
+        )
+    }
+
+    @Test
+    func `first scoped snapshot does not scan unrelated notes`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        try Data("target".utf8).write(
+            to: vault.notes.appendingPathComponent("target.md"),
+            options: .atomic
+        )
+        try Data("unrelated".utf8).write(
+            to: vault.notes.appendingPathComponent("unrelated.md"),
+            options: .atomic
+        )
+
+        try await repository.recordSnapshot(changing: ["notes/target.md"])
+        let snapshotReference = try latestSnapshotReference(in: vault)
+
+        #expect(
+            try runSnapshotGit(
+                ["ls-tree", "-r", "--name-only", snapshotReference, "--", "notes"],
+                in: vault
+            ) == "notes/target.md"
+        )
+    }
+
+    @Test
+    func `scoped deletion and file move update only their declared paths`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let source = vault.notes.appendingPathComponent("source.md")
+        let destination = vault.notes.appendingPathComponent("destination.md")
+        let deleted = vault.notes.appendingPathComponent("deleted.md")
+        let unrelated = vault.notes.appendingPathComponent("unrelated.md")
+        try Data("move bytes\r\n".utf8).write(to: source, options: .atomic)
+        try Data("delete bytes".utf8).write(to: deleted, options: .atomic)
+        try Data("unrelated before".utf8).write(to: unrelated, options: .atomic)
+        try await repository.recordSnapshot()
+
+        try FileManager.default.moveItem(at: source, to: destination)
+        try FileManager.default.removeItem(at: deleted)
+        try Data("unrelated after".utf8).write(to: unrelated, options: .atomic)
+        try await repository.recordSnapshot(
+            changing: ["notes/source.md", "notes/destination.md"]
+        )
+        try await repository.recordSnapshot(changing: ["notes/deleted.md"])
+        let snapshotReference = try latestSnapshotReference(in: vault)
+
+        #expect(
+            try runSnapshotGit(
+                ["ls-tree", "-r", "--name-only", snapshotReference, "--", "notes"],
+                in: vault
+            ).split(separator: "\n").map(String.init)
+                == ["notes/destination.md", "notes/unrelated.md"]
+        )
+        #expect(
+            try runSnapshotGitBytes(
+                ["show", "\(snapshotReference):notes/destination.md"],
+                in: vault
+            ) == Data("move bytes\r\n".utf8)
+        )
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(snapshotReference):notes/unrelated.md"],
+                in: vault
+            ) == "unrelated before"
+        )
+    }
+
+    @Test
+    func `unrelated embedded repository blocks recovery but not a scoped mutation`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+        let target = vault.notes.appendingPathComponent("target.md")
+        try Data("before".utf8).write(to: target, options: .atomic)
+        try await repository.recordSnapshot()
+
+        let unrelatedGit = vault.notes
+            .appendingPathComponent("external", isDirectory: true)
+            .appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: unrelatedGit,
+            withIntermediateDirectories: true
+        )
+        try Data("after".utf8).write(to: target, options: .atomic)
+
+        try await repository.recordSnapshot(changing: ["notes/target.md"])
+        #expect(
+            try runSnapshotGit(
+                ["show", "\(try latestSnapshotReference(in: vault)):notes/target.md"],
+                in: vault
+            ) == "after"
+        )
+        await #expect(throws: VaultVersioningError.self) {
+            try await repository.recordSnapshot()
+        }
+    }
+
+    @Test
+    func `scoped snapshot rejects paths outside validated notes files`() async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let repository = try makeRepository(for: vault)
+
+        for paths in [
+            ["references/no.md"],
+            ["notes/../outside.md"],
+            ["notes/.hidden/file.md"],
+            ["notes/.git/config"],
+            ["notes/a.md", "notes/b.md", "notes/c.md"],
+        ] {
+            await #expect(throws: VaultVersioningError.self) {
+                try await repository.recordSnapshot(changing: paths)
+            }
+        }
+    }
+
     @Test
     func `live retry retightens an owned private repository after repair`() async throws {
         let vault = try makeVault()

@@ -165,6 +165,46 @@ struct `Structured text routed CRUD` {
         #expect(try Data(contentsOf: storedURL) == validBytes)
     }
 
+    @Test
+    func `public update snapshots only its validated file path`() async throws {
+        let context = try await makeContext()
+        defer { context.cleanup() }
+        let path = "notes/target.json"
+        let created = try await context.service.create(CreateFileRequest(
+            format: .json,
+            path: path,
+            content: "{\"value\":1}",
+            source: nil,
+            tags: [],
+            transform: nil
+        ))
+        let revision = try #require(created.metadata?.revision)
+
+        try FileManager.default.createDirectory(
+            at: context.root
+                .appendingPathComponent("notes/unrelated", isDirectory: true)
+                .appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let updated = try await context.service.update(UpdateFileRequest(
+            expectedRevision: revision,
+            format: .json,
+            path: path,
+            content: nil,
+            mode: .patch,
+            replacements: [TextReplacement(oldText: "1", newText: "2")]
+        ))
+
+        #expect(updated.metadata?.revision != revision)
+        #expect(
+            try String(
+                contentsOf: context.root.appendingPathComponent(path),
+                encoding: .utf8
+            ) == "{\"value\":2}"
+        )
+    }
+
     @Test(arguments: [FileFormat.json, .csv, .patch])
     func rawTextDiscoveryDoesNotCertifyStoredFormatStructure(_ format: FileFormat) async throws {
         let context = try await makeContext()

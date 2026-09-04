@@ -33,7 +33,11 @@ struct VaultMutationExecutor: Sendable {
             do {
                 let output = try await mutation.perform()
                 if mutation.requiresSnapshot {
-                    try await versioning.recordSnapshot()
+                    if let paths = mutation.snapshotPaths {
+                        try await versioning.recordSnapshot(changing: paths)
+                    } else {
+                        try await versioning.recordSnapshot()
+                    }
                 }
                 return output
             } catch let failure as MutationFailure {

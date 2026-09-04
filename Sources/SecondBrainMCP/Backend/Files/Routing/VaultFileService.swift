@@ -62,6 +62,7 @@ actor VaultFileService: FileCRUDService {
                 ))
                 return PreparedVaultMutation(
                     requiresSnapshot: true,
+                    snapshotPaths: [target.relativePath],
                     perform: {
                         _ = try await self.store.create(
                             target: target,
@@ -158,6 +159,7 @@ actor VaultFileService: FileCRUDService {
                 ))
                 return PreparedVaultMutation(
                     requiresSnapshot: !noChanges,
+                    snapshotPaths: [target.relativePath],
                     perform: {
                         guard !noChanges else { return output }
                         do {
@@ -196,6 +198,7 @@ actor VaultFileService: FileCRUDService {
                 try await binding.execute(request, target)
                 return PreparedVaultMutation(
                     requiresSnapshot: true,
+                    snapshotPaths: [target.relativePath],
                     perform: {
                         let deletion: (trashPath: String, deletedRevision: FileRevision)
                         do {

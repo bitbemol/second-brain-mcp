@@ -103,6 +103,14 @@ actor GitRepository: VaultVersioning {
     }
 
     func recordSnapshot() async throws {
+        try await recordSnapshot(scope: nil)
+    }
+
+    func recordSnapshot(changing paths: [String]) async throws {
+        try await recordSnapshot(scope: normalizedSnapshotPaths(paths))
+    }
+
+    private func recordSnapshot(scope paths: [String]?) async throws {
         try validatePrivateDataRoot()
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: snapshotTimeout)
@@ -135,7 +143,7 @@ actor GitRepository: VaultVersioning {
             )
             didProbeGitExecutable = true
         }
-        try await performSnapshot(deadline: deadline)
+        try await performSnapshot(deadline: deadline, changing: paths)
     }
 }
 
@@ -174,10 +182,41 @@ private extension GitRepository {
         let nextSequence: UInt64
     }
 
+    func normalizedSnapshotPaths(_ paths: [String]) throws -> [String] {
+        let unique = Array(Set(paths)).sorted()
+        guard !unique.isEmpty, unique.count <= 2 else {
+            throw invalidSnapshotState(arguments: ["snapshot-paths"])
+        }
+        for path in unique {
+            let components = path.split(separator: "/", omittingEmptySubsequences: false)
+            guard path.utf8.count <= PathMoveRequestLimits.maximumPathBytes,
+                  !PathTraversalDetector.containsTraversal(in: path),
+                  components.count >= 2,
+                  components.first == "notes",
+                  components.allSatisfy({
+                      !$0.isEmpty
+                          && $0 != "."
+                          && $0 != ".."
+                          && $0 != ".git"
+                          && !$0.contains("\0")
+                          && $0.utf8.count <= 255
+                  }),
+                  components.dropFirst().dropLast().allSatisfy({
+                      !$0.hasPrefix(".")
+                  }) else {
+                throw invalidSnapshotState(arguments: ["snapshot-paths"])
+            }
+        }
+        return unique
+    }
+
     /// Uses a unique private index and immutable ref leaf for every transaction.
     /// A killed child can therefore strand only product-owned temporary state
     /// that no later snapshot reuses.
-    func performSnapshot(deadline: ContinuousClock.Instant) async throws {
+    func performSnapshot(
+        deadline: ContinuousClock.Instant,
+        changing requestedPaths: [String]?
+    ) async throws {
         try Task.checkCancellation()
         try validateSnapshotRoots()
         try await initializeRepository(deadline: deadline)
@@ -190,26 +229,35 @@ private extension GitRepository {
         defer { workspace.remove() }
         try validatePrivateDataRoot()
 
-        // Rebuild the narrow notes tree from an empty private index every time.
-        // Besides simplifying deletion handling, this makes path identity come
-        // from the actual vault volume rather than the support volume or an old
-        // index entry (notably for case-only renames).
-        try await requireSuccess(
-            ["read-tree", "--empty"],
-            index: workspace.file,
-            deadline: deadline
-        )
-        let emptyTree = try await requireOutput(
-            ["write-tree"],
-            index: workspace.file,
-            deadline: deadline
-        )
-        guard emptyTree == Self.emptyTreeObject else {
-            throw invalidSnapshotState(arguments: ["write-tree"])
+        // Startup recovery reconciles the complete notes tree. Once that baseline
+        // exists, an interactive MCP mutation starts from it and stages only the
+        // one or two paths that the protected operation actually changed.
+        let scopedPaths = requestedPaths
+        if let commit = base.commit, scopedPaths != nil {
+            try await requireSuccess(
+                ["read-tree", "\(commit)^{tree}"],
+                index: workspace.file,
+                deadline: deadline
+            )
+        } else {
+            try await requireSuccess(
+                ["read-tree", "--empty"],
+                index: workspace.file,
+                deadline: deadline
+            )
+            let emptyTree = try await requireOutput(
+                ["write-tree"],
+                index: workspace.file,
+                deadline: deadline
+            )
+            guard emptyTree == Self.emptyTreeObject else {
+                throw invalidSnapshotState(arguments: ["write-tree"])
+            }
         }
 
         let matchedNotes = try await stageNotes(
             index: workspace.file,
+            paths: scopedPaths,
             deadline: deadline
         )
         try postStageObserver?()
@@ -218,10 +266,13 @@ private extension GitRepository {
         if matchedNotes {
             try await validateStagedEntryModes(
                 index: workspace.file,
+                paths: scopedPaths,
                 deadline: deadline
             )
         }
-        try validateSupportedNotesEntries(deadline: deadline)
+        if scopedPaths == nil {
+            try validateSupportedNotesEntries(deadline: deadline)
+        }
         // Staging and enumeration dereference the work-tree pathname. Recheck
         // the captured root identity before every success path, including
         // empty/no-op paths.
@@ -519,15 +570,15 @@ private extension GitRepository {
     /// already present in the product index remains a real state transition.
     func stageNotes(
         index: URL,
+        paths: [String]?,
         deadline: ContinuousClock.Instant
     ) async throws -> Bool {
         try validateNotesRoot()
         // Ignore and sparse-checkout policy belong to interactive Git. The
-        // command-line empty attribute source prevents root or nested worktree
-        // attributes from running filters or transforming recovery bytes. One
-        // bounded add handles both a never-created notes path and arbitrarily
-        // many staged deletions without first emitting every tracked name.
-        let arguments = ["add", "--all", "--force", "--sparse", "--", "notes"]
+        // empty attribute source prevents root or nested worktree attributes
+        // from running filters or transforming recovery bytes.
+        let pathspecs = paths ?? ["notes"]
+        let arguments = ["add", "--all", "--force", "--sparse", "--"] + pathspecs
         let staged = try await executeGit(
             arguments,
             index: index,
@@ -554,12 +605,13 @@ private extension GitRepository {
     /// even for a very large notes tree.
     func validateStagedEntryModes(
         index: URL,
+        paths: [String]?,
         deadline: ContinuousClock.Instant
     ) async throws {
         try validatePrivateDataRoot()
         let arguments = [
-            "ls-files", "--format=%(objectmode)", "--", "notes",
-        ]
+            "ls-files", "--format=%(objectmode)", "--",
+        ] + (paths ?? ["notes"])
         let clock = ContinuousClock()
         let remaining = clock.now.duration(to: deadline)
         guard remaining > .zero else {

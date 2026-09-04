@@ -98,21 +98,25 @@ actor VaultPathMoveService: PathMoveService {
         try Task.checkCancellation()
 
         let tree = self.tree
-        return PreparedVaultMutation(requiresSnapshot: true, perform: {
-            let movedRevision = try tree.moveFile(
-                source: source,
-                destination: destination,
-                expectedRevision: expectedRevision
-            )
-            return FileOperationOutput.text(
-                "Moved \(source.relativePath) → \(destination.relativePath)"
-            ).withMetadata(FileOperationMetadata(
-                path: destination.relativePath,
-                sourcePath: source.relativePath,
-                area: .notes,
-                revision: movedRevision
-            ))
-        })
+        return PreparedVaultMutation(
+            requiresSnapshot: true,
+            snapshotPaths: [source.relativePath, destination.relativePath],
+            perform: {
+                let movedRevision = try tree.moveFile(
+                    source: source,
+                    destination: destination,
+                    expectedRevision: expectedRevision
+                )
+                return FileOperationOutput.text(
+                    "Moved \(source.relativePath) → \(destination.relativePath)"
+                ).withMetadata(FileOperationMetadata(
+                    path: destination.relativePath,
+                    sourcePath: source.relativePath,
+                    area: .notes,
+                    revision: movedRevision
+                ))
+            }
+        )
     }
 
     private func prepareDirectoryMove(
