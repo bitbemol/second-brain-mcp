@@ -187,11 +187,7 @@ private extension GitRepository {
             in: snapshotWorkspaceDirectoryURL,
             deadline: deadline
         )
-        defer {
-            if privateDataRootIdentity.matches(privateDataRootURL) {
-                workspace.remove()
-            }
-        }
+        defer { workspace.remove() }
         try validatePrivateDataRoot()
 
         // Rebuild the narrow notes tree from an empty private index every time.
@@ -1206,17 +1202,13 @@ struct GitSnapshotIndexWorkspace {
             try? FileManager.default.removeItem(at: directory)
             throw CocoaError(.fileWriteNoPermission)
         }
-        let directoryIdentity: VaultRootIdentity
-        do {
-            directoryIdentity = try VaultRootIdentity.capture(directory)
-        } catch {
-            try? FileManager.default.removeItem(at: directory)
-            throw error
-        }
         return Self(
             directory: directory,
             file: directory.appendingPathComponent("index"),
-            directoryIdentity: directoryIdentity
+            directoryIdentity: VaultRootIdentity(
+                device: metadata.st_dev,
+                inode: metadata.st_ino
+            )
         )
     }
 
