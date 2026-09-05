@@ -37,8 +37,9 @@ After obtaining the follow-up commits, build with
 `swift build -c release --force-resolved-versions`, record the source commit and
 binary SHA, and fully restart every client/server using the disposable vault.
 Refresh tool discovery; rebuilding alone does not replace an already running MCP.
-The checked-in `Vendor/swift-sdk` is required; do not omit it when transferring
-the changes. No client configuration or personal vault file needs deletion.
+Keep `Package.swift` and `Package.resolved` together when transferring changes;
+SwiftPM fetches the pinned SDK fork with the JSON-string fix. No client
+configuration or personal vault file needs deletion.
 
 | Check | Required observation |
 |---|---|

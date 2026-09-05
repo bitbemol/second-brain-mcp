@@ -4,6 +4,11 @@ Status: release-candidate verification in progress; not a publication approval.
 Measurements use generated temporary vaults, never user content. This record is
 separate from the public API contract in the root README.
 
+Historical dependency note: the vendored SDK mentioned in the records below was
+later replaced by an exact-revision fork containing the same runtime fixes. See
+[current dependency provenance](../SECURITY.md#dependencies); the old measurements
+and their source baselines below are retained unchanged.
+
 ## Second regression-review fixes (2026-08-27)
 
 The follow-up work-agent report found real gaps in our acceptance coverage. Passing

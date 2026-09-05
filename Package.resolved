@@ -1,5 +1,5 @@
 {
-  "originHash" : "4e5c8cc61d7585b5811ba776fe04f16f763771dcb86fcc9608cbe270816d04fb",
+  "originHash" : "7bc4e2674c58beba23fa741ec312f4a4b62c1edff24f9259c60d66b59514d1c7",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -35,6 +35,14 @@
       "state" : {
         "revision" : "3ffafb9722d5d918c614feb496c8789a3b59d222",
         "version" : "1.15.0"
+      }
+    },
+    {
+      "identity" : "swift-mcp-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/bitbemol/swift-mcp-sdk.git",
+      "state" : {
+        "revision" : "af48e3f7070965579ece835173c279cb04c23543"
       }
     },
     {

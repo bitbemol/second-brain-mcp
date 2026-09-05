@@ -62,9 +62,10 @@ cp .build/release/second-brain-mcp /usr/local/bin/
 
 > **Always use the `.build/release/second-brain-mcp` path — not an architecture-specific one** like `.build/arm64-apple-macosx/release/second-brain-mcp`. Swift 6.4 changed SwiftPM's default build system from `native` (which wrote products to `.build/<triple>/release/`) to `swiftbuild` (which writes to `.build/out/Products/Release/`). SwiftPM keeps `.build/release` and `.build/debug` as symlinks to the current layout under **both** systems, so pinning to the symlink survives toolchain upgrades. Pinning to an arch-specific path will silently keep launching a **stale binary** after you upgrade Swift — the build succeeds, but lands somewhere your config no longer points to.
 
-When redistributing the binary, include the [vendored SDK license](Vendor/swift-sdk/LICENSE)
-and the other dependency licenses. The [SDK provenance record](Vendor/swift-sdk/README.md)
-documents its pinned source and local compatibility fixes.
+When redistributing the binary, include the [SDK license](https://github.com/bitbemol/swift-mcp-sdk/blob/af48e3f7070965579ece835173c279cb04c23543/LICENSE)
+and the other dependency licenses. [Dependency provenance](SECURITY.md#dependencies)
+documents the pinned forks and their compatibility fixes. SwiftPM fetches the SDK;
+no manually copied or patched local SDK is required.
 
 ## Connecting to Claude and Codex
 

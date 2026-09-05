@@ -75,12 +75,23 @@ You don't have to take that on faith — see [Verifying](#verifying-it-yourself)
 
 ## Dependencies
 
-The MCP SDK runtime is checked into `Vendor/swift-sdk` at upstream revision
-`a0ae212ebf6eab5f754c3129608bc5557637e605` (0.12.1), with a narrowly scoped
-JSON-string fidelity patch. Its [provenance record](Vendor/swift-sdk/README.md)
-documents local changes and hashes; the complete upstream license is retained.
-JSON strings remain strings even when they look like data URIs; explicit binary
-encoding is unchanged. No generated dependency checkout is patched.
+The MCP SDK uses the [maintainer fork](https://github.com/bitbemol/swift-mcp-sdk)
+branch `bugfix/preserve-data-url-json-strings`, pinned in `Package.swift` to commit
+`af48e3f7070965579ece835173c279cb04c23543`. It is based on upstream 0.12.1
+(`a0ae212ebf6eab5f754c3129608bc5557637e605`). The patch makes generic JSON string
+decoding preserve `.string` instead of implicitly parsing data URLs, and adds
+regression tests. Explicit binary encoding, data-URL helper APIs, and typed image/audio
+fields are unchanged. A second, behavior-preserving change makes an existing strong
+Task capture explicit in `NetworkTransport.swift` for Swift 6.4; the nested weak
+capture remains unchanged. Second Brain never instantiates that network transport.
+
+All 47 runtime source files match the former vendored SDK except for comments;
+the runtime dependency constraints are unchanged. The upstream
+[LICENSE](https://github.com/bitbemol/swift-mcp-sdk/blob/af48e3f7070965579ece835173c279cb04c23543/LICENSE)
+is unchanged (SHA-256 `0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a`).
+There is no vendored runtime or generated-checkout patch. Restore the official SDK
+after an audited release preserves JSON string identity and passes
+`SDKJSONStringFidelityTests`, the raw-stdio regressions, and the full application suite.
 
 Swift Subprocess uses the [maintainer fork](https://github.com/bitbemol/swift-subprocess)
 branch `codex/fix-stopped-child-waitid`, pinned in `Package.swift` to commit
@@ -92,14 +103,14 @@ The patch adds no dependencies, subprocess sites, network behavior, or public AP
 changes; upstream licensing is unchanged. Restore upstream after an audited release
 includes the correction and passes the dependency and application shutdown tests.
 
-Swift Subprocess and all remote transitive packages remain revision/version-pinned in the
+Both direct forks and all remote transitive packages remain revision/version-pinned in the
 committed `Package.resolved`. Verification uses `--force-resolved-versions` to
-reject resolution drift. The table reflects the local SDK and remote lockfile;
+reject resolution drift. The table reflects the remote lockfile;
 inspect the effective graph with `swift package --force-resolved-versions show-dependencies`.
 
 | Package | Owner | Version | Role |
 |---------|-------|---------|------|
-| `modelcontextprotocol/swift-sdk` | MCP org | 0.12.1 + local patch | **Direct, vendored** — MCP protocol library; see provenance above |
+| `bitbemol/swift-mcp-sdk` | MCP org; maintainer patch | 0.12.1 + `af48e3f` | **Direct** — MCP protocol library; see provenance above |
 | `bitbemol/swift-subprocess` | Swift project; maintainer patch | 1.0.0 + `81082b2` | **Direct** — bounded invocation of the validated canonical Apple Git boundary |
 | `apple/swift-log` | Apple | 1.15.0 | Logging to stderr |
 | `apple/swift-system` | Apple | 1.8.0 | Low-level system calls |
@@ -142,7 +153,7 @@ have a server running against a real vault.
 
 ```bash
 swift package show-dependencies
-rg -ni 'telemetry|analytics|tracking|beacon|phone.home' Vendor/swift-sdk/Sources .build/checkouts/
+rg -ni 'telemetry|analytics|tracking|beacon|phone.home' .build/checkouts/
 ```
 
 ## Dependency update policy
