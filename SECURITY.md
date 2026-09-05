@@ -58,7 +58,8 @@ The server contains no network client and requests no outbound network operation
   frame at 192 MiB (including JSON escaping). At most 32 response senders may wait behind an active
   frame; overflow or a partially written failed frame terminates the connection. These are transport
   bounds, not a whole-process memory limit or a cap on decoded SDK request tasks. The server never
-  instantiates a network transport. When input ends, the application closes tool admission,
+  instantiates a network transport. Input EOF and catchable SIGTERM, SIGINT, and SIGHUP signals
+  enter the same transport shutdown path. The application closes tool admission,
   cancels accepted tool tasks, and joins their unwind before returning from server setup.
   Already-started persistence and its required Git snapshot remain joined; this is not a
   timeout that abandons native work or a guarantee against forced process termination.
@@ -81,7 +82,17 @@ documents local changes and hashes; the complete upstream license is retained.
 JSON strings remain strings even when they look like data URIs; explicit binary
 encoding is unchanged. No generated dependency checkout is patched.
 
-Swift Subprocess and all remote transitive packages remain version-pinned in the
+Swift Subprocess uses the [maintainer fork](https://github.com/bitbemol/swift-subprocess)
+branch `codex/fix-stopped-child-waitid`, pinned in `Package.swift` to commit
+`81082b28a502f5be268186fd5c2525166eb5ad6c`. It is based on upstream 1.0.0
+(`b3937ab85dd32f6e9435914599c1519074769c1a`); the patch changes only Unix exit
+observation and adds two regression tests. A stopped child is no longer mistaken
+for an exited child, preventing a process-wide terminal-status decoding trap.
+The patch adds no dependencies, subprocess sites, network behavior, or public API
+changes; upstream licensing is unchanged. Restore upstream after an audited release
+includes the correction and passes the dependency and application shutdown tests.
+
+Swift Subprocess and all remote transitive packages remain revision/version-pinned in the
 committed `Package.resolved`. Verification uses `--force-resolved-versions` to
 reject resolution drift. The table reflects the local SDK and remote lockfile;
 inspect the effective graph with `swift package --force-resolved-versions show-dependencies`.
@@ -89,7 +100,7 @@ inspect the effective graph with `swift package --force-resolved-versions show-d
 | Package | Owner | Version | Role |
 |---------|-------|---------|------|
 | `modelcontextprotocol/swift-sdk` | MCP org | 0.12.1 + local patch | **Direct, vendored** — MCP protocol library; see provenance above |
-| `swiftlang/swift-subprocess` | Swift project | 1.0.0 | **Direct** — bounded invocation of the validated canonical Apple Git boundary |
+| `bitbemol/swift-subprocess` | Swift project; maintainer patch | 1.0.0 + `81082b2` | **Direct** — bounded invocation of the validated canonical Apple Git boundary |
 | `apple/swift-log` | Apple | 1.15.0 | Logging to stderr |
 | `apple/swift-system` | Apple | 1.8.0 | Low-level system calls |
 | `apple/swift-nio` | Apple | 2.101.3 | Async I/O (used by the SDK's HTTP transport — not by this server) |

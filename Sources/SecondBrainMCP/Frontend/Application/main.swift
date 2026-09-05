@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 
 // SecondBrainMCP — local format-aware knowledge-vault server
@@ -9,6 +10,23 @@ import Foundation
 signal(SIGPIPE, SIG_IGN)
 
 do {
+    // Client shutdown commonly sends SIGTERM rather than closing stdin. Route
+    // termination through the same owned-task drain as EOF so Git teardown can
+    // run while the parent is alive. No asynchronous work runs in a signal handler.
+    let transport = StdioMessageTransport()
+    let terminationSources = [SIGTERM, SIGINT, SIGHUP].map { terminationSignal in
+        signal(terminationSignal, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(
+            signal: terminationSignal, queue: .global(qos: .utility)
+        )
+        source.setEventHandler { @Sendable in
+            Task { await transport.disconnect() }
+        }
+        source.resume()
+        return source
+    }
+    defer { terminationSources.forEach { $0.cancel() } }
+
     // 1. Parse CLI arguments into config
     let config = try ServerConfig.parse(arguments: CommandLine.arguments)
 
@@ -31,7 +49,8 @@ do {
         links: runtime.links,
         listing: runtime.listing,
         capabilities: runtime.capabilities,
-        startupRecovery: { try await runtime.recoverPendingChanges() }
+        startupRecovery: { try await runtime.recoverPendingChanges() },
+        transport: transport
     )
 
 } catch {

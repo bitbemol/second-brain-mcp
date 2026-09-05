@@ -1,5 +1,5 @@
 {
-  "originHash" : "e48a5b07171b96586e6ec7ed3eb3fb5f2c37bfafcaa1f6367858af2b69502946",
+  "originHash" : "4e5c8cc61d7585b5811ba776fe04f16f763771dcb86fcc9608cbe270816d04fb",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -49,10 +49,9 @@
     {
       "identity" : "swift-subprocess",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/swiftlang/swift-subprocess.git",
+      "location" : "https://github.com/bitbemol/swift-subprocess.git",
       "state" : {
-        "revision" : "b3937ab85dd32f6e9435914599c1519074769c1a",
-        "version" : "1.0.0"
+        "revision" : "81082b28a502f5be268186fd5c2525166eb5ad6c"
       }
     },
     {

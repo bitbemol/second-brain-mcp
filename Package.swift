@@ -14,7 +14,11 @@ let package = Package(
         // Remove this local copy and restore the official SDK dependency once an audited upstream
         // release fixes the bug and passes SDKJSONStringFidelityTests and the full test suite.
         .package(path: "Vendor/swift-sdk"),
-        .package(url: "https://github.com/swiftlang/swift-subprocess.git", from: "1.0.0")
+        // Audited 1.0.0-based stopped-child exit detection fix; provenance in SECURITY.md.
+        .package(
+            url: "https://github.com/bitbemol/swift-subprocess.git",
+            revision: "81082b28a502f5be268186fd5c2525166eb5ad6c"
+        )
     ],
     targets: [
         .executableTarget(

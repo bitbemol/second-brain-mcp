@@ -1573,6 +1573,57 @@ struct `GitRepository snapshots` {
         )
     }
 
+    /// A held lock does not exercise subprocess cancellation. Keep this child
+    /// alive after SIGTERM so the real runner must escalate and reap it.
+    @Test(arguments: [false, true])
+    func `snapshot timeout or cancellation kills a running child that ignores termination`(cancel: Bool) async throws {
+        let vault = try makeVault()
+        defer { vault.remove() }
+        let executable = vault.cleanupRoot.appendingPathComponent("stalled-git")
+        let marker = vault.cleanupRoot.appendingPathComponent("child-pid")
+        try Data("""
+            #!/bin/sh
+            trap '' TERM
+            printf '%s' "$$" > '\(marker.path)'
+            exec /bin/sleep 12
+
+            """.utf8).write(to: executable, options: .atomic)
+        #expect(Darwin.chmod(executable.path, 0o700) == 0)
+        let repository = try GitRepository(
+            vaultURL: vault.root,
+            dataDirectory: vault.dataDirectory,
+            snapshotTimeout: cancel ? .seconds(30) : .seconds(3),
+            gitExecutableResolver: { executable }
+        )
+        let started = ContinuousClock.now
+        let snapshot = Task { try await repository.recordSnapshot() }
+        if cancel {
+            let launchDeadline = started.advanced(by: .seconds(5))
+            while !FileManager.default.fileExists(atPath: marker.path),
+                  ContinuousClock.now < launchDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            snapshot.cancel()
+        }
+        do {
+            try await snapshot.value
+            Issue.record("Expected the running subprocess to stop")
+        } catch is CancellationError {
+            #expect(cancel)
+        } catch let error as VaultVersioningError {
+            #expect(!cancel)
+            guard case .gitCommandTimedOut(let arguments) = error else {
+                Issue.record("Expected a typed deadline, got \(error)")
+                return
+            }
+            #expect(arguments == ["--version"])
+        }
+        #expect(started.duration(to: .now) < .seconds(8))
+        let pid = try #require(Int32(String(contentsOf: marker, encoding: .utf8)))
+        #expect(Darwin.kill(pid, 0) == -1 && errno == ESRCH, "The owned child must be reaped")
+        try await makeRepository(for: vault).recordSnapshot()
+    }
+
     @Test
     func `snapshot deadline is bounded and a later retry succeeds`() async throws {
         let vault = try makeVault()
